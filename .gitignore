@@ -1,0 +1,21 @@
+node_modules/
+dist/
+out/
+build/
+.vite/
+*.log
+
+# large binaries and weights, never committed
+sidecars/
+models/
+*.gguf
+*.bin
+*.onnx
+
+# local data and secrets
+.env
+.env.*
+!.env.example
+data/
+*.sqlite
+*.sqlite-*
