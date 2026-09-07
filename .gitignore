@@ -19,3 +19,6 @@ models/
 data/
 *.sqlite
 *.sqlite-*
+
+# third-party sample audio, local only
+app/v1/fixtures/

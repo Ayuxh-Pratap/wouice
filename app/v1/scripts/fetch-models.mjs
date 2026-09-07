@@ -65,9 +65,18 @@ async function main() {
       continue
     }
 
-    downloaded += await download(m.url, dest, key.padEnd(7))
+    const got = await download(m.url, dest, key.padEnd(7))
+    downloaded += got.bytes
     await writeManifest(manifest, {
-      [key]: { file: m.file, url: m.url, bytes: await sizeOf(dest), role: m.role },
+      [key]: {
+        file: m.file,
+        url: m.url,
+        bytes: got.bytes,
+        sha256: got.sha256,
+        // true when Hugging Face published an LFS digest we could check against
+        upstreamVerified: got.verified,
+        role: m.role,
+      },
     })
   }
 

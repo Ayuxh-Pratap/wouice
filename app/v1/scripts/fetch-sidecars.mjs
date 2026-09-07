@@ -19,7 +19,7 @@
 import { mkdir, rm, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import {
-  SIDECAR_DIR, download, unzip, exists, ghJson, writeManifest, heading, fmtBytes,
+  SIDECAR_DIR, download, unzip, exists, ghJson, writeManifest, heading, fmtBytes, sha256File,
 } from './lib/fetch-util.mjs'
 
 const CUDA = process.env.CUDA ?? '12.4'
@@ -95,10 +95,14 @@ async function main() {
     )
     console.log(`  release ${rel.tag_name}  asset ${asset.name}  (${fmtBytes(asset.size)})`)
     const zip = path.join(tmp, asset.name)
+    let whisperDigest = null
     if (!(await exists(zip))) {
-      downloaded += await download(asset.browser_download_url, zip, 'whisper')
+      const got = await download(asset.browser_download_url, zip, 'whisper', asset.size)
+      downloaded += got.bytes
+      whisperDigest = got.sha256
     } else {
       console.log('    (zip already downloaded, extracting)')
+      whisperDigest = await sha256File(zip)
     }
     await rm(whisperDir, { recursive: true, force: true })
     await unzip(zip, whisperDir)
@@ -106,7 +110,15 @@ async function main() {
     if (!exe) throw new Error('whisper-server.exe not found after extraction')
     console.log(`    -> ${path.relative(SIDECAR_DIR, exe)}`)
     await writeManifest(manifest, {
-      whisper: { tag: rel.tag_name, asset: asset.name, cuda: CUDA, exe: path.relative(SIDECAR_DIR, exe) },
+      whisper: {
+        tag: rel.tag_name,
+        asset: asset.name,
+        cuda: CUDA,
+        exe: path.relative(SIDECAR_DIR, exe),
+        sha256: whisperDigest,
+        bytes: asset.size,
+        url: asset.browser_download_url,
+      },
     })
   }
 
@@ -135,10 +147,15 @@ async function main() {
     console.log(`    ${cudart.name}  (${fmtBytes(cudart.size)})`)
 
     await rm(llamaDir, { recursive: true, force: true })
+    const llamaDigests = {}
     for (const a of [bin, cudart]) {
       const zip = path.join(tmp, a.name)
       if (!(await exists(zip))) {
-        downloaded += await download(a.browser_download_url, zip, a.name.startsWith('cudart') ? 'cudart ' : 'llama  ')
+        const got = await download(a.browser_download_url, zip, a.name.startsWith('cudart') ? 'cudart ' : 'llama  ', a.size)
+        downloaded += got.bytes
+        llamaDigests[a.name] = got.sha256
+      } else {
+        llamaDigests[a.name] = await sha256File(zip)
       }
       // Both extract into the same directory: the DLLs must sit beside the exe.
       await unzip(zip, llamaDir)
@@ -152,6 +169,8 @@ async function main() {
         assets: [bin.name, cudart.name],
         cuda: CUDA,
         exe: path.relative(SIDECAR_DIR, exe),
+        sha256: llamaDigests,
+        urls: [bin.browser_download_url, cudart.browser_download_url],
       },
     })
   }

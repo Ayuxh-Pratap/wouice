@@ -18,7 +18,8 @@
     "doctor": "node scripts/doctor.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -b --pretty"
+    "typecheck": "tsc -b --pretty",
+    "verify": "node scripts/verify-artifacts.mjs"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
