@@ -1,0 +1,32 @@
+# One line ending everywhere. Without this Git normalises to CRLF on checkout
+# under Windows, which produces whole-file diffs the moment a file is touched by
+# a different tool, and silently breaks shell scripts.
+* text=auto eol=lf
+
+# These genuinely require CRLF to run on Windows.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Never diff or convert. Belt and braces: models/ and sidecars/ are gitignored,
+# but a stray weight file must not be mangled if one ever slips in.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.icns binary
+*.woff  binary
+*.woff2 binary
+*.wav  binary
+*.mp3  binary
+*.m4a  binary
+*.exe  binary
+*.dll  binary
+*.zip  binary
+*.gguf binary
+*.bin  binary
+*.onnx binary
+
+# Generated; collapse it in diffs and PR views.
+package-lock.json linguist-generated=true -diff
