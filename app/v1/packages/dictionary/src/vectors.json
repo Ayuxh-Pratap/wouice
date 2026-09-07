@@ -1,0 +1,148 @@
+{
+  "$comment": [
+    "THIS FILE IS THE SPECIFICATION for correction behaviour, not a test of it.",
+    "To change how corrections work: change a vector first, watch the test go red,",
+    "then make it green. Never adjust the corrector to satisfy a vector you did not",
+    "deliberately write, because that is how the documented behaviour and the real",
+    "behaviour silently diverge.",
+    "",
+    "Each case: entries (the dictionary), input (what the ASR produced), expected",
+    "(what must come out), and why (the rule being pinned)."
+  ],
+
+  "cases": [
+    {
+      "name": "basic correction",
+      "why": "the simplest thing that must work",
+      "entries": [{ "kind": "correction", "hear": "cloud code", "write": "Claude Code" }],
+      "input": "let me open cloud code and check",
+      "expected": "let me open Claude Code and check"
+    },
+    {
+      "name": "case insensitive match, exact replacement casing",
+      "why": "the ASR varies capitalization freely; the dictionary decides the output",
+      "entries": [{ "kind": "correction", "hear": "cloud code", "write": "Claude Code" }],
+      "input": "Cloud Code and CLOUD CODE and cloud code",
+      "expected": "Claude Code and Claude Code and Claude Code"
+    },
+    {
+      "name": "RULE 2: whole matches only, no substring damage",
+      "why": "a rule for 'cloud' must never touch Cloudflare or cloudy",
+      "entries": [{ "kind": "correction", "hear": "cloud", "write": "Claude" }],
+      "input": "Cloudflare fronts the cloudy cluster, but cloud is fine",
+      "expected": "Cloudflare fronts the cloudy cluster, but Claude is fine"
+    },
+    {
+      "name": "a broad trigger DOES damage legitimate standalone uses",
+      "why": "documents why the seed dictionary refuses 'cloud'->'Claude': whole-word matching cannot distinguish real 'cloud storage' from a misheard 'Claude', so a correction must be MORE specific than the word it replaces. This is desired behaviour, not a bug",
+      "entries": [{ "kind": "correction", "hear": "cloud", "write": "Claude" }],
+      "input": "upload it to cloud storage",
+      "expected": "upload it to Claude storage"
+    },
+    {
+      "name": "RULE 1: longest trigger wins",
+      "why": "'claude code' must not be pre-empted by the shorter overlapping 'claude'",
+      "entries": [
+        { "kind": "correction", "hear": "cloud", "write": "Claude" },
+        { "kind": "correction", "hear": "cloud code", "write": "Claude Code" }
+      ],
+      "input": "cloud code is not cloud",
+      "expected": "Claude Code is not Claude"
+    },
+    {
+      "name": "RULE 3: glued and hyphenated words still match",
+      "why": "engines run words together; the gap is optional whitespace or hyphens",
+      "entries": [{ "kind": "correction", "hear": "cloud code", "write": "Claude Code" }],
+      "input": "cloudcode, cloud-code, cloud  code, cloud_code",
+      "expected": "Claude Code, Claude Code, Claude Code, Claude Code"
+    },
+    {
+      "name": "RULE 5: a replacement is immune to later rules",
+      "why": "the sequential-replace bug: 'next js'->'Next.js' then 'js'->'JavaScript' would otherwise yield 'Next.JavaScript'",
+      "entries": [
+        { "kind": "correction", "hear": "js", "write": "JavaScript" },
+        { "kind": "correction", "hear": "next js", "write": "Next.js" }
+      ],
+      "input": "next js and plain js",
+      "expected": "Next.js and plain JavaScript"
+    },
+    {
+      "name": "RULE 4: NFC normalization",
+      "why": "a decomposed accented trigger silently never matches a composed one",
+      "entries": [{ "kind": "correction", "hear": "café racer", "write": "Café Racer" }],
+      "input": "the café racer project",
+      "expected": "the Café Racer project"
+    },
+    {
+      "name": "devanagari boundaries",
+      "why": "JS \\b is ASCII-only, so Hindi triggers need unicode property boundaries",
+      "entries": [{ "kind": "correction", "hear": "मुझे", "write": "mujhe" }],
+      "input": "मुझे ये feature chahiye",
+      "expected": "mujhe ये feature chahiye"
+    },
+    {
+      "name": "disabled entries are inert",
+      "why": "turning a rule off in the UI must actually turn it off",
+      "entries": [{ "kind": "correction", "hear": "cloud code", "write": "Claude Code", "enabled": false }],
+      "input": "open cloud code",
+      "expected": "open cloud code"
+    },
+    {
+      "name": "term entries never rewrite",
+      "why": "terms only bias the decoder; they are not corrections",
+      "entries": [{ "kind": "term", "hear": "Supabase" }],
+      "input": "super base is the backend",
+      "expected": "super base is the backend"
+    },
+    {
+      "name": "regex metacharacters in a trigger are literal",
+      "why": "a trigger is text the user typed, never a pattern",
+      "entries": [{ "kind": "correction", "hear": "c++", "write": "C++" }],
+      "input": "written in c++ mostly",
+      "expected": "written in C++ mostly"
+    },
+    {
+      "name": "empty and whitespace triggers are ignored",
+      "why": "a blank row in the editor must not match every position",
+      "entries": [
+        { "kind": "correction", "hear": "   ", "write": "X" },
+        { "kind": "correction", "hear": "vercell", "write": "Vercel" }
+      ],
+      "input": "deploy on vercell",
+      "expected": "deploy on Vercel"
+    },
+    {
+      "name": "repeat count is tallied",
+      "why": "history shows whether an entry is earning its place",
+      "entries": [{ "kind": "correction", "hear": "vercell", "write": "Vercel" }],
+      "input": "vercell and vercell again",
+      "expected": "Vercel and Vercel again",
+      "applied": [{ "from": "vercell", "to": "Vercel", "count": 2 }]
+    },
+    {
+      "name": "applied records what the engine produced, not the trigger",
+      "why": "seeing the real error is what makes history useful for tuning",
+      "entries": [{ "kind": "correction", "hear": "cloud code", "write": "Claude Code" }],
+      "input": "CloudCode rocks",
+      "expected": "Claude Code rocks",
+      "applied": [{ "from": "CloudCode", "to": "Claude Code", "count": 1 }]
+    },
+    {
+      "name": "no entries, text passes through untouched",
+      "why": "the empty dictionary must be a no-op, not a crash",
+      "entries": [],
+      "input": "nothing to do here",
+      "expected": "nothing to do here"
+    },
+    {
+      "name": "hinglish sentence with technical terms preserved",
+      "why": "the real workload: code-mixed speech where English terms must survive",
+      "entries": [
+        { "kind": "correction", "hear": "super base", "write": "Supabase" },
+        { "kind": "correction", "hear": "cloud code", "write": "Claude Code" }
+      ],
+      "input": "mujhe super base ka deployment cloud code se karna hai",
+      "expected": "mujhe Supabase ka deployment Claude Code se karna hai"
+    }
+  ]
+}
