@@ -7,7 +7,7 @@ import tailwindcss from '@tailwindcss/vite'
 // they must be bundled rather than externalized. externalizeDepsPlugin treats
 // everything in `dependencies` as external by default, which would leave Node
 // resolving `@wouice/asr` at runtime and failing on its `.js` specifiers.
-const WORKSPACE = ['@wouice/asr', '@wouice/dictionary', '@wouice/llm']
+const WORKSPACE = ['@wouice/asr', '@wouice/dictionary', '@wouice/llm', '@wouice/store']
 
 export default defineConfig({
   main: {

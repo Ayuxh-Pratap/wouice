@@ -1,4 +1,5 @@
-import type { DictationMetric } from './store.js'
+import type { DictationRecord } from '@wouice/store'
+import type { Settings } from '../../shared/settings.js'
 
 /**
  * Format one dictation as a self-contained diagnostic block.
@@ -17,7 +18,7 @@ function ms(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(2)}s` : `${Math.round(n)}ms`
 }
 
-function explainChunks(d: DictationMetric): string {
+function explainChunks(d: DictationRecord): string {
   const c = d.capture
   if (!c) return ''
   if (d.chunks > 0) return `${d.chunks} chunk(s) flushed mid-speech`
@@ -35,10 +36,28 @@ function explainChunks(d: DictationMetric): string {
   return `0 chunks: unexpected, speech ${ms(c.speechMs)} and longest pause ${ms(c.longestPauseMs)} both clear the thresholds`
 }
 
-export function formatDiagnostic(d: DictationMetric, index: number): string {
+/**
+ * One line saying where the speech levels came from.
+ *
+ * Shipped defaults and a calibration that went wrong produce the same symptom -
+ * a gate in the wrong place - and are indistinguishable in an export without
+ * this. The device is named because a calibration is only valid for the
+ * microphone it was measured on.
+ */
+export function describeCalibration(s: Settings): string {
+  const gate = (s.silence.minNoiseFloor * s.silence.speechFactor).toFixed(5)
+  const c = s.calibration
+  if (!c) return `gate ${gate} (shipped defaults, never calibrated)`
+  const when = new Date(c.at).toLocaleDateString()
+  const langs = c.languages.map((l) => `${l.label}->${l.detected}`).join(' ')
+  return `gate ${gate} (calibrated ${when} on "${c.device}", ${Math.round(
+    c.separation
+  )}x separation, ${c.quality}${langs ? `, ${langs}` : ''})`
+}
+
+export function formatDiagnostic(d: DictationRecord, index: number, levelsNote?: string): string {
   const when = new Date(d.at).toLocaleString()
   const c = d.capture
-  const s = d.stages
 
   const lines: string[] = []
   lines.push(`## Dictation #${index} · ${when}`)
@@ -62,14 +81,17 @@ export function formatDiagnostic(d: DictationMetric, index: number): string {
         5
       )} · threshold ${c.thresholdRms.toFixed(5)}`
     )
+    // A threshold in the wrong place looks the same whether it was inherited or
+    // measured badly, and the fix differs. Say which.
+    if (levelsNote) lines.push(`source     ${levelsNote}`)
   }
   lines.push(`chunking   ${explainChunks(d)}`)
   lines.push(`degraded   ${d.degraded ?? 'no'}`)
   lines.push('```')
   lines.push('')
 
-  if (!s) {
-    lines.push('_Recorded before stage capture existed, so no text stages are available._')
+  if (!d.raw && !d.received) {
+    lines.push('_Imported from a build that predates stage capture, so no text is available._')
     return lines.join('\n')
   }
 
@@ -82,26 +104,26 @@ export function formatDiagnostic(d: DictationMetric, index: number): string {
     lines.push('')
   }
 
-  stage('1 · Heard', s.raw, 'straight out of Whisper')
+  stage('1 · Heard', d.raw, 'straight out of Whisper')
   stage(
     '2 · After dictionary',
-    s.corrected,
-    s.applied.length
-      ? `rules fired: ${s.applied.map((a) => `${a.from} -> ${a.to}`).join(', ')}`
+    d.corrected,
+    d.applied.length
+      ? `rules fired: ${d.applied.map((a) => `${a.from} -> ${a.to}`).join(', ')}`
       : 'no rules fired, identical to above'
   )
-  stage('3a · System prompt sent', s.sent.system)
-  stage('3b · User message sent', s.sent.user)
+  stage('3a · System prompt sent', d.sentSystem)
+  stage('3b · User message sent', d.sentUser)
   stage(
     '4 · Received',
-    s.received,
-    s.received === s.sent.user ? 'model returned the input unchanged' : undefined
+    d.received,
+    d.received === d.sentUser ? 'model returned the input unchanged' : undefined
   )
 
   return lines.join('\n')
 }
 
-export function formatSession(dictations: DictationMetric[], meta: Record<string, string>): string {
+export function formatSession(dictations: DictationRecord[], meta: Record<string, string>): string {
   const head = [
     '# Wouice diagnostic export',
     '',
@@ -118,7 +140,7 @@ export function formatSession(dictations: DictationMetric[], meta: Record<string
   return (
     head +
     dictations
-      .map((d, i) => formatDiagnostic(d, dictations.length - i))
+      .map((d, i) => formatDiagnostic(d, dictations.length - i, meta.levels))
       .join('\n\n---\n\n')
   )
 }

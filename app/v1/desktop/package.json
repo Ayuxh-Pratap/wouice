@@ -13,7 +13,8 @@
   "dependencies": {
     "@wouice/asr": "*",
     "@wouice/dictionary": "*",
-    "@wouice/llm": "*"
+    "@wouice/llm": "*",
+    "@wouice/store": "*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
