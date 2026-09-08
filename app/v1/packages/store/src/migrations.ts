@@ -141,6 +141,32 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE dictations ADD COLUMN delivery_note TEXT NOT NULL DEFAULT '';
     `,
   },
+  {
+    id: 4,
+    name: 'user dictionary entries',
+    sql: `
+      -- The seed dictionary ships in code and never changes. This is the half
+      -- that belongs to the person using the app: their colleagues, clients,
+      -- projects, and the words their accent reliably defeats. It lives in the
+      -- database rather than in settings.json because it grows without bound
+      -- and because it is data, not preference.
+      CREATE TABLE dictionary (
+        id         INTEGER PRIMARY KEY,
+        -- 'term' biases the recogniser; 'correction' rewrites afterwards.
+        kind       TEXT    NOT NULL,
+        hear       TEXT    NOT NULL,
+        write      TEXT,
+        enabled    INTEGER NOT NULL DEFAULT 1,
+        -- How often the rule actually fired, so a dead rule is visible.
+        hits       INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
+
+      -- One rule per trigger per kind. Two corrections for the same phrase
+      -- would fire in an order nobody chose.
+      CREATE UNIQUE INDEX dictionary_unique ON dictionary (kind, hear);
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */

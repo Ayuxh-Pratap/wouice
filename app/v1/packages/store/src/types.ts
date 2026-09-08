@@ -108,3 +108,23 @@ export interface Page<T> {
   offset: number
   limit: number
 }
+
+/**
+ * One rule in the user's own dictionary.
+ *
+ * `term` biases the recogniser before transcription and promises nothing.
+ * `correction` rewrites the text afterwards and is the half that guarantees
+ * anything - which is also why it is the half that can do damage.
+ */
+export interface DictionaryRecord {
+  id?: number
+  kind: 'term' | 'correction'
+  /** The trigger, as the recogniser produces it. */
+  hear: string
+  /** What to write instead. Empty for a term. */
+  write: string
+  enabled: boolean
+  /** How often it has fired. A rule at zero after months is probably wrong. */
+  hits: number
+  createdAt: number
+}

@@ -3,10 +3,12 @@ import { mkdirSync, statSync } from 'node:fs'
 import { openDb, rows, row, type Db } from './db.js'
 import { Dictations } from './dictations.js'
 import { Calibrations, Resources } from './resources.js'
+import { Dictionary } from './dictionary.js'
 
 export { openDb, migrate, type Db } from './db.js'
 export { Dictations, toMatchQuery } from './dictations.js'
 export { Calibrations, Resources } from './resources.js'
+export { Dictionary, validateEntry, type EntryCheck } from './dictionary.js'
 export { importJsonl, type ImportResult } from './import.js'
 export { MIGRATIONS, LATEST_VERSION, type Migration } from './migrations.js'
 export type {
@@ -14,6 +16,7 @@ export type {
   CalibrationRecord,
   CaptureDiagnostics,
   DictationRecord,
+  DictionaryRecord,
   Page,
   ResourceRecord,
 } from './types.js'
@@ -31,6 +34,7 @@ export interface Store {
   readonly dictations: Dictations
   readonly resources: Resources
   readonly calibrations: Calibrations
+  readonly dictionary: Dictionary
   readonly file: string
   /** What is actually in the database right now. */
   stats(): StoreStats
@@ -77,6 +81,7 @@ export function openStore(options: OpenStoreOptions): Store {
     dictations: new Dictations(db),
     resources: new Resources(db),
     calibrations: new Calibrations(db),
+    dictionary: new Dictionary(db),
     stats: () => stats(db, file),
     close: () => {
       // Fold the WAL back into the main file on the way out, so a database that
