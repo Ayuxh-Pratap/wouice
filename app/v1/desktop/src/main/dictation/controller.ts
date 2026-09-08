@@ -1,6 +1,11 @@
 import { EventEmitter } from 'node:events'
 import { WhisperCppClient } from '@wouice/asr'
-import { OpenAiCompatClient, DICTATION_CLEANUP_SYSTEM, isPlausibleCleanup } from '@wouice/llm'
+import {
+  OpenAiCompatClient,
+  DICTATION_CLEANUP_SYSTEM,
+  cleanupBudget,
+  isPlausibleCleanup,
+} from '@wouice/llm'
 import { correct, biasPrompt, SEED_DICTIONARY } from '@wouice/dictionary'
 import {
   DEFAULT_SILENCE,
@@ -66,7 +71,6 @@ export interface ControllerDeps {
    */
   silence?: () => SilenceConfig
   cleanupEnabled: () => boolean
-  cleanupTimeoutMs: () => number
   retainAudio: () => boolean
   /** Persist the session audio and return its path, for diagnostics export. */
   saveAudio: (pcm: Float32Array) => Promise<string | null>
@@ -321,10 +325,17 @@ export class DictationController extends EventEmitter {
       return { text, llmMs: 0, degraded: 'llm-unavailable', received: '(model not ready)' }
     }
 
+    // Budgeted from the length of what was said, not a constant.
+    //
+    // The constant was 4000 ms, and it killed dictation #14: 218 words needing
+    // 7048 ms, delivered as raw Hinglish with a `degraded` tag. Cleanup is paid
+    // per output token and output tracks input, so the allowance has to as well.
+    const budget = cleanupBudget(text)
+
     const llm = new OpenAiCompatClient({
       baseUrl: this.deps.supervisor.baseUrl('llama'),
       model: this.deps.supervisor.snapshot('llama').modelId,
-      timeoutMs: this.deps.cleanupTimeoutMs(),
+      timeoutMs: budget.totalTimeoutMs,
     })
 
     try {
@@ -332,8 +343,23 @@ export class DictationController extends EventEmitter {
         system: DICTATION_CLEANUP_SYSTEM,
         user: text,
         temperature: 0,
-        maxTokens: 1024,
+        maxTokens: budget.maxTokens,
+        firstTokenTimeoutMs: budget.firstTokenTimeoutMs,
+        stallTimeoutMs: budget.stallTimeoutMs,
       })
+
+      // 'length' means the token cap cut the answer off mid-sentence. Accepting
+      // that would hand the user a truncated transcript that looks complete,
+      // which is worse than not cleaning it at all.
+      if (r.finishReason === 'length') {
+        return {
+          text,
+          llmMs: r.latencyMs,
+          degraded: 'llm-truncated',
+          received: r.text,
+        }
+      }
+
       const verdict = isPlausibleCleanup(text, r.text)
       if (!verdict.ok) {
         return {

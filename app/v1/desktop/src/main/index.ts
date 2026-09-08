@@ -70,7 +70,6 @@ const dictation = new DictationController({
   supervisor,
   silence: () => settings.get().silence,
   cleanupEnabled: () => settings.get().cleanup.enabled,
-  cleanupTimeoutMs: () => settings.get().cleanup.timeoutMs,
   retainAudio: () => settings.get().retainAudio,
   saveAudio: async (pcm) => recordings.save(pcm),
 })

@@ -92,7 +92,6 @@ export interface Settings {
   silence: SilenceConfig
   cleanup: {
     enabled: boolean
-    timeoutMs: number
   }
   /**
    * Developer mode. ON by default, deliberately: this is a personal tool whose
@@ -144,11 +143,10 @@ export const DEFAULT_SETTINGS: Settings = {
     llama: 'qwen3-4b',
   },
   silence: DEFAULT_SILENCE,
-  cleanup: {
-    enabled: true,
-    // A stalled model must never cost an utterance already spoken.
-    timeoutMs: 4_000,
-  },
+  // No timeout here any more. It was 4000 ms, a constant, and it killed any
+  // dictation over about 120 words - the work scales with what was said, so the
+  // allowance is computed per dictation in `cleanupBudget` instead.
+  cleanup: { enabled: true },
   developerMode: true,
   retainAudio: true,
   calibration: null,
