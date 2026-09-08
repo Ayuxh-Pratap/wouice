@@ -82,7 +82,7 @@ function Steps({ done, current }: { done: number; current: number }): React.JSX.
                 ? 'bg-emerald-500/20 text-emerald-300'
                 : i === current
                   ? 'bg-white/15 text-neutral-100 ring-1 ring-white/25'
-                  : 'bg-neutral-800 text-neutral-600',
+                  : 'bg-white/5 text-neutral-600',
             ].join(' ')}
           >
             {i < done ? '✓' : i + 1}
@@ -438,7 +438,18 @@ const LABEL_NAME: Record<CalibrationLabel, string> = {
   mixed: 'Mixed',
 }
 
-export function Calibration({ settings }: { settings: Settings | null }): React.JSX.Element {
+export function Calibration({
+  settings,
+  variant = 'chip',
+}: {
+  settings: Settings | null
+  /**
+   * `chip` for the top bar, where this is a status light beside the page title.
+   * `card` for the settings page, where it is the first thing worth doing and
+   * has room to say why.
+   */
+  variant?: 'chip' | 'card'
+}): React.JSX.Element {
   const [screen, setScreen] = useState<Screen | null>(null)
   const [index, setIndex] = useState(0)
   const [takes, setTakes] = useState<Partial<Record<CalibrationLabel, Recording>>>({})
@@ -540,13 +551,131 @@ export function Calibration({ settings }: { settings: Settings | null }): React.
   const deviceChanged =
     saved !== null && currentDevice !== '' && saved.device !== '' && saved.device !== currentDevice
 
+  /**
+   * The dialog, shared by both variants.
+   *
+   * A value rather than a nested component: a component declared inside a
+   * render is a new type on every pass, so React would unmount and remount
+   * the whole flow - losing which step you were on mid-recording.
+   */
+  const modal = screen ? (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/85 p-6 backdrop-blur-sm"
+        onClick={(e) => {
+          // Only a click on the backdrop itself, never one that started inside.
+          if (e.target === e.currentTarget && screen !== 'analysing') close()
+        }}
+      >
+        {/*
+          The dialog owns its own scrolling. Letting the backdrop scroll gave
+          two scrollbars - the page behind kept its own - and the close button
+          scrolled away with the content.
+        */}
+        <div className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-neutral-900 shadow-2xl shadow-black/60 ring-1 ring-white/10">
+          <div className="flex shrink-0 justify-end px-3 pt-3">
+            <button
+              onClick={close}
+              disabled={screen === 'analysing'}
+              className="rounded-md px-2 py-0.5 text-[16px] leading-none text-neutral-600 hover:text-neutral-300 disabled:opacity-30"
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {screen === 'intro' && (
+              <Intro
+                redo={saved !== null}
+                changedFrom={deviceChanged ? (saved?.device ?? null) : null}
+                onStart={() => setScreen('record')}
+              />
+            )}
+            {screen === 'record' && (
+              <Record
+                index={index}
+                recorder={recorder}
+                justFinished={justFinished}
+                onDone={finishTake}
+              />
+            )}
+            {screen === 'analysing' && <Analysing />}
+            {screen === 'result' && report && (
+              <Result
+                report={report}
+                developerMode={settings?.developerMode ?? false}
+                saving={saving}
+                onRetry={open}
+                onFinish={() => {
+                  setSaving(true)
+                  void window.wouice
+                    .calibrateApply(report)
+                    .then(() => setScreen(null))
+                    .finally(() => setSaving(false))
+                }}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+  ) : null
+
+  if (variant === 'card') {
+    return (
+      <>
+        <section className="lift rounded-xl bg-white/[0.035] px-4 py-3 ring-1 ring-white/[0.08]">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span
+                className={[
+                  'flex size-8 shrink-0 items-center justify-center rounded-lg text-[15px]',
+                  saved ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/5 text-neutral-400',
+                ].join(' ')}
+              >
+                {saved ? '✓' : '◉'}
+              </span>
+              <div>
+                <h3 className="text-[13px] font-semibold text-neutral-100">
+                  {saved ? 'Voice calibrated' : 'Tune Wouice to your voice'}
+                </h3>
+                <p className="text-[11px] text-neutral-500">
+                  {saved
+                    ? `Measured ${ago(saved.at)}${saved.device ? ` on ${saved.device}` : ''}, ${Math.round(saved.separation)}× separation.`
+                    : 'Three short sentences, so it knows when you start and stop talking.'}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={open}
+              className={[
+                'shrink-0 rounded-lg px-3.5 py-1.5 text-[12px] font-medium transition',
+                saved
+                  ? 'text-neutral-400 ring-1 ring-white/10 hover:bg-white/5 hover:text-neutral-200'
+                  : 'bg-neutral-100 text-neutral-900 hover:bg-white',
+              ].join(' ')}
+            >
+              {saved ? 'Redo' : 'Start'}
+            </button>
+          </div>
+
+          {deviceChanged && (
+            <p className="mt-2.5 rounded-lg bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200 ring-1 ring-inset ring-amber-500/20">
+              Your microphone is now <span className="text-amber-100">{currentDevice}</span>, but
+              this was set up on <span className="text-amber-100">{saved?.device}</span>. Different
+              microphones hear you at different levels, so it is worth doing again.
+            </p>
+          )}
+        </section>
+        {modal}
+      </>
+    )
+  }
+
   return (
     <>
       {/*
-        Compact once it is done. Calibration is a setup step, not a feature: it
-        earns the whole width of the page exactly once, and after that it is a
-        status light. Leaving the full card up would mean permanently spending
-        the top of the dashboard on something already finished.
+        Compact in the top bar. Calibration is a setup step, not a feature: once
+        it is done it is a status light, and the full card lives in Settings.
       */}
       {!saved ? (
         <button
@@ -580,67 +709,7 @@ export function Calibration({ settings }: { settings: Settings | null }): React.
         </button>
       )}
 
-      {screen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/85 p-6 backdrop-blur-sm"
-          onClick={(e) => {
-            // Only a click on the backdrop itself, never one that started inside.
-            if (e.target === e.currentTarget && screen !== 'analysing') close()
-          }}
-        >
-          {/*
-            The dialog owns its own scrolling. Letting the backdrop scroll gave
-            two scrollbars - the page behind kept its own - and the close button
-            scrolled away with the content.
-          */}
-          <div className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-2xl bg-neutral-900 shadow-2xl shadow-black/60 ring-1 ring-white/10">
-            <div className="flex shrink-0 justify-end px-3 pt-3">
-              <button
-                onClick={close}
-                disabled={screen === 'analysing'}
-                className="rounded-md px-2 py-0.5 text-[16px] leading-none text-neutral-600 hover:text-neutral-300 disabled:opacity-30"
-                aria-label="Close"
-              >
-                ×
-              </button>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {screen === 'intro' && (
-                <Intro
-                  redo={saved !== null}
-                  changedFrom={deviceChanged ? (saved?.device ?? null) : null}
-                  onStart={() => setScreen('record')}
-                />
-              )}
-              {screen === 'record' && (
-                <Record
-                  index={index}
-                  recorder={recorder}
-                  justFinished={justFinished}
-                  onDone={finishTake}
-                />
-              )}
-              {screen === 'analysing' && <Analysing />}
-              {screen === 'result' && report && (
-                <Result
-                  report={report}
-                  developerMode={settings?.developerMode ?? false}
-                  saving={saving}
-                  onRetry={open}
-                  onFinish={() => {
-                    setSaving(true)
-                    void window.wouice
-                      .calibrateApply(report)
-                      .then(() => setScreen(null))
-                      .finally(() => setSaving(false))
-                  }}
-                />
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {modal}
     </>
   )
 }
