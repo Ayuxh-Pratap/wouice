@@ -89,7 +89,7 @@ export function Hud(): React.JSX.Element {
   const seconds = (state.elapsedMs / 1000).toFixed(1)
 
   return (
-    <div className="flex h-full w-full items-center justify-center p-2">
+    <div className="hud-root flex h-full w-full items-center justify-center overflow-hidden p-2">
       <div
         className={[
           'flex w-full items-center gap-3 rounded-2xl px-4 py-3',
@@ -107,7 +107,7 @@ export function Hud(): React.JSX.Element {
           ].join(' ')}
         />
 
-        <div className="flex h-7 flex-1 items-center gap-[3px]">
+        <div className="flex h-7 min-w-0 flex-1 items-center gap-[3px] overflow-hidden">
           {Array.from({ length: BAR_COUNT }, (_, i) => {
             // A fixed shape modulated by level, so the meter reads as a voice
             // rather than a random flicker. Purely cosmetic until capture lands.
@@ -123,8 +123,10 @@ export function Hud(): React.JSX.Element {
           })}
         </div>
 
-        <div className="shrink-0 text-right">
-          <div className="text-[11px] font-medium leading-tight text-neutral-200">
+        {/* max-w plus truncate: a long status like "Copied - 2182 chars" must
+            shrink rather than push the meter out of a fixed-size window. */}
+        <div className="max-w-[7.5rem] shrink-0 text-right">
+          <div className="truncate text-[11px] font-medium leading-tight text-neutral-200">
             {state.message ?? PHASE_LABEL[state.phase]}
           </div>
           {state.phase === 'listening' && (
