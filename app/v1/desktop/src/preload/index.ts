@@ -37,6 +37,8 @@ const api: WouiceApi = {
   getMetrics: (): Promise<MetricsSnapshot> => ipcRenderer.invoke(IPC.getMetrics),
   getDictationPage: (offset, limit, query) =>
     ipcRenderer.invoke(IPC.getDictationPage, offset, limit, query),
+  deleteDictations: (ats: number[]) => ipcRenderer.invoke(IPC.deleteDictations, ats),
+  clearDictations: () => ipcRenderer.invoke(IPC.clearDictations),
   getStorage: () => ipcRenderer.invoke(IPC.getStorage),
   getDictionary: () => ipcRenderer.invoke(IPC.getDictionary),
   addDictionaryEntry: (entry) => ipcRenderer.invoke(IPC.addDictionaryEntry, entry),

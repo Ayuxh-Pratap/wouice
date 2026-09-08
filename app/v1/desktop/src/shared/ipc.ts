@@ -20,6 +20,8 @@ export const IPC = {
   hideHud: 'hud:hide',
   getMetrics: 'metrics:get',
   getDictationPage: 'metrics:page',
+  deleteDictations: 'metrics:delete',
+  clearDictations: 'metrics:clear',
   getStorage: 'storage:stats',
   getDictionary: 'dictionary:list',
   addDictionaryEntry: 'dictionary:add',
@@ -206,6 +208,13 @@ export interface WouiceApi {
   getMetrics(): Promise<MetricsSnapshot>
   /** One page of history, newest first, with the total so pages can be counted. */
   getDictationPage(offset: number, limit: number, query?: string): Promise<Page<DictationRecord>>
+  /**
+   * Delete specific dictations, by the timestamps the table already keys on.
+   * Their retained audio goes too. Returns how many rows were actually removed.
+   */
+  deleteDictations(ats: number[]): Promise<number>
+  /** Delete every dictation and every retained recording. Returns the count. */
+  clearDictations(): Promise<number>
   /** What is in the database: schema version, size, and per-table row counts. */
   getStorage(): Promise<StoreStats>
   getDictionary(): Promise<DictionaryRecord[]>

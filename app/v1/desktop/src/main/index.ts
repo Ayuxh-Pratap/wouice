@@ -7,7 +7,7 @@ import { SIDECARS } from '../shared/models.js'
 import { SettingsStore } from './settings-store.js'
 import { HotkeyManager } from './hotkeys.js'
 import { createTray, destroyTray, refreshTray } from './tray.js'
-import { broadcast, createHud, createMainWindow, hideHud, sendToHud, showHud } from './windows.js'
+import { applyZoom, broadcast, createHud, createMainWindow, hideHud, sendToHud, showHud } from './windows.js'
 import { IPC, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type SidecarView } from '../shared/ipc.js'
 import type { SidecarId } from '../shared/models.js'
 import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from './dictation/controller.js'
@@ -239,7 +239,7 @@ function toView(s: SidecarSnapshot): SidecarView {
 const trayDeps = {
   supervisor,
   settings,
-  onOpenWindow: () => createMainWindow(),
+  onOpenWindow: () => createMainWindow(settings.get().appearance.zoom),
   onSwitchModel: (id: SidecarId, modelId: string) => {
     // Persist first so the choice survives a crash during the restart.
     settings.set({ models: { ...settings.get().models, [id]: modelId } })
@@ -291,6 +291,9 @@ function registerIpc(): void {
   ipcMain.handle(IPC.setSettings, (_e, patch) => {
     const next = settings.set(patch)
     registerHotkeys()
+    // Zoom is the one setting the renderer cannot apply to itself: the factor
+    // lives on the WebContents, above the document.
+    applyZoom(next.appearance.zoom)
     broadcast(IPC.settingsChanged, next)
     return next
   })
@@ -324,6 +327,34 @@ function registerIpc(): void {
   ipcMain.handle(IPC.getDictationPage, (_e, offset: number, limit: number, query?: string) =>
     store.dictations.page(offset, limit, query)
   )
+
+  /**
+   * Deleting history.
+   *
+   * Two steps that must both happen: the rows, and the WAV files those rows
+   * were pointing at. Doing only the first leaves orphaned audio on disk that
+   * nothing in the app can reach or delete - the user's own voice, kept
+   * silently, after they asked for it to be gone.
+   *
+   * The database comes first. If unlinking a file fails - it is open in a
+   * player, say - the row is still gone and the recording store's own pruning
+   * will reach the file later; the reverse order could delete audio for a
+   * dictation that then survives.
+   */
+  ipcMain.handle(IPC.deleteDictations, (_e, ats: unknown) => {
+    const list = Array.isArray(ats) ? ats.filter((n): n is number => typeof n === 'number') : []
+    const { deleted, audioPaths } = store.dictations.deleteAt(list)
+    recordings.forget(audioPaths)
+    broadcast(IPC.metric, undefined)
+    return deleted
+  })
+
+  ipcMain.handle(IPC.clearDictations, () => {
+    const { deleted, audioPaths } = store.dictations.deleteAll()
+    recordings.forget(audioPaths)
+    broadcast(IPC.metric, undefined)
+    return deleted
+  })
 
   ipcMain.handle(IPC.getStorage, () => store.stats())
 
@@ -506,7 +537,7 @@ function registerIpc(): void {
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', () => createMainWindow())
+  app.on('second-instance', () => createMainWindow(settings.get().appearance.zoom))
 
   app.whenReady().then(async () => {
     // On a 6 GB card whose hot set needs ~5.4 GB, one stray sidecar left by a
@@ -552,7 +583,7 @@ if (!app.requestSingleInstanceLock()) {
     createHud()
     createTray(trayDeps)
     registerHotkeys()
-    createMainWindow()
+    createMainWindow(settings.get().appearance.zoom)
 
     // Start both sidecars. They load multi-GB models, so this takes seconds;
     // the UI is usable throughout and reports status as it changes.
