@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { RetainedAudio } from '../../shared/ipc.js'
 import type { PausePreset, Settings as SettingsShape } from '../../shared/settings.js'
-import { PAUSE_LABELS, applyPausePreset, pausePresetOf } from '../../shared/settings.js'
+import {
+  PAUSE_LABELS,
+  ZOOM_STEPS,
+  applyPausePreset,
+  pausePresetOf,
+  zoomLabel,
+} from '../../shared/settings.js'
 import { listInputs } from '../capture/mic.js'
 import { DictionaryEditor } from './DictionaryEditor.js'
 import { ConfirmButton, Choice, Row, Section, Toggle } from './Field.js'
@@ -84,6 +90,44 @@ function MicrophonePicker({
   )
 }
 
+/**
+ * Starting over.
+ *
+ * WHY IT IS HERE AND NOT ONLY IN THE TABLE. Selecting rows is for removing a
+ * few; this is for the different intent of "none of this should exist any
+ * more", and someone with 1,300 dictations cannot express that by ticking
+ * boxes. It takes the retained audio with it, because a reset that leaves the
+ * recordings behind has not reset anything that matters.
+ *
+ * Deliberately NOT behind developer mode. Deleting your own voice from your own
+ * disk is not an advanced operation.
+ */
+function DeleteEverything(): React.JSX.Element {
+  const [count, setCount] = useState<number | null>(null)
+
+  const load = useCallback((): void => {
+    void window.wouice
+      .getStorage()
+      .then((s) => setCount(s.tables.find((t) => t.name === 'dictations')?.rows ?? 0))
+      .catch(() => setCount(null))
+  }, [])
+
+  useEffect(load, [load])
+  // The table and the charts already refresh on this; so should the count.
+  useEffect(() => window.wouice.onMetric(load), [load])
+
+  if (count === null) return <span className="text-[11px] text-neutral-600">Unavailable</span>
+  if (count === 0) return <span className="text-[11px] text-neutral-600">Nothing to delete</span>
+
+  return (
+    <ConfirmButton
+      label={`Delete all ${count.toLocaleString()}`}
+      confirmLabel="Delete everything?"
+      onClick={() => void window.wouice.clearDictations().then(load)}
+    />
+  )
+}
+
 function Recordings({ retain }: { retain: boolean }): React.JSX.Element {
   const [files, setFiles] = useState<RetainedAudio[]>([])
   const [open, setOpen] = useState(false)
@@ -156,6 +200,24 @@ export function SettingsPanel({
 
   return (
     <div className="space-y-4">
+      <Section
+        title="Appearance"
+        hint="Applies to this window only. The dictation overlay is a fixed size wherever it appears."
+      >
+        <Row
+          label="Interface scale"
+          hint="For large monitors, where the pixels are there but the reading distance is not. Ctrl+= and Ctrl+- do the same thing from anywhere."
+        >
+          {/* Values are percentages in the UI and a multiplier underneath. The
+              control speaks the first language. */}
+          <Choice<string>
+            value={String(settings.appearance.zoom)}
+            options={ZOOM_STEPS.map((z) => ({ value: String(z), label: zoomLabel(z) }))}
+            onChange={(next) => save({ appearance: { zoom: Number(next) } })}
+          />
+        </Row>
+      </Section>
+
       <Section title="Dictation">
         <Row
           label="Microphone"
@@ -209,6 +271,12 @@ export function SettingsPanel({
           <div className="relative">
             <Recordings retain={settings.retainAudio} />
           </div>
+        </Row>
+        <Row
+          label="Every dictation"
+          hint="The transcripts, the timings and any audio still kept with them. There is no undo, and no copy anywhere else."
+        >
+          <DeleteEverything />
         </Row>
       </Section>
 
