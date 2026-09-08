@@ -54,11 +54,14 @@ export function Hud(): React.JSX.Element {
       await session?.stop()
     }
 
-    const offStart = window.wouice.onStartCapture(async (sessionId) => {
+    const offStart = window.wouice.onStartCapture(async (sessionId, deviceId) => {
       await stop()
       try {
         mic.current = await startMic({
           onFrame: (frame) => window.wouice.sendAudioFrame(sessionId, frame),
+          // Null means the system default, and following it is the point: a
+          // headset plugged in mid-session should just work.
+          ...(deviceId ? { deviceId } : {}),
         })
         window.wouice.captureReady(sessionId)
       } catch (err) {
