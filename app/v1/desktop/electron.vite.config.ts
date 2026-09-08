@@ -3,9 +3,15 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+// Our own workspace packages are TypeScript SOURCE, not built artifacts, so
+// they must be bundled rather than externalized. externalizeDepsPlugin treats
+// everything in `dependencies` as external by default, which would leave Node
+// resolving `@wouice/asr` at runtime and failing on its `.js` specifiers.
+const WORKSPACE = ['@wouice/asr', '@wouice/dictionary', '@wouice/llm']
+
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: WORKSPACE })],
     build: {
       rollupOptions: { input: { index: resolve(__dirname, 'src/main/index.ts') } },
     },

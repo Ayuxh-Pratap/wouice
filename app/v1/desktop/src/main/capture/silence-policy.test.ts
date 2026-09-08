@@ -1,0 +1,229 @@
+import { describe, expect, it } from 'vitest'
+import {
+  DEFAULT_SILENCE,
+  activeWindowMs,
+  initialSilenceState,
+  rms,
+  step,
+  type Frame,
+  type SilenceState,
+  type SilenceVerdict,
+} from './silence-policy.js'
+
+const FRAME_MS = 20
+const LOUD = 0.2
+const QUIET = 0.001
+
+const speech = (): Frame => ({ rms: LOUD, ms: FRAME_MS })
+const silence = (): Frame => ({ rms: QUIET, ms: FRAME_MS })
+
+/** Feed frames until a non-continue verdict, or until `maxMs` elapses. */
+function run(
+  frames: () => Frame,
+  maxMs: number,
+  start: SilenceState = initialSilenceState()
+): { state: SilenceState; verdict: SilenceVerdict; atMs: number } {
+  let state = start
+  for (let t = 0; t < maxMs; t += FRAME_MS) {
+    const out = step(state, frames(), DEFAULT_SILENCE)
+    state = out.state
+    if (out.verdict !== 'continue') return { state, verdict: out.verdict, atMs: state.elapsedMs }
+  }
+  return { state, verdict: 'continue', atMs: state.elapsedMs }
+}
+
+/** Speak for `speakMs`, then go quiet. */
+function speakThenSilence(speakMs: number, thenMs: number) {
+  let state = initialSilenceState()
+  for (let t = 0; t < speakMs; t += FRAME_MS) state = step(state, speech(), DEFAULT_SILENCE).state
+  for (let t = 0; t < thenMs; t += FRAME_MS) {
+    const out = step(state, silence(), DEFAULT_SILENCE)
+    state = out.state
+    if (out.verdict !== 'continue') return { state, verdict: out.verdict, silenceMs: state.silenceMs }
+  }
+  return { state, verdict: 'continue' as SilenceVerdict, silenceMs: state.silenceMs }
+}
+
+describe('rms', () => {
+  it('is zero for silence and for an empty buffer', () => {
+    expect(rms(new Float32Array(100))).toBe(0)
+    expect(rms(new Float32Array(0))).toBe(0)
+  })
+
+  it('is the amplitude of a constant signal', () => {
+    expect(rms(new Float32Array(100).fill(0.5))).toBeCloseTo(0.5, 5)
+  })
+
+  it('ignores sign, so a waveform is not cancelled out', () => {
+    const alternating = Float32Array.from({ length: 100 }, (_, i) => (i % 2 ? 0.5 : -0.5))
+    expect(rms(alternating)).toBeCloseTo(0.5, 5)
+  })
+})
+
+describe('stop detection does not arm before speech', () => {
+  it('does not stop during a long silence at the very start', () => {
+    // Pressing the hotkey and pausing to think must not end the session.
+    const { verdict } = run(silence, 10_000)
+    expect(verdict).toBe('continue')
+  })
+
+  it('ignores a cough shorter than minSpeechMs', () => {
+    let state = initialSilenceState()
+    // 200ms of noise, under the 300ms floor.
+    for (let t = 0; t < 200; t += FRAME_MS) state = step(state, speech(), DEFAULT_SILENCE).state
+    expect(state.heardSpeech).toBe(false)
+    const after = run(silence, 10_000, state)
+    expect(after.verdict).toBe('continue')
+  })
+})
+
+describe('the adaptive window', () => {
+  it('uses the SHORT window for a brief utterance', () => {
+    // A one-line prompt should not feel sluggish.
+    const { verdict, state } = speakThenSilence(2_000, 5_000)
+    expect(verdict).toBe('stop-silence')
+    expect(state.silenceMs).toBeGreaterThanOrEqual(DEFAULT_SILENCE.shortWindowMs)
+    expect(state.silenceMs).toBeLessThan(DEFAULT_SILENCE.longWindowMs)
+  })
+
+  it('uses the LONG window once the utterance proves itself long-form', () => {
+    // Past 15s of speech, a 1.8s thinking pause must not truncate you.
+    const { verdict, state } = speakThenSilence(16_000, 6_000)
+    expect(verdict).toBe('stop-silence')
+    expect(state.silenceMs).toBeGreaterThanOrEqual(DEFAULT_SILENCE.longWindowMs)
+  })
+
+  it('does NOT stop on a 2s pause in long-form, which the short window would have', () => {
+    // The exact failure the adaptive window exists to prevent.
+    let state = initialSilenceState()
+    for (let t = 0; t < 16_000; t += FRAME_MS) state = step(state, speech(), DEFAULT_SILENCE).state
+    let verdict: SilenceVerdict = 'continue'
+    for (let t = 0; t < 2_000; t += FRAME_MS) {
+      const out = step(state, silence(), DEFAULT_SILENCE)
+      state = out.state
+      verdict = out.verdict
+      if (verdict !== 'continue') break
+    }
+    expect(verdict).toBe('continue')
+  })
+
+  it('reports which window is in force', () => {
+    const short = { ...initialSilenceState(), speechMs: 5_000 }
+    const long = { ...initialSilenceState(), speechMs: 20_000 }
+    expect(activeWindowMs(short)).toBe(DEFAULT_SILENCE.shortWindowMs)
+    expect(activeWindowMs(long)).toBe(DEFAULT_SILENCE.longWindowMs)
+  })
+})
+
+describe('chunking', () => {
+  it('does not emit a chunk before chunkAfterMs of speech', () => {
+    let state = initialSilenceState()
+    let sawChunk = false
+    for (let t = 0; t < 10_000; t += FRAME_MS) {
+      const out = step(state, speech(), DEFAULT_SILENCE)
+      state = out.state
+      if (out.verdict === 'emit-chunk') sawChunk = true
+    }
+    expect(sawChunk).toBe(false)
+  })
+
+  it('emits a chunk AT A PAUSE once enough speech has accumulated', () => {
+    // Boundaries must land on pauses; cutting mid-word transcribes badly on
+    // both halves, which is the whole reason chunking shares this function.
+    let state = initialSilenceState()
+    for (let t = 0; t < 21_000; t += FRAME_MS) state = step(state, speech(), DEFAULT_SILENCE).state
+
+    let verdict: SilenceVerdict = 'continue'
+    for (let t = 0; t < 1_000; t += FRAME_MS) {
+      const out = step(state, silence(), DEFAULT_SILENCE)
+      state = out.state
+      verdict = out.verdict
+      if (verdict !== 'continue') break
+    }
+    expect(verdict).toBe('emit-chunk')
+    expect(state.silenceMs).toBeGreaterThanOrEqual(DEFAULT_SILENCE.chunkPauseMs)
+  })
+
+  it('does NOT emit a chunk mid-speech no matter how long you talk', () => {
+    // 60s of unbroken speech: no pause, so no boundary, so no chunk.
+    const { verdict } = run(speech, 60_000)
+    expect(verdict).toBe('continue')
+  })
+
+  it('resets the chunk counter after emitting, so chunks are spaced', () => {
+    let state = initialSilenceState()
+    for (let t = 0; t < 21_000; t += FRAME_MS) state = step(state, speech(), DEFAULT_SILENCE).state
+    let out = step(state, { rms: QUIET, ms: DEFAULT_SILENCE.chunkPauseMs }, DEFAULT_SILENCE)
+    expect(out.verdict).toBe('emit-chunk')
+    expect(out.state.sinceChunkMs).toBe(0)
+  })
+})
+
+describe('the session cap', () => {
+  it('stops at maxSessionMs even while speech continues', () => {
+    // Purely a "did I forget this was recording" guard.
+    const { verdict, atMs } = run(speech, DEFAULT_SILENCE.maxSessionMs + 2_000)
+    expect(verdict).toBe('stop-cap')
+    expect(atMs).toBeGreaterThanOrEqual(DEFAULT_SILENCE.maxSessionMs)
+  })
+})
+
+describe('the adaptive noise floor', () => {
+  it('rises in a noisy room so background hum is not heard as speech', () => {
+    const hum = { rms: 0.01, ms: FRAME_MS }
+    let state = initialSilenceState()
+    for (let t = 0; t < 5_000; t += FRAME_MS) state = step(state, hum, DEFAULT_SILENCE).state
+    expect(state.noiseFloor).toBeGreaterThan(DEFAULT_SILENCE.minNoiseFloor)
+    // And with the floor raised, that same hum still reads as silence.
+    expect(state.speechMs).toBe(0)
+  })
+
+  it('does NOT adapt during speech', () => {
+    // Adapting while someone talks would chase their own volume upward until
+    // nothing counted as speech and the session never ended.
+    let state = initialSilenceState()
+    const before = state.noiseFloor
+    for (let t = 0; t < 3_000; t += FRAME_MS) state = step(state, speech(), DEFAULT_SILENCE).state
+    expect(state.noiseFloor).toBe(before)
+  })
+
+  it('never drops below the absolute floor', () => {
+    let state = initialSilenceState()
+    for (let t = 0; t < 20_000; t += FRAME_MS) {
+      state = step(state, { rms: 0, ms: FRAME_MS }, DEFAULT_SILENCE).state
+    }
+    expect(state.noiseFloor).toBeGreaterThanOrEqual(DEFAULT_SILENCE.minNoiseFloor)
+  })
+
+  it('still detects loud speech in a noisy room', () => {
+    let state = initialSilenceState()
+    for (let t = 0; t < 5_000; t += FRAME_MS) {
+      state = step(state, { rms: 0.01, ms: FRAME_MS }, DEFAULT_SILENCE).state
+    }
+    for (let t = 0; t < 1_000; t += FRAME_MS) {
+      state = step(state, speech(), DEFAULT_SILENCE).state
+    }
+    expect(state.heardSpeech).toBe(true)
+  })
+})
+
+describe('the level meter', () => {
+  it('attacks fast and releases slowly', () => {
+    let state = initialSilenceState()
+    state = step(state, speech(), DEFAULT_SILENCE).state
+    const peak = state.level
+    expect(peak).toBeGreaterThan(0.5)
+
+    state = step(state, silence(), DEFAULT_SILENCE).state
+    // Falls, but nowhere near instantly: a meter that snaps to zero reads as
+    // a flicker rather than a voice.
+    expect(state.level).toBeLessThan(peak)
+    expect(state.level).toBeGreaterThan(peak * 0.5)
+  })
+
+  it('stays within 0..1 even for a clipping signal', () => {
+    let state = initialSilenceState()
+    for (let i = 0; i < 10; i++) state = step(state, { rms: 5, ms: FRAME_MS }, DEFAULT_SILENCE).state
+    expect(state.level).toBeLessThanOrEqual(1)
+  })
+})

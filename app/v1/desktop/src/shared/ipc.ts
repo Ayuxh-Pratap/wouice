@@ -17,13 +17,64 @@ export const IPC = {
   restartSidecar: 'sidecars:restart',
   getDiagnostics: 'app:diagnostics',
   hideHud: 'hud:hide',
+  getMetrics: 'metrics:get',
+  // renderer -> main: one 20ms frame of 16kHz mono Float32
+  audioFrame: 'capture:frame',
+  captureReady: 'capture:ready',
+  captureFailed: 'capture:failed',
+  cancelDictation: 'dictation:cancel',
 
   // main -> renderer, push
   sidecarState: 'sidecars:state',
   settingsChanged: 'settings:changed',
   hudState: 'hud:state',
   hotkeyFailed: 'hotkey:failed',
+  // main -> renderer: open/close the mic for this session
+  startCapture: 'capture:start',
+  stopCapture: 'capture:stop',
+  metric: 'metrics:new',
+  dictationResult: 'dictation:result',
 } as const
+
+export interface DictationMetric {
+  kind: 'dictation'
+  at: number
+  audioMs: number
+  asrMs: number
+  llmMs: number
+  totalMs: number
+  chunks: number
+  asrModel: string
+  llmModel: string
+  language: string
+  rawChars: number
+  finalChars: number
+  corrections: number
+  degraded: string | null
+}
+
+export interface ResourceMetric {
+  kind: 'resource'
+  at: number
+  vramUsedMiB: number
+  vramTotalMiB: number
+  rssMiB: number
+}
+
+export interface MetricsSnapshot {
+  dictations: DictationMetric[]
+  resources: ResourceMetric[]
+}
+
+export interface DictationOutcome {
+  final: string
+  raw: string
+  language: string
+  asrMs: number
+  llmMs: number
+  degraded: string | null
+  delivered: 'copied' | 'inserted'
+}
 
 /** What the HUD is showing. Mirrors the dictation state machine in spec 6.2. */
 export type HudPhase = 'idle' | 'arming' | 'listening' | 'thinking' | 'inserted' | 'copied' | 'error'
@@ -74,6 +125,15 @@ export interface WouiceApi {
   restartSidecar(id: SidecarId): Promise<void>
   getDiagnostics(): Promise<Diagnostics>
   hideHud(): void
+  getMetrics(): Promise<MetricsSnapshot>
+  sendAudioFrame(sessionId: number, frame: Float32Array): void
+  captureReady(sessionId: number): void
+  captureFailed(sessionId: number, reason: string): void
+  cancelDictation(): void
+  onStartCapture(cb: (sessionId: number) => void): () => void
+  onStopCapture(cb: (sessionId: number) => void): () => void
+  onMetric(cb: () => void): () => void
+  onDictationResult(cb: (r: DictationOutcome) => void): () => void
   onSidecarState(cb: (s: SidecarView) => void): () => void
   onSettingsChanged(cb: (s: Settings) => void): () => void
   onHudState(cb: (s: HudState) => void): () => void

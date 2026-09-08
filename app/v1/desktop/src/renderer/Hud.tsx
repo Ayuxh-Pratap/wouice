@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { HudState } from '../shared/ipc.js'
+import { startMic, type MicSession } from './capture/mic.js'
 
 /**
  * The dictation overlay.
@@ -34,8 +35,55 @@ const BAR_COUNT = 28
 
 export function Hud(): React.JSX.Element {
   const [state, setState] = useState<HudState>({ phase: 'idle', level: 0, elapsedMs: 0 })
+  const mic = useRef<MicSession | null>(null)
 
   useEffect(() => window.wouice.onHudState(setState), [])
+
+  /**
+   * The HUD owns microphone capture.
+   *
+   * It is the one window that always exists, so capture never depends on
+   * whether the dashboard happens to be open. Frames go straight to main, which
+   * holds the state machine and the silence policy: keeping every decision on
+   * one side of the bridge is what stops the two drifting apart.
+   */
+  useEffect(() => {
+    const stop = async (): Promise<void> => {
+      const session = mic.current
+      mic.current = null
+      await session?.stop()
+    }
+
+    const offStart = window.wouice.onStartCapture(async (sessionId) => {
+      await stop()
+      try {
+        mic.current = await startMic({
+          onFrame: (frame) => window.wouice.sendAudioFrame(sessionId, frame),
+        })
+        window.wouice.captureReady(sessionId)
+      } catch (err) {
+        window.wouice.captureFailed(
+          sessionId,
+          err instanceof Error ? err.message : 'Could not open the microphone'
+        )
+      }
+    })
+
+    const offStop = window.wouice.onStopCapture(() => void stop())
+
+    // Escape cancels from anywhere the HUD can see it.
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') window.wouice.cancelDictation()
+    }
+    window.addEventListener('keydown', onKey)
+
+    return () => {
+      offStart()
+      offStop()
+      window.removeEventListener('keydown', onKey)
+      void stop()
+    }
+  }, [])
 
   const active = state.phase !== 'idle'
   const seconds = (state.elapsedMs / 1000).toFixed(1)

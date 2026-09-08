@@ -64,6 +64,10 @@ export function createHud(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // The HUD is hidden most of the time and owns the microphone. Chromium
+      // throttles timers and audio in hidden windows, which would stall the
+      // capture worklet exactly when it matters.
+      backgroundThrottling: false,
     },
   })
 

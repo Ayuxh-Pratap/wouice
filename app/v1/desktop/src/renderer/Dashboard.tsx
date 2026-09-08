@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { Diagnostics, HotkeyReport, SidecarView } from '../shared/ipc.js'
 import type { Settings } from '../shared/settings.js'
 import { SIDECARS, type SidecarId } from '../shared/models.js'
+import { Metrics } from './Metrics.js'
 
 const STATUS_STYLE: Record<string, string> = {
   ready: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30',
@@ -141,7 +142,7 @@ export function Dashboard(): React.JSX.Element {
         <p className="text-[13px] text-neutral-500">
           Press{' '}
           <kbd className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] text-neutral-300">
-            {settings?.hotkeys.dictate ?? 'Control+Alt+Space'}
+            {settings?.hotkeys.dictate ?? 'Control+Alt+W'}
           </kbd>{' '}
           anywhere to dictate.
         </p>
@@ -174,6 +175,10 @@ export function Dashboard(): React.JSX.Element {
             onRestart={() => void window.wouice.restartSidecar(s.id)}
           />
         ))}
+      </div>
+
+      <div className="mt-6">
+        <Metrics />
       </div>
 
       {diag && (

@@ -29,11 +29,12 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   hotkeys: {
-    // Ctrl+Alt namespace, so the three surfaces are one family.
+    // W for Wouice, and the Ctrl+Alt namespace keeps the three surfaces a family.
     // NOT Space: spike V1 measured Control+Alt+Space AND Control+Shift+Space as
-    // already taken on this machine (Windows layout switcher + PowerToys).
-    // Letters probed free. The manager falls back automatically anyway.
-    dictate: 'Control+Alt+D',
+    // already taken here (Windows layout switcher + PowerToys). NOT Ctrl+Shift+W
+    // either: that is "close window" in every browser, so a reflex press while
+    // the app is down would shut all your tabs.
+    dictate: 'Control+Alt+W',
     meeting: 'Control+Alt+M',
     companion: 'Control+Alt+C',
   },

@@ -5,6 +5,11 @@
  * sits between our internal audio format and the wire. It is the only place in
  * the app that converts out of Float32, per the "one internal format" rule.
  *
+ * Built on ArrayBuffer and DataView rather than Node's Buffer on purpose. The
+ * result then satisfies `BlobPart` directly (a Buffer is a Uint8Array over
+ * ArrayBufferLike, which the DOM rejects because it might be a SharedArrayBuffer)
+ * and the package stays runnable in a renderer as well as in main.
+ *
  * Kept pure and separate from the HTTP client so the byte layout can be tested
  * without a server running. Header bugs here are miserable to diagnose through
  * a transcription that merely comes back wrong rather than failing.
@@ -28,36 +33,45 @@ function toInt16(sample: number): number {
   return clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff
 }
 
-export function encodeWav(pcm: Float32Array, sampleRate: number = SAMPLE_RATE): Buffer {
+function writeAscii(view: DataView, offset: number, text: string): void {
+  for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i))
+}
+
+// The explicit <ArrayBuffer> matters: since TypeScript 5.7 typed arrays are
+// generic over their backing buffer, and a bare `Uint8Array` means
+// `Uint8Array<ArrayBufferLike>`, which BlobPart rejects because it could be a
+// SharedArrayBuffer. We allocate a real ArrayBuffer, so say so.
+export function encodeWav(pcm: Float32Array, sampleRate: number = SAMPLE_RATE): Uint8Array<ArrayBuffer> {
   const dataBytes = pcm.length * 2
-  const buf = Buffer.allocUnsafe(HEADER_BYTES + dataBytes)
+  const buffer = new ArrayBuffer(HEADER_BYTES + dataBytes)
+  const view = new DataView(buffer)
 
   const byteRate = (sampleRate * CHANNELS * BITS_PER_SAMPLE) / 8
   const blockAlign = (CHANNELS * BITS_PER_SAMPLE) / 8
 
-  buf.write('RIFF', 0, 'ascii')
-  buf.writeUInt32LE(36 + dataBytes, 4) // size of everything after this field
-  buf.write('WAVE', 8, 'ascii')
+  writeAscii(view, 0, 'RIFF')
+  view.setUint32(4, 36 + dataBytes, true) // size of everything after this field
+  writeAscii(view, 8, 'WAVE')
 
-  buf.write('fmt ', 12, 'ascii')
-  buf.writeUInt32LE(16, 16) // fmt chunk size, 16 for PCM
-  buf.writeUInt16LE(1, 20) // audio format: 1 = uncompressed PCM
-  buf.writeUInt16LE(CHANNELS, 22)
-  buf.writeUInt32LE(sampleRate, 24)
-  buf.writeUInt32LE(byteRate, 28)
-  buf.writeUInt16LE(blockAlign, 32)
-  buf.writeUInt16LE(BITS_PER_SAMPLE, 34)
+  writeAscii(view, 12, 'fmt ')
+  view.setUint32(16, 16, true) // fmt chunk size, 16 for PCM
+  view.setUint16(20, 1, true) // audio format: 1 = uncompressed PCM
+  view.setUint16(22, CHANNELS, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, byteRate, true)
+  view.setUint16(32, blockAlign, true)
+  view.setUint16(34, BITS_PER_SAMPLE, true)
 
-  buf.write('data', 36, 'ascii')
-  buf.writeUInt32LE(dataBytes, 40)
+  writeAscii(view, 36, 'data')
+  view.setUint32(40, dataBytes, true)
 
   let offset = HEADER_BYTES
   for (let i = 0; i < pcm.length; i++) {
-    buf.writeInt16LE(toInt16(pcm[i] ?? 0), offset)
+    view.setInt16(offset, toInt16(pcm[i] ?? 0), true)
     offset += 2
   }
 
-  return buf
+  return new Uint8Array(buffer)
 }
 
 /** Duration of a PCM buffer in milliseconds. */

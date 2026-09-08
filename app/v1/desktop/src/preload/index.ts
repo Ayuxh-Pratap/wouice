@@ -1,5 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC, type Diagnostics, type HotkeyReport, type HudState, type SidecarView, type WouiceApi } from '../shared/ipc.js'
+import {
+  IPC,
+  type Diagnostics,
+  type DictationOutcome,
+  type HotkeyReport,
+  type HudState,
+  type MetricsSnapshot,
+  type SidecarView,
+  type WouiceApi,
+} from '../shared/ipc.js'
 import type { Settings } from '../shared/settings.js'
 import type { SidecarId } from '../shared/models.js'
 
@@ -25,6 +34,20 @@ const api: WouiceApi = {
   restartSidecar: (id: SidecarId) => ipcRenderer.invoke(IPC.restartSidecar, id),
   getDiagnostics: (): Promise<Diagnostics> => ipcRenderer.invoke(IPC.getDiagnostics),
   hideHud: () => ipcRenderer.send(IPC.hideHud),
+  getMetrics: (): Promise<MetricsSnapshot> => ipcRenderer.invoke(IPC.getMetrics),
+  // Float32Array crosses the bridge as a structured clone. At 16 kHz that is
+  // ~64 KB/s, which is nothing, and it keeps ALL decision logic in main where
+  // the state machine lives rather than splitting it across the bridge.
+  sendAudioFrame: (sessionId: number, frame: Float32Array) =>
+    ipcRenderer.send(IPC.audioFrame, sessionId, frame),
+  captureReady: (sessionId: number) => ipcRenderer.send(IPC.captureReady, sessionId),
+  captureFailed: (sessionId: number, reason: string) =>
+    ipcRenderer.send(IPC.captureFailed, sessionId, reason),
+  cancelDictation: () => ipcRenderer.send(IPC.cancelDictation),
+  onStartCapture: (cb) => subscribe<number>(IPC.startCapture, cb),
+  onStopCapture: (cb) => subscribe<number>(IPC.stopCapture, cb),
+  onMetric: (cb) => subscribe<void>(IPC.metric, cb),
+  onDictationResult: (cb) => subscribe<DictationOutcome>(IPC.dictationResult, cb),
   onSidecarState: (cb) => subscribe<SidecarView>(IPC.sidecarState, cb),
   onSettingsChanged: (cb) => subscribe<Settings>(IPC.settingsChanged, cb),
   onHudState: (cb) => subscribe<HudState>(IPC.hudState, cb),

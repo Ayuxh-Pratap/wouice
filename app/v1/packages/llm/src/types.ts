@@ -60,7 +60,7 @@ export class LlmError extends Error {
   constructor(
     readonly kind: LlmErrorKind,
     message: string,
-    readonly cause?: unknown
+    override readonly cause?: unknown
   ) {
     super(message)
     this.name = 'LlmError'

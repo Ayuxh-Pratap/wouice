@@ -71,7 +71,7 @@ export class AsrError extends Error {
   constructor(
     readonly kind: AsrErrorKind,
     message: string,
-    readonly cause?: unknown
+    override readonly cause?: unknown
   ) {
     super(message)
     this.name = 'AsrError'

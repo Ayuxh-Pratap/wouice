@@ -1,4 +1,4 @@
-import { app, ipcMain } from 'electron'
+import { app, clipboard, ipcMain } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SidecarSupervisor, type SidecarSnapshot } from './sidecars/supervisor.js'
@@ -7,9 +7,17 @@ import { SIDECARS } from '../shared/models.js'
 import { SettingsStore } from './settings-store.js'
 import { HotkeyManager } from './hotkeys.js'
 import { createTray, destroyTray, refreshTray } from './tray.js'
-import { broadcast, createHud, createMainWindow, hideHud, showHud } from './windows.js'
+import { broadcast, createHud, createMainWindow, hideHud, sendToHud, showHud } from './windows.js'
 import { IPC, type Diagnostics, type SidecarView } from '../shared/ipc.js'
 import type { SidecarId } from '../shared/models.js'
+import { DictationController } from './dictation/controller.js'
+import { MetricsStore, sampleResources } from './metrics/store.js'
+
+// MUST come before any app.getPath('userData') call, and those happen at module
+// scope below. Unpackaged, Electron otherwise names itself "Electron" and puts
+// our settings and metrics in a shared directory alongside every other Electron
+// app run from source, which is both wrong and confusing to find.
+app.setName('Wouice')
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
@@ -26,6 +34,66 @@ const MODEL_ROOT = path.join(REPO_ROOT, 'models')
 const settings = new SettingsStore()
 const supervisor = new SidecarSupervisor(SIDECAR_ROOT, MODEL_ROOT)
 const hotkeys = new HotkeyManager()
+const metrics = new MetricsStore(app.getPath('userData'))
+
+const dictation = new DictationController({
+  supervisor,
+  silence: settings.get().silence as never,
+  cleanupEnabled: () => settings.get().cleanup.enabled,
+  cleanupTimeoutMs: () => settings.get().cleanup.timeoutMs,
+})
+
+/** Phase names the HUD understands; the machine has one more than it shows. */
+const HUD_PHASE: Record<string, string> = {
+  idle: 'idle',
+  arming: 'arming',
+  listening: 'listening',
+  transcribing: 'thinking',
+  delivering: 'thinking',
+  error: 'error',
+}
+
+dictation.on('phase', ({ phase, message }: { phase: string; message: string | null }) => {
+  broadcast(IPC.hudState, {
+    phase: HUD_PHASE[phase] ?? 'idle',
+    level: dictation.level,
+    elapsedMs: dictation.elapsedMs,
+    ...(message ? { message } : {}),
+  })
+  if (phase === 'idle') hideHud()
+  else showHud()
+})
+
+dictation.on('level', ({ level, elapsedMs }: { level: number; elapsedMs: number }) => {
+  sendToHud(IPC.hudState, { phase: 'listening', level, elapsedMs })
+})
+
+dictation.on('startCapture', (sessionId: number) => sendToHud(IPC.startCapture, sessionId))
+dictation.on('stopCapture', (sessionId: number) => sendToHud(IPC.stopCapture, sessionId))
+
+dictation.on('result', (r) => {
+  // Delivery is clipboard-only until injection lands in step 5. Copying still
+  // makes the tool usable today: one Ctrl+V and the text is placed.
+  clipboard.writeText(r.final)
+  metrics.recordDictation(r)
+  broadcast(IPC.metric, undefined)
+  broadcast(IPC.dictationResult, {
+    final: r.final,
+    raw: r.raw,
+    language: r.language,
+    asrMs: r.asrMs,
+    llmMs: r.llmMs,
+    degraded: r.degraded,
+    delivered: 'copied',
+  })
+  broadcast(IPC.hudState, {
+    phase: 'copied',
+    level: 0,
+    elapsedMs: 0,
+    message: `Copied · ${r.final.length} chars`,
+  })
+  setTimeout(() => dictation.send({ type: 'delivered' }), 1_400)
+})
 
 function toView(s: SidecarSnapshot): SidecarView {
   return {
@@ -64,16 +132,7 @@ function registerHotkeys(): void {
     {
       name: 'dictate',
       accelerator: keys.dictate,
-      // Phase 1 proper wires this to the dictation state machine. For now it
-      // proves spike V1: the combo fires, is suppressed, and does not type.
-      handler: () => {
-        showHud()
-        broadcast(IPC.hudState, { phase: 'listening', level: 0, elapsedMs: 0 })
-        setTimeout(() => {
-          broadcast(IPC.hudState, { phase: 'idle', level: 0, elapsedMs: 0 })
-          hideHud()
-        }, 1_600)
-      },
+      handler: () => dictation.send({ type: 'hotkey', now: Date.now() }),
     },
   ])
 
@@ -115,6 +174,20 @@ function registerIpc(): void {
     electron: process.versions.electron,
   }))
   ipcMain.on(IPC.hideHud, () => hideHud())
+  ipcMain.handle(IPC.getMetrics, () => ({
+    dictations: metrics.dictations(),
+    resources: metrics.resources(),
+  }))
+  ipcMain.on(IPC.audioFrame, (_e, sessionId: number, frame: Float32Array) =>
+    dictation.pushFrame(sessionId, frame)
+  )
+  ipcMain.on(IPC.captureReady, (_e, sessionId: number) => {
+    if (sessionId === dictation.sessionId) dictation.send({ type: 'micReady' })
+  })
+  ipcMain.on(IPC.captureFailed, (_e, sessionId: number, reason: string) => {
+    if (sessionId === dictation.sessionId) dictation.send({ type: 'micFailed', reason })
+  })
+  ipcMain.on(IPC.cancelDictation, () => dictation.send({ type: 'escape' }))
 }
 
 // A second instance would fight over the hotkey and the sidecar ports.
@@ -150,6 +223,16 @@ if (!app.requestSingleInstanceLock()) {
     // the UI is usable throughout and reports status as it changes.
     void supervisor.start('whisper')
     void supervisor.start('llama')
+
+    // Slow on purpose: spawning nvidia-smi costs ~80ms and the headroom this
+    // watches changes on the scale of seconds, never milliseconds. It is never
+    // called on the dictation path.
+    const sample = async (): Promise<void> => {
+      const r = await sampleResources()
+      if (r) metrics.record({ kind: 'resource', at: Date.now(), ...r })
+    }
+    void sample()
+    setInterval(() => void sample(), 15_000)
   })
 
   // Tray app: closing the window must not quit.

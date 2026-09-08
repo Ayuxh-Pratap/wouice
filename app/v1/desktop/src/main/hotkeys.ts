@@ -22,7 +22,7 @@ import { globalShortcut } from 'electron'
 
 /** Tried in order when the configured accelerator is unavailable. */
 export const FALLBACK_CHAIN: Record<string, string[]> = {
-  dictate: ['Control+Alt+D', 'Control+Alt+J', 'Control+Alt+Enter', 'F13', 'Control+Alt+Shift+Space'],
+  dictate: ['Control+Alt+D', 'Control+Alt+J', 'Alt+Shift+W', 'Control+Alt+Enter', 'F13'],
   meeting: ['Control+Alt+M', 'Control+Alt+K', 'F14'],
   companion: ['Control+Alt+C', 'Control+Alt+L', 'F15'],
 }

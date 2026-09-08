@@ -21,7 +21,8 @@
     "typecheck": "tsc -b --pretty",
     "verify": "node scripts/verify-artifacts.mjs",
     "bench:asr": "tsx scripts/bench-asr.mjs",
-    "record": "tsx scripts/record-sample.mjs"
+    "record": "tsx scripts/record-sample.mjs",
+    "probe:hotkeys": "electron scripts/probe-hotkeys.mjs"
   },
   "devDependencies": {
     "tsx": "^4.23.13",
