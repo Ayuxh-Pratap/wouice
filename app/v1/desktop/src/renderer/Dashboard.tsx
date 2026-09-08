@@ -155,6 +155,36 @@ function Storage(): React.JSX.Element | null {
   )
 }
 
+/**
+ * The one injection setting worth surfacing.
+ *
+ * Everything else about delivery is decided per dictation from the state of the
+ * machine - which window is in front, what the clipboard holds - and is not a
+ * preference. This is: some people would rather the text never move by itself.
+ */
+function InsertToggle({ settings }: { settings: Settings | null }): React.JSX.Element | null {
+  if (!settings) return null
+  const on = settings.injection.enabled
+  return (
+    <button
+      onClick={() =>
+        void window.wouice.setSettings({
+          injection: { ...settings.injection, enabled: !on },
+        })
+      }
+      title={
+        on
+          ? 'Text is typed into whatever window you were in. Click to only copy it.'
+          : 'Text is only copied to the clipboard. Click to insert it at the cursor.'
+      }
+      className="flex shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-[11px] text-neutral-500 ring-1 ring-white/10 transition hover:bg-white/5 hover:text-neutral-300"
+    >
+      <span className={`size-1.5 rounded-full ${on ? 'bg-emerald-400' : 'bg-neutral-600'}`} />
+      {on ? 'Insert at cursor' : 'Copy only'}
+    </button>
+  )
+}
+
 export function Dashboard(): React.JSX.Element {
   const [sidecars, setSidecars] = useState<SidecarView[]>([])
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -201,7 +231,10 @@ export function Dashboard(): React.JSX.Element {
             anywhere to dictate.
           </p>
         </div>
-        <Calibration settings={settings} />
+        <div className="flex items-center gap-2">
+          <InsertToggle settings={settings} />
+          <Calibration settings={settings} />
+        </div>
       </header>
 
       {hotkeyIssue && hotkeyIssue.accelerator === null && (
