@@ -86,6 +86,13 @@ export function formatDiagnostic(d: DictationRecord, index: number, levelsNote?:
     if (levelsNote) lines.push(`source     ${levelsNote}`)
   }
   lines.push(`chunking   ${explainChunks(d)}`)
+  // Where the text actually went. "It did not appear" is unanswerable without
+  // knowing whether we inserted, typed, or only copied - and why.
+  lines.push(
+    `delivery   ${d.inserted ? 'inserted' : 'clipboard only'} via ${d.delivery}` +
+      (d.targetExe ? ` into ${d.targetExe}` : '') +
+      (d.deliveryNote ? ` (${d.deliveryNote})` : '')
+  )
   lines.push(`degraded   ${d.degraded ?? 'no'}`)
   lines.push('```')
   lines.push('')
