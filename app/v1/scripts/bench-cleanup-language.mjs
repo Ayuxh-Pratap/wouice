@@ -15,6 +15,7 @@
 
 import { OpenAiCompatClient, DICTATION_CLEANUP_SYSTEM, cleanupBudget } from '../packages/llm/src/index.js'
 import { heading } from './lib/fetch-util.mjs'
+import { analyseLanguage } from './lib/hinglish.mjs'
 
 const LLAMA_URL = process.env.LLAMA_URL ?? 'http://127.0.0.1:8179'
 const runsFlag = process.argv.indexOf('--runs')
@@ -53,16 +54,6 @@ const CASES = [
   },
 ]
 
-/** Romanised Hindi function words. Content words vary; these do not. */
-const HINDI_MARKERS =
-  /\b(abhi|kuch|sahih|kya|hum|nahi|sakte|mein|hai|hain|karna|karne|chahiye|lagta|thoda|yeh|woh|aur|lekin|baaki|theek|yaar|matlab|jaldi|padega|padegi)\b/gi
-
-function analyse(text) {
-  const devanagari = (text.match(/[ऀ-ॿ]/g) ?? []).length
-  const markers = [...new Set((text.match(HINDI_MARKERS) ?? []).map((m) => m.toLowerCase()))]
-  return { devanagari, markers, english: devanagari === 0 && markers.length === 0 }
-}
-
 async function modelName() {
   try {
     const body = await (await fetch(`${LLAMA_URL}/v1/models`)).json()
@@ -97,7 +88,7 @@ async function main() {
         stallTimeoutMs: budget.stallTimeoutMs,
         timeoutMs: budget.totalTimeoutMs,
       })
-      const a = analyse(r.text)
+      const a = analyseLanguage(r.text)
       if (a.english) englishRuns++
       else markers = a.markers
       last = r.text
