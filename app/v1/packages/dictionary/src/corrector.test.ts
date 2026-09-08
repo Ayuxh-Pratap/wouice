@@ -152,3 +152,33 @@ describe('SEED_DICTIONARY', () => {
     expect(text).toBe('mujhe Claude Code se Supabase ka API integrate karna hai')
   })
 })
+
+describe('precedence between two rules for the same phrase', () => {
+  // The app composes the list as [user entries, ...SEED_DICTIONARY], relying on
+  // the personal rule winning when both name the same phrase. That only holds
+  // if compile's length sort is stable, so pin it here rather than trust it.
+  const rule = (hear: string, write: string): DictionaryEntry => ({
+    kind: 'correction',
+    hear,
+    write,
+    enabled: true,
+  })
+
+  it('keeps the earlier of two equal-length triggers', () => {
+    const out = correct('the cloud code editor', [
+      rule('cloud code', 'MINE'),
+      rule('cloud code', 'SHIPPED'),
+    ])
+    expect(out.text).toContain('MINE')
+    expect(out.text).not.toContain('SHIPPED')
+  })
+
+  it('still lets a longer phrase beat a shorter one, whatever the order', () => {
+    const out = correct('open the cloud code editor', [
+      rule('cloud', 'SHORT'),
+      rule('cloud code', 'LONG'),
+    ])
+    expect(out.text).toContain('LONG')
+    expect(out.text).not.toContain('SHORT')
+  })
+})
