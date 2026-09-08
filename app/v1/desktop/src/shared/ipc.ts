@@ -40,6 +40,11 @@ export const IPC = {
   captureReady: 'capture:ready',
   captureFailed: 'capture:failed',
   cancelDictation: 'dictation:cancel',
+  // The pet reports gestures; main does the moving. The renderer never knows
+  // where on the desktop it is.
+  petClick: 'pet:click',
+  petDragStart: 'pet:dragStart',
+  petDragEnd: 'pet:dragEnd',
 
   // main -> renderer, push
   sidecarState: 'sidecars:state',
@@ -51,7 +56,16 @@ export const IPC = {
   stopCapture: 'capture:stop',
   metric: 'metrics:new',
   dictationResult: 'dictation:result',
+  hudHover: 'hud:hover',
+  hudDragging: 'hud:dragging',
+  hudPlacement: 'hud:placement',
 } as const
+
+/** Which way the capsule opens, and whether there is a pet to open it from. */
+export interface HudPlacement {
+  side: 'left' | 'right'
+  pet: boolean
+}
 
 /**
  * Record shapes come from `@wouice/store`, which is the thing that persists
@@ -238,6 +252,13 @@ export interface WouiceApi {
   captureReady(sessionId: number): void
   captureFailed(sessionId: number, reason: string): void
   cancelDictation(): void
+  /** Tapping the pet starts or stops a dictation, exactly like the hotkey. */
+  petClick(): void
+  petDragStart(): void
+  petDragEnd(): void
+  onHudHover(cb: (over: boolean) => void): () => void
+  onHudDragging(cb: (dragging: boolean) => void): () => void
+  onHudPlacement(cb: (p: HudPlacement) => void): () => void
   onStartCapture(cb: (sessionId: number, deviceId: string | null) => void): () => void
   onStopCapture(cb: (sessionId: number) => void): () => void
   onMetric(cb: () => void): () => void

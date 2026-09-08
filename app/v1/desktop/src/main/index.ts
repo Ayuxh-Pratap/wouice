@@ -7,7 +7,18 @@ import { SIDECARS } from '../shared/models.js'
 import { SettingsStore } from './settings-store.js'
 import { HotkeyManager } from './hotkeys.js'
 import { createTray, destroyTray, refreshTray } from './tray.js'
-import { applyZoom, broadcast, createHud, createMainWindow, hideHud, sendToHud, showHud } from './windows.js'
+import {
+  applyPetSettings,
+  applyZoom,
+  broadcast,
+  createHud,
+  createMainWindow,
+  endPetDrag,
+  restHud,
+  sendToHud,
+  showHud,
+  startPetDrag,
+} from './windows.js'
 import { IPC, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type SidecarView } from '../shared/ipc.js'
 import type { SidecarId } from '../shared/models.js'
 import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from './dictation/controller.js'
@@ -104,7 +115,10 @@ dictation.on('phase', ({ phase, message }: { phase: string; message: string | nu
     elapsedMs: dictation.elapsedMs,
     ...(message ? { message } : {}),
   })
-  if (phase === 'idle') hideHud()
+  // `restHud`, not `hideHud`: with the pet on, going idle closes the capsule
+  // and leaves the character where it was put. Hiding would mean the app
+  // disappeared off the desktop after every dictation.
+  if (phase === 'idle') restHud()
   else showHud()
 })
 
@@ -294,6 +308,7 @@ function registerIpc(): void {
     // Zoom is the one setting the renderer cannot apply to itself: the factor
     // lives on the WebContents, above the document.
     applyZoom(next.appearance.zoom)
+    applyPetSettings(next.pet)
     broadcast(IPC.settingsChanged, next)
     return next
   })
@@ -311,7 +326,9 @@ function registerIpc(): void {
     platform: `${process.platform} ${process.arch}`,
     electron: process.versions.electron,
   }))
-  ipcMain.on(IPC.hideHud, () => hideHud())
+  // Rest rather than hide: dismissing the overlay means closing the capsule,
+  // not removing the pet someone deliberately put on their desktop.
+  ipcMain.on(IPC.hideHud, () => restHud())
   ipcMain.handle(IPC.getMetrics, () => ({
     // Oldest first for the charts; SQL returns newest first because that is
     // what every other reader wants.
@@ -393,6 +410,20 @@ function registerIpc(): void {
     if (sessionId === dictation.sessionId) dictation.send({ type: 'micFailed', reason })
   })
   ipcMain.on(IPC.cancelDictation, () => dictation.send({ type: 'escape' }))
+
+  // Tapping the pet is the hotkey. Deliberately the same event and not a
+  // parallel path: two ways to start a dictation that go through different code
+  // are two state machines waiting to disagree.
+  ipcMain.on(IPC.petClick, () => dictation.send({ type: 'hotkey', now: Date.now() }))
+  ipcMain.on(IPC.petDragStart, () => startPetDrag())
+  ipcMain.on(IPC.petDragEnd, () => {
+    const placement = endPetDrag()
+    if (!placement) return
+    // Persisted on drop rather than on every frame of the drag: this file is
+    // written synchronously and a 60Hz drag would rewrite it a hundred times.
+    const next = settings.set({ pet: { ...settings.get().pet, placement } })
+    broadcast(IPC.settingsChanged, next)
+  })
 
   ipcMain.handle(IPC.copyDiagnostic, async (_e, at: number) => {
     const d = store.dictations.byAt(at)
@@ -581,6 +612,7 @@ if (!app.requestSingleInstanceLock()) {
 
     registerIpc()
     createHud()
+    applyPetSettings(settings.get().pet)
     createTray(trayDeps)
     registerHotkeys()
     createMainWindow(settings.get().appearance.zoom)

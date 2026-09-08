@@ -62,6 +62,12 @@ const api: WouiceApi = {
   captureFailed: (sessionId: number, reason: string) =>
     ipcRenderer.send(IPC.captureFailed, sessionId, reason),
   cancelDictation: () => ipcRenderer.send(IPC.cancelDictation),
+  petClick: () => ipcRenderer.send(IPC.petClick),
+  petDragStart: () => ipcRenderer.send(IPC.petDragStart),
+  petDragEnd: () => ipcRenderer.send(IPC.petDragEnd),
+  onHudHover: (cb) => subscribe(IPC.hudHover, cb),
+  onHudDragging: (cb) => subscribe(IPC.hudDragging, cb),
+  onHudPlacement: (cb) => subscribe(IPC.hudPlacement, cb),
   onStartCapture: (cb) => {
     // Two arguments, so this cannot use `subscribe`: the microphone travels
     // with the message rather than being fetched separately, which is what
