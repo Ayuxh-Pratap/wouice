@@ -155,15 +155,11 @@ export function Sidebar({
         collapsed ? 'w-[4.5rem]' : 'w-60',
       ].join(' ')}
     >
+      {/* No wordmark here any more: the title bar carries the app's name, and
+          two of them stacked ten pixels apart was the same word twice. */}
       <header
-        className={`flex h-14 items-center ${collapsed ? 'justify-center' : 'justify-between px-2.5'}`}
+        className={`flex h-9 items-center ${collapsed ? 'justify-center' : 'justify-end px-2.5'}`}
       >
-        {!collapsed && (
-          // Padded to sit on the same line as the nav labels below it.
-          <span className="px-3 text-[15px] font-semibold tracking-tight text-neutral-50">
-            Wouice
-          </span>
-        )}
         <button
           onClick={onToggle}
           title={collapsed ? 'Expand' : 'Collapse'}

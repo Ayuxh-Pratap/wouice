@@ -99,8 +99,42 @@ export function sendToHud(channel: string, ...payload: unknown[]): void {
   if (hud && !hud.isDestroyed()) hud.webContents.send(channel, ...payload)
 }
 
+/**
+ * The application ground, in main as well as in the renderer.
+ *
+ * The window is painted before the renderer has loaded anything, so this has to
+ * match `bg-neutral-950` exactly or every launch opens on a flash of a slightly
+ * different dark grey.
+ */
+const GROUND = '#0a0a0a'
+
+/**
+ * Title bar height in CSS pixels at 100%. Stated once here; the renderer reads
+ * it back from `env(titlebar-area-height)` rather than repeating the number.
+ */
+const TITLE_BAR_HEIGHT = 40
+
+/**
+ * The window controls, coloured to disappear into the app.
+ *
+ * `titleBarStyle: 'hidden'` with an overlay rather than `frame: false`. The
+ * native minimise, maximise and close keep working exactly as Windows users
+ * expect - including the Windows 11 snap-layouts flyout that appears on hover
+ * over maximise, which a hand-drawn set of buttons silently loses - while the
+ * strip they sit in becomes ours to draw.
+ */
+function overlay(zoom: number): Parameters<BrowserWindow['setTitleBarOverlay']>[0] {
+  return {
+    color: GROUND,
+    symbolColor: '#a3a3a3',
+    // In window pixels, not CSS pixels. Scaling this with the zoom factor is
+    // what keeps `env(titlebar-area-height)` a constant 40 for the renderer.
+    height: Math.round(TITLE_BAR_HEIGHT * zoom),
+  }
+}
+
 /** History, dictionary, settings, diagnostics. An ordinary window. */
-export function createMainWindow(): BrowserWindow {
+export function createMainWindow(zoom = 1): BrowserWindow {
   if (main && !main.isDestroyed()) {
     main.show()
     main.focus()
@@ -115,16 +149,23 @@ export function createMainWindow(): BrowserWindow {
     show: false,
     title: 'Wouice',
     autoHideMenuBar: true,
-    backgroundColor: '#0b0b0d',
+    backgroundColor: GROUND,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: overlay(zoom),
     webPreferences: {
       preload: PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      zoomFactor: zoom,
     },
   })
 
   main.on('ready-to-show', () => main?.show())
+  // Re-stated after every load. `zoomFactor` in webPreferences applies to the
+  // first document only, and a reload would otherwise fall back to whatever
+  // Chromium remembered for the origin.
+  main.webContents.on('did-finish-load', () => main?.webContents.setZoomFactor(zoom))
   main.on('closed', () => {
     main = null
   })
@@ -137,6 +178,27 @@ export function createMainWindow(): BrowserWindow {
 
   load(main, '/')
   return main
+}
+
+/**
+ * Interface scale.
+ *
+ * WHY THIS IS A SETTING. On a 32-inch monitor the window at 100% is a postage
+ * stamp of 11px labels: the pixels are there, the reading distance is not.
+ * Windows' own display scaling is system-wide, and someone who wants this app
+ * larger does not necessarily want every app larger.
+ *
+ * APPLIED TO THE MAIN WINDOW ONLY. The HUD is a fixed-size overlay positioned
+ * from here in window pixels; zooming its contents would leave the pill drawn
+ * at one size inside a window sized for another.
+ */
+export function applyZoom(zoom: number): void {
+  if (!main || main.isDestroyed()) return
+  main.webContents.setZoomFactor(zoom)
+  // The overlay is measured in window pixels while the renderer measures in CSS
+  // pixels, so without this the buttons and the strip drawn beside them drift
+  // apart by exactly the zoom factor.
+  main.setTitleBarOverlay(overlay(zoom))
 }
 
 export function sendToMain(channel: string, payload: unknown): void {
