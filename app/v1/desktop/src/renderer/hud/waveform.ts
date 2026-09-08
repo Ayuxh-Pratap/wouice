@@ -75,3 +75,16 @@ export function isSilent(w: Waveform): boolean {
 export function heights(w: Waveform, max: number, floor = 2): number[] {
   return w.bars.map((b) => floor + b * Math.max(0, max - floor))
 }
+
+/**
+ * The most recent `n` bars.
+ *
+ * The buffer keeps nearly three seconds, and the bubble beside the pet shows a
+ * shorter slice of it. Two separate numbers on purpose: how much history is
+ * worth keeping is a question about diagnosis, and how much fits beside a small
+ * character is a question about the desk it sits on. Tying them together would
+ * mean narrowing the bubble threw away the evidence.
+ */
+export function tail(w: Waveform, n: number): Waveform {
+  return { ...w, bars: w.bars.slice(Math.max(0, w.bars.length - n)) }
+}

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { HudPlacement, HudState } from '../../shared/ipc.js'
-import { PET_SIZE } from '../../shared/pet.js'
+import type { Settings } from '../../shared/settings.js'
+import { DEFAULT_CHARACTER, DEFAULT_PET_SIZE } from '../../shared/pet.js'
 import { startMic, type MicSession } from '../capture/mic.js'
-import { Capsule } from './Capsule.js'
+import { Bubble } from './Bubble.js'
+import { ThoughtBubble } from './ThoughtBubble.js'
 import { Pet } from './Pet.js'
-import { holdMs, lookOf, splitMessage } from './phase.js'
+import { holdMs, lookOf, outcomeParts, presentation, splitMessage } from './phase.js'
 import { emptyWaveform, pushLevel, type Waveform } from './waveform.js'
 
 /**
@@ -17,6 +19,13 @@ import { emptyWaveform, pushLevel, type Waveform } from './waveform.js'
  * different thing: spike V7 measured a click and a drag on this window leaving
  * both the foreground window and the caret untouched. Settings still live in
  * the main window.
+ *
+ * TWO SHAPES, AND THE PET DECIDES WHICH. With the character on screen, she
+ * carries the state and the words beside her are only ever an outcome. With her
+ * switched off, the readout has to stand on its own again - a single pill along
+ * the bottom of the screen with the waveform, the state and the clock in it,
+ * which is what this was before there was a pet. Someone who turned the
+ * character off did not ask for a smaller character; they asked for none.
  *
  * MAIN DECIDES WHERE IT IS. This component reports a press, a move and a
  * release; it never positions anything and does not know where on the desktop
@@ -32,11 +41,17 @@ export function Hud(): React.JSX.Element {
   const [hovered, setHovered] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [placement, setPlacement] = useState<HudPlacement>({ side: 'right', pet: true })
+  const [settings, setSettings] = useState<Settings | null>(null)
   const mic = useRef<MicSession | null>(null)
 
   useEffect(() => window.wouice.onHudHover(setHovered), [])
   useEffect(() => window.wouice.onHudDragging(setDragging), [])
   useEffect(() => window.wouice.onHudPlacement(setPlacement), [])
+  // Which character to draw. The overlay reads settings for this one thing.
+  useEffect(() => {
+    void window.wouice.getSettings().then(setSettings)
+    return window.wouice.onSettingsChanged(setSettings)
+  }, [])
 
   /**
    * Levels arrive at 50 a second and fold into the waveform.
@@ -149,6 +164,9 @@ export function Hud(): React.JSX.Element {
 
   const look = lookOf(state.phase)
   const { title, detail } = splitMessage(state.message, look.label)
+  // The size and the reason are different kinds of thing and sit in different
+  // places: one is a figure at the end of the line, the other a sentence.
+  const { size, reason } = outcomeParts(detail)
 
   /**
    * The wait, counted here.
@@ -167,16 +185,48 @@ export function Hud(): React.JSX.Element {
     return () => clearInterval(t)
   }, [look.working, state.phase])
 
-  const seconds =
-    state.phase === 'listening'
-      ? `${(state.elapsedMs / 1000).toFixed(1)}s`
-      : look.working && waited > 900
-        ? `${(waited / 1000).toFixed(1)}s`
-        : null
+  /**
+   * The clock, from the first frame of every busy state.
+   *
+   * It used to wait until nearly a second into thinking before appearing, so it
+   * arrived out of nowhere partway through a wait. Starting at 0.0s means it is
+   * simply always there while something is happening, and the eye has nothing
+   * to catch on.
+   */
+  const seconds = look.live
+    ? `${(state.elapsedMs / 1000).toFixed(1)}s`
+    : look.working
+      ? `${(waited / 1000).toFixed(1)}s`
+      : null
 
-  // A finished phase is on screen for a fixed hold, and the capsule is what
+  // A finished phase is on screen for a fixed hold, and the bubble is what
   // carries it; main returns the machine to idle on the same schedule.
   const hold = holdMs(state.phase)
+
+  // The rule lives in `presentation`, with tests, because getting it wrong is
+  // invisible: it renders nothing rather than something wrong.
+  const shows = presentation(look, placement.pet)
+
+  if (!placement.pet) {
+    return (
+      <div
+        className="hud-root flex h-full w-full items-center justify-center overflow-hidden p-2"
+        style={{ ['--hud-hold' as string]: `${hold}ms` }}
+      >
+        {shows === 'pill' && (
+          <Bubble
+            look={look}
+            wave={wave}
+            title={title}
+            size={size}
+            reason={reason}
+            seconds={seconds}
+            side={placement.side}
+          />
+        )}
+      </div>
+    )
+  }
 
   return (
     <div
@@ -197,40 +247,24 @@ export function Hud(): React.JSX.Element {
         onPointerUp={onPointerUp}
         title="Click to dictate, drag to move"
         className={[
-          'shrink-0 transition-opacity duration-300',
+          'shrink-0',
           dragging ? 'cursor-grabbing' : 'cursor-grab',
-          // With the pet switched off the overlay is the capsule alone, parked
-          // along the bottom of the screen the way it used to be.
-          placement.pet ? 'opacity-100' : 'pointer-events-none w-0 opacity-0',
         ].join(' ')}
-        style={placement.pet ? undefined : { width: 0 }}
       >
-        {placement.pet && (
-          <Pet
-            tone={look.tone}
-            level={look.live ? state.level : 0}
-            hovered={hovered}
-            dragging={dragging}
-          />
-        )}
+        <Pet
+          character={settings?.pet.character ?? DEFAULT_CHARACTER}
+          size={settings?.pet.size ?? DEFAULT_PET_SIZE}
+          tone={look.tone}
+          pose={look.pose}
+          hovered={hovered}
+          dragging={dragging}
+        >
+          {shows === 'thought' && (
+            <ThoughtBubble look={look} wave={wave} reason={reason} side={placement.side} />
+          )}
+        </Pet>
       </div>
 
-      <div
-        className={[
-          'flex min-w-0 flex-1 items-center',
-          placement.side === 'left' ? 'justify-start' : 'justify-end',
-        ].join(' ')}
-        style={{ maxWidth: `calc(100% - ${placement.pet ? PET_SIZE : 0}px)` }}
-      >
-        <Capsule
-          look={look}
-          wave={wave}
-          title={title}
-          detail={detail}
-          seconds={seconds}
-          side={placement.side}
-        />
-      </div>
     </div>
   )
 }
