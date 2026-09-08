@@ -170,9 +170,20 @@ export class Injector {
 
     if (snapshot !== null) {
       await new Promise((resolve) => setTimeout(resolve, PASTE_SETTLE_MS))
-      // Only if nothing else has written since: a newer dictation owns the
-      // clipboard now, and restoring over it would undo their work.
-      if (generation === this.generation) {
+      // Two ways the clipboard can stop being ours in that window, and the
+      // restore has to stand down for both.
+      //
+      // A NEWER DICTATION, which bumps the generation. Restoring then would
+      // undo the transcript somebody is about to paste.
+      //
+      // THE USER COPYING SOMETHING, which bumps nothing at all - it happens
+      // outside this process, so no counter here can see it. Only re-reading
+      // can: if the clipboard no longer holds the text we put there, somebody
+      // else owns it and the snapshot is stale. Writing it back would silently
+      // throw away whatever they just copied, which is the exact harm A3
+      // exists to prevent.
+      const stillOurs = generation === this.generation && (await this.readTextSafely()) === text
+      if (stillOurs) {
         try {
           await clipboard.writeText(snapshot)
         } catch {
