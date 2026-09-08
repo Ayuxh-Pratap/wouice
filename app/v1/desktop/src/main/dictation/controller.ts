@@ -70,6 +70,10 @@ export interface CaptureDiagnostics {
   windowMs: number
   chunkAfterMs: number
   chunkPauseMs: number
+  /** Loudest frame and mean speech level seen, against the threshold used. */
+  peakRms: number
+  meanSpeechRms: number
+  thresholdRms: number
 }
 
 export interface ControllerDeps {
@@ -282,6 +286,9 @@ export class DictationController extends EventEmitter {
           this.silence.speechMs >= cfg.adaptAfterMs ? cfg.longWindowMs : cfg.shortWindowMs,
         chunkAfterMs: cfg.chunkAfterMs,
         chunkPauseMs: cfg.chunkPauseMs,
+        peakRms: this.silence.peakRms,
+        meanSpeechRms: this.silence.meanSpeechRms,
+        thresholdRms: cfg.minNoiseFloor * cfg.speechFactor,
       }
       const audioPath = this.deps.retainAudio()
         ? await this.deps.saveAudio(concat(this.sessionAudio))

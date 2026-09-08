@@ -54,6 +54,15 @@ export function formatDiagnostic(d: DictationMetric, index: number): string {
       )} · longest pause ${ms(c.longestPauseMs)} · window ${ms(c.windowMs)}`
     )
   }
+  if (c?.thresholdRms !== undefined) {
+    // Present so a mic whose levels do not suit the threshold is diagnosable
+    // from the export alone, rather than by analysing a WAV by hand.
+    lines.push(
+      `levels     peak ${c.peakRms?.toFixed(5)} · mean speech ${c.meanSpeechRms?.toFixed(
+        5
+      )} · threshold ${c.thresholdRms.toFixed(5)}`
+    )
+  }
   lines.push(`chunking   ${explainChunks(d)}`)
   lines.push(`degraded   ${d.degraded ?? 'no'}`)
   lines.push('```')

@@ -75,6 +75,9 @@ export interface CaptureDiagnostics {
   windowMs: number
   chunkAfterMs: number
   chunkPauseMs: number
+  peakRms?: number
+  meanSpeechRms?: number
+  thresholdRms?: number
 }
 
 export interface ResourceMetric {
