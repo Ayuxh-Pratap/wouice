@@ -113,7 +113,7 @@ function Detail({ d }: { d: DictationRecord }): React.JSX.Element {
       </div>
 
       {d.capture && (
-        <p className="mt-2 rounded-md bg-neutral-900 px-2.5 py-1.5 text-[11px] leading-relaxed text-neutral-400">
+        <p className="mt-2 rounded-md bg-black/25 px-2.5 py-1.5 text-[11px] leading-relaxed text-neutral-400">
           Stopped by <span className="text-neutral-200">{d.capture.stoppedBy}</span> after{' '}
           {ms(d.capture.speechMs)} of speech and {ms(d.capture.silenceMs)} of silence. Longest pause{' '}
           {ms(d.capture.longestPauseMs)}, silence window {ms(d.capture.windowMs)}.
@@ -122,7 +122,7 @@ function Detail({ d }: { d: DictationRecord }): React.JSX.Element {
         </p>
       )}
 
-      <p className="mt-2 rounded-md bg-neutral-900 px-2.5 py-1.5 text-[11px] leading-relaxed text-neutral-400">
+      <p className="mt-2 rounded-md bg-black/25 px-2.5 py-1.5 text-[11px] leading-relaxed text-neutral-400">
         {d.inserted ? (
           <>
             Inserted into <span className="text-neutral-200">{d.targetExe || 'the focused window'}</span>{' '}
@@ -193,21 +193,29 @@ function Detail({ d }: { d: DictationRecord }): React.JSX.Element {
 }
 
 export function DictationTable({
-  refreshKey,
   developerMode,
+  query = '',
 }: {
-  /** Bumped when a new dictation lands, so the current page reloads. */
-  refreshKey: number
   developerMode: boolean
+  /** A term arriving from the sidebar search, via the hash. */
+  query?: string
 }): React.JSX.Element {
   const [rows, setRows] = useState<DictationRecord[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(0)
   const [size, setSize] = useState(20)
-  const [search, setSearch] = useState('')
-  const [applied, setApplied] = useState('')
+  const [search, setSearch] = useState(query)
+  const [applied, setApplied] = useState(query)
   const [openAt, setOpenAt] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
+
+  // A search from the rail arrives as a navigation, so adopt it when it changes
+  // - but only then, or every keystroke typed here would be overwritten.
+  useEffect(() => {
+    setSearch(query)
+    setApplied(query)
+    setPage(0)
+  }, [query])
 
   // Debounced: typing a word should not fire a query per keystroke.
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -233,7 +241,11 @@ export function DictationTable({
       .finally(() => setLoading(false))
   }, [page, size, applied])
 
-  useEffect(load, [load, refreshKey])
+  useEffect(load, [load])
+
+  // Reload the page in view when a dictation lands, so the newest one appears
+  // without anyone reaching for a refresh.
+  useEffect(() => window.wouice.onMetric(load), [load])
 
   const pages = Math.max(1, Math.ceil(total / size))
   // A filter that shrinks the result set can strand you on a page past the end.
@@ -244,11 +256,12 @@ export function DictationTable({
   const firstIndex = total - page * size
 
   return (
-    <section className="rounded-xl bg-neutral-900 ring-1 ring-white/10">
+    <section className="lift rounded-xl bg-white/[0.035] ring-1 ring-white/[0.08]">
       <header className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div>
-          <h3 className="text-[13px] font-semibold text-neutral-100">Dictations</h3>
-          <p className="text-[11px] text-neutral-500">
+          {/* No heading here: the page it sits on is already called Dictations,
+              and two identical titles a centimetre apart is just noise. */}
+          <p className="text-[12px] text-neutral-400">
             {total === 0
               ? 'Nothing yet.'
               : applied

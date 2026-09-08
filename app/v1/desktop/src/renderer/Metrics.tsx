@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { MetricsSnapshot } from '../shared/ipc.js'
-import { DictationTable } from './DictationTable.js'
 import {
   ChartFrame,
   CompareBars,
@@ -32,20 +31,15 @@ const EMPTY: MetricsSnapshot = {
   byAsrModel: [],
 }
 
-export function Metrics({ developerMode }: { developerMode: boolean }): React.JSX.Element {
+export function Metrics(): React.JSX.Element {
   const [snap, setSnap] = useState<MetricsSnapshot>(EMPTY)
-  // Bumped on every new dictation so the table reloads the page it is showing.
-  const [tick, setTick] = useState(0)
 
   useEffect(() => {
     const load = (): void => {
       void window.wouice.getMetrics().then(setSnap)
     }
     load()
-    const off = window.wouice.onMetric(() => {
-      load()
-      setTick((n) => n + 1)
-    })
+    const off = window.wouice.onMetric(load)
     // Resource samples arrive on their own cadence; a slow poll keeps the VRAM
     // line moving without pushing an IPC message per sample.
     const timer = setInterval(load, 5_000)
@@ -139,8 +133,6 @@ export function Metrics({ developerMode }: { developerMode: boolean }): React.JS
           labels={['ASR', 'LLM']}
         />
       </ChartFrame>
-
-      <DictationTable refreshKey={tick} developerMode={developerMode} />
     </div>
   )
 }
