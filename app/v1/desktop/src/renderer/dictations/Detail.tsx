@@ -13,18 +13,24 @@ import { describeDelivery, explainChunks, finalText, hasStages, stagesOf, type S
  * first now, at a size you can read, with the one button anybody wants next to
  * it. The pipeline is still all here, one disclosure further down.
  *
- * ONE STEP OF DEPTH, NOT THREE. The old panel used `neutral-950/40` for its
- * background, `neutral-950/60` for stage text and `black/25` for the notes,
- * which are three shades of almost the same dark and read as smudges rather
- * than as structure. The expanded region is now a single inset well below the
- * row, and everything raised inside it sits at one level above that.
+ * IT IS A CARD, NOT A HOLE. The first version tinted the opened region darker
+ * than the table around it, which landed it on almost exactly the colour of the
+ * page behind the table - so the row appeared to open a hole straight through
+ * to the background, and the two surfaces read as one. It is a raised card
+ * sitting in a recessed gutter now: lighter than the rows above it, ringed, and
+ * unambiguously in front of everything else on the page.
+ *
+ * NOTHING OVERFLOWS. The facts wrap, the button has a fixed place in the header
+ * rather than floating to the end of whichever line it lands on, and every
+ * block that can hold a path or an executable name breaks words rather than
+ * pushing the table wider than the window.
  */
 
 function Chip({ label, value }: { label: string; value: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="flex items-baseline gap-1.5">
+    <div className="flex min-w-0 items-baseline gap-1.5">
       <span className="text-[10px] tracking-wide text-neutral-600 uppercase">{label}</span>
-      <span className="font-mono text-[11px] text-neutral-300 tabular-nums">{value}</span>
+      <span className="truncate font-mono text-[11px] text-neutral-300 tabular-nums">{value}</span>
     </div>
   )
 }
@@ -39,7 +45,7 @@ function Note({
   return (
     <p
       className={[
-        'rounded-lg px-3 py-2 text-[11px] leading-relaxed',
+        'rounded-lg px-3 py-2 text-[11px] leading-relaxed break-words',
         tone === 'warn'
           ? 'bg-amber-500/10 text-amber-200 ring-1 ring-amber-500/20'
           : 'bg-white/[0.03] text-neutral-400 ring-1 ring-white/[0.06]',
@@ -84,14 +90,14 @@ function StageRow({ stage }: { stage: Stage }): React.JSX.Element {
       </div>
 
       {open || empty ? (
-        <p className="min-w-0 rounded-lg bg-black/25 px-3 py-2 text-[12px] leading-relaxed break-words text-neutral-300 ring-1 ring-white/[0.05]">
+        <p className="min-w-0 rounded-lg bg-black/30 px-3 py-2 text-[12px] leading-relaxed break-words text-neutral-300 ring-1 ring-white/[0.05]">
           {empty ? <span className="text-neutral-600">(empty)</span> : stage.text}
         </p>
       ) : (
         <button
           onClick={() => setOpen(true)}
           title={stage.hint}
-          className="min-w-0 rounded-lg bg-black/15 px-3 py-2 text-left text-[11px] text-neutral-600 ring-1 ring-white/[0.04] transition hover:bg-black/25 hover:text-neutral-400"
+          className="min-w-0 rounded-lg bg-black/20 px-3 py-2 text-left text-[11px] text-neutral-600 ring-1 ring-white/[0.04] transition hover:bg-black/30 hover:text-neutral-400"
         >
           {stage.bulky ? 'Show the instruction' : 'Identical to the stage above · show'}
         </button>
@@ -126,28 +132,31 @@ export function Detail({
   const text = finalText(d)
 
   return (
-    <td colSpan={7} className="bg-black/25 px-4 py-4">
-      {/* The text, at a size meant for reading rather than for scanning. */}
-      <p className="text-[13px] leading-relaxed break-words text-neutral-200">
-        {text || <span className="text-neutral-600">(no text was kept for this one)</span>}
-      </p>
-
-      <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
-        <Chip label="audio" value={`${(d.audioMs / 1000).toFixed(1)}s`} />
-        <Chip label="took" value={formatMs(d.asrMs + d.llmMs)} />
-        <Chip label="language" value={d.language} />
-        {developerMode && (
-          <>
-            <Chip label="asr" value={formatMs(d.asrMs)} />
-            <Chip label="cleanup" value={d.llmMs ? formatMs(d.llmMs) : 'skipped'} />
-            <Chip label="chunks" value={d.chunks} />
-            <Chip label="models" value={`${d.asrModel} + ${d.llmModel}`} />
-          </>
-        )}
-        <div className="ml-auto">
+    <td colSpan={7} className="bg-black/20 p-3">
+      <div className="lift min-w-0 rounded-xl bg-white/[0.05] px-4 py-3.5 ring-1 ring-white/[0.09]">
+        {/* The text and the one button anybody wants, on one line. The button
+            has a fixed corner rather than being pushed to the end of a wrapping
+            row, where it ends up somewhere different on every dictation. */}
+        <div className="flex items-start justify-between gap-4">
+          <p className="min-w-0 flex-1 text-[13px] leading-relaxed break-words text-neutral-100">
+            {text || <span className="text-neutral-600">(no text was kept for this one)</span>}
+          </p>
           <CopyButton at={d.at} />
         </div>
-      </div>
+
+        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2">
+          <Chip label="audio" value={`${(d.audioMs / 1000).toFixed(1)}s`} />
+          <Chip label="took" value={formatMs(d.asrMs + d.llmMs)} />
+          <Chip label="language" value={d.language} />
+          {developerMode && (
+            <>
+              <Chip label="asr" value={formatMs(d.asrMs)} />
+              <Chip label="cleanup" value={d.llmMs ? formatMs(d.llmMs) : 'skipped'} />
+              <Chip label="chunks" value={d.chunks} />
+              <Chip label="models" value={`${d.asrModel} + ${d.llmModel}`} />
+            </>
+          )}
+        </div>
 
       <div className="mt-3 space-y-2">
         <Note>{describeDelivery(d)}</Note>
@@ -210,6 +219,7 @@ export function Detail({
             ))}
         </div>
       )}
+      </div>
     </td>
   )
 }

@@ -17,6 +17,15 @@ import { finalText } from './stages.js'
  * Paging happens in SQL rather than by slicing a loaded array, so the cost of
  * opening page 40 is the same as opening page 1.
  *
+ * IT DROPS COLUMNS RATHER THAN SCROLLING SIDEWAYS. A 44rem minimum width and
+ * `overflow-x-auto` is a scrollbar at the foot of an 876px-tall element inside
+ * a scrolling panel: it exists, and nobody will ever reach it, so the practical
+ * effect is a table with its right-hand columns cut off. The index and the
+ * audio length are the two least load-bearing things here, so they leave first
+ * as the panel narrows - which happens from the window size, the interface
+ * scale and the rail being expanded, so the query is on the CONTAINER and not
+ * on the viewport.
+ *
  * ROWS CAN BE DELETED. This is a recording of somebody's own voice and the text
  * they dictated with it; being unable to remove any of it from inside the app
  * that collected it was the wrong default. Selection is per row with a
@@ -250,8 +259,8 @@ export function DictationTable({
         </div>
       </header>
 
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[44rem] border-collapse text-left">
+      <div className="@container overflow-x-auto">
+        <table className="w-full min-w-[20rem] border-collapse text-left">
           <thead>
             <tr className="border-y border-white/5 text-[10px] tracking-wide text-neutral-500 uppercase">
               <th className="w-9 pl-4">
@@ -262,10 +271,12 @@ export function DictationTable({
                   label="Select every dictation on this page"
                 />
               </th>
-              <th className="w-12 px-3 py-1.5 font-medium">#</th>
+              <th className="hidden w-12 px-3 py-1.5 font-medium @2xl:table-cell">#</th>
               <th className="w-32 px-3 py-1.5 font-medium">When</th>
               <th className="px-3 py-1.5 font-medium">Text</th>
-              <th className="w-16 px-3 py-1.5 text-right font-medium">Audio</th>
+              <th className="hidden w-16 px-3 py-1.5 text-right font-medium @xl:table-cell">
+                Audio
+              </th>
               <th className="w-16 px-3 py-1.5 text-right font-medium">Took</th>
               <th className="w-8 px-3 py-1.5" />
             </tr>
@@ -301,7 +312,7 @@ export function DictationTable({
                         label={`Select the dictation from ${new Date(d.at).toLocaleString()}`}
                       />
                     </td>
-                    <td className="px-3 py-2 font-mono text-[10px] text-neutral-600">
+                    <td className="hidden px-3 py-2 font-mono text-[10px] text-neutral-600 @2xl:table-cell">
                       {firstIndex - i}
                     </td>
                     <td className="px-3 py-2 font-mono text-[10px] whitespace-nowrap text-neutral-500">
@@ -322,7 +333,7 @@ export function DictationTable({
                         </span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-right font-mono text-[10px] tabular-nums text-neutral-500">
+                    <td className="hidden px-3 py-2 text-right font-mono text-[10px] tabular-nums text-neutral-500 @xl:table-cell">
                       {(d.audioMs / 1000).toFixed(1)}s
                     </td>
                     <td className="px-3 py-2 text-right font-mono text-[10px] tabular-nums text-neutral-400">
