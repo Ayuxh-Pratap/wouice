@@ -301,6 +301,42 @@ export class Dictations {
     return { deleted: Number(deleted), audioPaths }
   }
 
+  /**
+   * The oldest dictation nobody has passed judgement on yet, and how many are
+   * left.
+   *
+   * OLDEST FIRST, deliberately. Rating is a sitting worked through in order,
+   * and starting from the newest means the queue reshuffles under you every
+   * time you dictate something while you are part-way through it.
+   *
+   * The subquery names the ratings table, which is the only thing this repo
+   * knows about it. The alternative - asking the ratings repo and joining the
+   * text back on afterwards - would mean a second copy of the row mapping for
+   * no gain.
+   */
+  nextUnrated(): { next: DictationRecord | null; remaining: number } {
+    const found = row<Row>(
+      this.db.raw
+        .prepare(
+          `SELECT ${COLUMNS} FROM dictations d
+           WHERE NOT EXISTS (SELECT 1 FROM ratings r WHERE r.dictation_at = d.at)
+           ORDER BY d.at ASC LIMIT 1`
+        )
+        .get()
+    )
+    const remaining = Number(
+      row<{ n: number }>(
+        this.db.raw
+          .prepare(
+            `SELECT COUNT(*) AS n FROM dictations d
+             WHERE NOT EXISTS (SELECT 1 FROM ratings r WHERE r.dictation_at = d.at)`
+          )
+          .get()
+      )?.n ?? 0
+    )
+    return { next: found ? toRecord(found) : null, remaining }
+  }
+
   /** Newest first, for the charts. Bounded: the charts show tens, not thousands. */
   recent(limit = 60): DictationRecord[] {
     return rows<Row>(

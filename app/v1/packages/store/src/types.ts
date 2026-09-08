@@ -128,3 +128,27 @@ export interface DictionaryRecord {
   hits: number
   createdAt: number
 }
+
+/**
+ * Your verdict on one dictation. See `Ratings` and acceptance criterion A4.
+ */
+export interface RatingRecord {
+  dictationAt: number
+  /** Would you have shipped this text as it came out? */
+  ship: boolean
+  /** Optional, and the valuable half of a "no". */
+  note: string
+  at: number
+}
+
+/** How far along A4 is, counted in SQL over everything rated. */
+export interface RatingProgress {
+  rated: number
+  shipped: number
+  /** The same two counts over the non-English dictations A4 actually asks about. */
+  hinglishRated: number
+  hinglishShipped: number
+  sampleTarget: number
+  shipTarget: number
+  met: boolean
+}

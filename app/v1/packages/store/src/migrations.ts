@@ -167,6 +167,31 @@ export const MIGRATIONS: Migration[] = [
       CREATE UNIQUE INDEX dictionary_unique ON dictionary (kind, hear);
     `,
   },
+  {
+    id: 5,
+    name: 'your verdict on each dictation',
+    sql: `
+      -- A4 in the spec: twenty Hinglish samples, at least seventeen rated
+      -- "would ship this text as-is". It is the one acceptance criterion no
+      -- benchmark can answer, because it asks whether the output was good
+      -- enough for the person who said it - and that judgement only exists if
+      -- somewhere records it.
+      --
+      -- Keyed on the dictation's timestamp rather than its row id, which is
+      -- what every other reference in this app already uses, and made the
+      -- primary key so that changing your mind updates the verdict instead of
+      -- appending a second one.
+      CREATE TABLE ratings (
+        dictation_at INTEGER PRIMARY KEY
+                     REFERENCES dictations (at) ON DELETE CASCADE,
+        -- 1 = would have shipped this text as it came out.
+        ship         INTEGER NOT NULL,
+        -- Optional, and the valuable half of a "no": what was wrong with it.
+        note         TEXT    NOT NULL DEFAULT '',
+        at           INTEGER NOT NULL
+      );
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */

@@ -104,6 +104,9 @@ describe('migrations', () => {
       first.raw.exec('ALTER TABLE dictations DROP COLUMN target_exe')
       first.raw.exec('ALTER TABLE dictations DROP COLUMN delivery_note')
       first.raw.exec('DROP TABLE dictionary')
+      // Every table added after version 2 has to go, or the migration that
+      // creates it runs against one that is already there and throws.
+      first.raw.exec('DROP TABLE ratings')
       first.raw
         .prepare(
           `INSERT INTO dictations (at, audio_ms, asr_ms, llm_ms, total_ms, chunks,
@@ -584,7 +587,13 @@ describe('stats', () => {
     const names = stats(db, ':memory:').tables.map((t) => t.name)
     expect(names.some((n) => n.startsWith('sqlite_'))).toBe(false)
     expect(names.some((n) => n.includes('_fts'))).toBe(false)
-    expect(names).toEqual(['calibrations', 'dictations', 'dictionary', 'resource_samples'])
+    expect(names).toEqual([
+      'calibrations',
+      'dictations',
+      'dictionary',
+      'ratings',
+      'resource_samples',
+    ])
     db.close()
   })
 
