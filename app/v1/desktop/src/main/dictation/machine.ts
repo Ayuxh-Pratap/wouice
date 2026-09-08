@@ -160,6 +160,16 @@ export function reduce(
           action: { type: 'scheduleErrorClear', delayMs: ERROR_VISIBLE_MS },
         }
       }
+      // Escape here cannot un-paste anything - the text has already gone - but
+      // A6 says Escape ALWAYS returns to idle, and this was the one phase where
+      // it did nothing for the second and a half the result stays on screen.
+      // Dismissing the readout early is the honest reading of "always".
+      if (event.type === 'escape') {
+        return {
+          state: { ...initialDictationState(), sessionId: state.sessionId },
+          action: { type: 'none' },
+        }
+      }
       return { state, action: { type: 'none' } }
 
     case 'error':

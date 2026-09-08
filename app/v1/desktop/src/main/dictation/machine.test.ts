@@ -233,3 +233,58 @@ describe('events that should do nothing', () => {
     }
   })
 })
+
+describe('A6: Escape always returns to idle', () => {
+  /** Drive the machine to each phase it can be in, by name. */
+  const into: Record<string, DictationEvent[]> = {
+    idle: [],
+    arming: [hotkey()],
+    listening: [hotkey(), { type: 'micReady' }],
+    transcribing: [hotkey(), { type: 'micReady' }, { type: 'silenceStop' }],
+    delivering: [hotkey(), { type: 'micReady' }, { type: 'silenceStop' }, { type: 'transcribed' }],
+    error: [
+      hotkey(),
+      { type: 'micReady' },
+      { type: 'silenceStop' },
+      { type: 'failed', reason: 'the recogniser fell over' },
+    ],
+  }
+
+  it('reaches every phase the machine has, so the sweep below is exhaustive', () => {
+    // If a phase is added and not listed here, this fails rather than the sweep
+    // quietly testing five of six.
+    for (const [phase, events] of Object.entries(into)) {
+      expect(drive(events).state.phase).toBe(phase)
+    }
+  })
+
+  it('returns to idle from every one of them', () => {
+    // "Always" is the word in the spec. Delivering used to be the exception -
+    // Escape did nothing for the second and a half a result stays on screen.
+    for (const [phase, events] of Object.entries(into)) {
+      const { state } = drive([...events, { type: 'escape' }])
+      expect(state.phase, `escape from ${phase}`).toBe('idle')
+    }
+  })
+
+  it('leaves nothing capturing or busy afterwards', () => {
+    // The orphaned-mic-handle half of A6: the state the app reports has to
+    // agree that nothing is running, or the HUD stays up and the mic stays open.
+    for (const [phase, events] of Object.entries(into)) {
+      const { state } = drive([...events, { type: 'escape' }])
+      expect(isCapturing(state), `capturing after escape from ${phase}`).toBe(false)
+      expect(isBusy(state), `busy after escape from ${phase}`).toBe(false)
+    }
+  })
+
+  it('discards rather than finishes whenever audio was still being held', () => {
+    // Cancelling has to throw the audio away. Finishing it would transcribe
+    // something the user explicitly abandoned.
+    for (const phase of ['arming', 'listening']) {
+      const { actions } = drive([...into[phase]!, { type: 'escape' }])
+      expect(actions[actions.length - 1], `escape from ${phase}`).toMatchObject({
+        type: 'discard',
+      })
+    }
+  })
+})
