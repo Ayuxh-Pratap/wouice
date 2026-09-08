@@ -1,4 +1,5 @@
 import type { SidecarId } from './models.js'
+import { DEFAULT_PLACEMENT, type PetPlacement } from './pet.js'
 
 /**
  * Silence detection and chunking parameters.
@@ -110,6 +111,25 @@ export interface Settings {
   injection: InjectionConfig
   audio: AudioConfig
   appearance: AppearanceConfig
+  pet: PetConfig
+}
+
+/**
+ * The thing on the desktop.
+ *
+ * WHY IT IS A CHOICE. A character parked on top of everything is either a
+ * companion or an obstruction depending on the screen it is on and the person
+ * looking at it, and there is no answer that is right for both. Off puts the
+ * overlay back to how it behaved before: invisible until you press the hotkey,
+ * bottom-centre while it works, gone again afterwards.
+ *
+ * The hotkey is unaffected either way. Clicking the pet is an additional way
+ * in, never the only one.
+ */
+export interface PetConfig {
+  enabled: boolean
+  /** Where it is parked. See `PetPlacement` - fractions, not pixels. */
+  placement: PetPlacement
 }
 
 /**
@@ -223,6 +243,7 @@ export const DEFAULT_SETTINGS: Settings = {
   injection: { enabled: true, pasteOverrides: {} },
   audio: { deviceId: null, deviceLabel: '' },
   appearance: { zoom: 1 },
+  pet: { enabled: true, placement: DEFAULT_PLACEMENT },
 }
 
 /**

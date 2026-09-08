@@ -69,6 +69,13 @@ export class SettingsStore {
         // hand-editable, and a zoom of 40 in it would leave a window nobody
         // could reach the settings screen inside to fix.
         appearance: { zoom: clampZoom(raw.appearance?.zoom ?? DEFAULT_SETTINGS.appearance.zoom) },
+        pet: {
+          enabled: raw.pet?.enabled ?? DEFAULT_SETTINGS.pet.enabled,
+          // Not clamped here: `petRect` cannot express an off-screen position
+          // whatever it is handed, so the clamp lives with the arithmetic that
+          // needs it rather than being repeated at every entry point.
+          placement: { ...DEFAULT_SETTINGS.pet.placement, ...raw.pet?.placement },
+        },
       }
     } catch {
       // A hand-edited file with a trailing comma must not brick the app.
