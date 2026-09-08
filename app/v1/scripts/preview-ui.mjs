@@ -27,6 +27,7 @@ const PORT = Number(process.env.PORT ?? 8787)
 const STUB = `<script>
   // Stand-in for the preload bridge. Shapes only - see shared/ipc.ts.
   const noop = () => () => {}
+  const settingsListeners = new Set()
   const settings = {
     hotkeys: { dictate: 'Control+Alt+W', meeting: 'Control+Alt+M', companion: 'Control+Alt+C' },
     models: { whisper: 'turbo', llama: 'qwen3-4b' },
@@ -68,7 +69,14 @@ const STUB = `<script>
     deleteDictations: async () => 0,
     clearDictations: async () => 0,
     getSettings: async () => settings,
-    setSettings: async (p) => Object.assign(settings, p),
+    // Echoed back to the listeners, the way main does. Without this the preview
+    // shows every settings control as inert: the value is stored and nothing
+    // re-renders, which looks exactly like a broken control.
+    setSettings: async (p) => {
+      Object.assign(settings, p)
+      for (const fn of settingsListeners) fn({ ...settings })
+      return settings
+    },
     getSidecars: async () => [
       { id: 'whisper', status: 'ready', modelId: 'turbo', pendingModelId: null, port: 8178, pid: 1234, lastError: null },
       { id: 'llama', status: 'ready', modelId: 'qwen3-4b', pendingModelId: null, port: 8179, pid: 5678, lastError: null },
@@ -109,7 +117,11 @@ const STUB = `<script>
     calibrate: async () => ({}), calibrateApply: async () => {},
     sendAudioFrame: () => {}, captureReady: () => {}, captureFailed: () => {}, cancelDictation: () => {},
     onStartCapture: noop, onStopCapture: noop, onMetric: noop, onDictationResult: noop,
-    onSidecarState: noop, onSettingsChanged: noop, onHudState: noop, onHotkeyFailed: noop,
+    onSidecarState: noop, onHudState: noop, onHotkeyFailed: noop,
+    onSettingsChanged: (fn) => {
+      settingsListeners.add(fn)
+      return () => settingsListeners.delete(fn)
+    },
   }
 </script>
 `
