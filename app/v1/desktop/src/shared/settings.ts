@@ -109,6 +109,56 @@ export interface Settings {
   calibration: CalibrationRecord | null
   injection: InjectionConfig
   audio: AudioConfig
+  appearance: AppearanceConfig
+}
+
+/**
+ * How large the interface is drawn.
+ *
+ * A multiplier on the main window, not a theme and not a font size. It exists
+ * because screen size and reading distance are not the same thing: the same
+ * 1040x720 window is comfortable on a 14-inch laptop and unreadable on a
+ * 32-inch monitor two feet further back, and Windows' own display scaling is
+ * all-or-nothing across every application on the machine.
+ */
+export interface AppearanceConfig {
+  /** 1 is 100%. Clamped to `ZOOM_RANGE` on the way in, from any source. */
+  zoom: number
+}
+
+/**
+ * The offered scales.
+ *
+ * Shown as whole percentages and never as a decimal: 1.25 is a number about the
+ * implementation, 125% is a number about the screen.
+ */
+export const ZOOM_STEPS = [0.9, 1, 1.1, 1.25, 1.5, 1.75] as const
+
+export const ZOOM_RANGE = { min: 0.8, max: 2 } as const
+
+export function clampZoom(zoom: number): number {
+  if (!Number.isFinite(zoom)) return 1
+  return Math.min(ZOOM_RANGE.max, Math.max(ZOOM_RANGE.min, zoom))
+}
+
+export function zoomLabel(zoom: number): string {
+  return `${Math.round(zoom * 100)}%`
+}
+
+/**
+ * The next scale up or down, for the keyboard shortcuts.
+ *
+ * Steps through the offered list rather than multiplying by a constant, so a
+ * press always lands on a value the settings screen can show as selected. A
+ * hand-edited zoom sitting between two steps moves to the nearest one in the
+ * requested direction, rather than being snapped in place - which would look
+ * like the key press did nothing.
+ */
+export function stepZoom(zoom: number, direction: 1 | -1): number {
+  const steps: readonly number[] = ZOOM_STEPS
+  const last = steps[steps.length - 1]!
+  if (direction === 1) return steps.find((s) => s > zoom + 1e-6) ?? last
+  return [...steps].reverse().find((s) => s < zoom - 1e-6) ?? steps[0]!
 }
 
 /**
@@ -172,6 +222,7 @@ export const DEFAULT_SETTINGS: Settings = {
   calibration: null,
   injection: { enabled: true, pasteOverrides: {} },
   audio: { deviceId: null, deviceLabel: '' },
+  appearance: { zoom: 1 },
 }
 
 /**

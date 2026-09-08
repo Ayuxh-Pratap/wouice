@@ -3,8 +3,13 @@ import {
   DEFAULT_SETTINGS,
   DEFAULT_SILENCE,
   PAUSE_PRESETS,
+  ZOOM_RANGE,
+  ZOOM_STEPS,
   applyPausePreset,
+  clampZoom,
   pausePresetOf,
+  stepZoom,
+  zoomLabel,
 } from './settings.js'
 
 describe('pause presets', () => {
@@ -65,5 +70,37 @@ describe('defaults', () => {
   it('ships the models the matrix measured as best', () => {
     expect(DEFAULT_SETTINGS.models.whisper).toBe('turbo')
     expect(DEFAULT_SETTINGS.models.llama).toBe('qwen3-4b')
+  })
+})
+
+describe('interface scale', () => {
+  it('reads as a whole percentage, never a decimal', () => {
+    expect(zoomLabel(1)).toBe('100%')
+    expect(zoomLabel(1.25)).toBe('125%')
+    expect(zoomLabel(0.9)).toBe('90%')
+  })
+
+  it('clamps anything a hand-edited file could contain', () => {
+    expect(clampZoom(40)).toBe(ZOOM_RANGE.max)
+    expect(clampZoom(0)).toBe(ZOOM_RANGE.min)
+    expect(clampZoom(Number.NaN)).toBe(1)
+    expect(clampZoom(1.25)).toBe(1.25)
+  })
+
+  it('steps through the offered scales in both directions', () => {
+    expect(stepZoom(1, 1)).toBe(1.1)
+    expect(stepZoom(1, -1)).toBe(0.9)
+  })
+
+  it('moves a hand-edited value to the nearest step, rather than doing nothing', () => {
+    expect(stepZoom(1.2, 1)).toBe(1.25)
+    expect(stepZoom(1.2, -1)).toBe(1.1)
+  })
+
+  it('stops at the ends instead of wrapping', () => {
+    const lowest = ZOOM_STEPS[0]!
+    const highest = ZOOM_STEPS[ZOOM_STEPS.length - 1]!
+    expect(stepZoom(lowest, -1)).toBe(lowest)
+    expect(stepZoom(highest, 1)).toBe(highest)
   })
 })

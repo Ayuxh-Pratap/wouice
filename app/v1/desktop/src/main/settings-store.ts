@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import path from 'node:path'
-import { DEFAULT_SETTINGS, type Settings } from '../shared/settings.js'
+import { DEFAULT_SETTINGS, clampZoom, type Settings } from '../shared/settings.js'
 
 /**
  * Settings as a single JSON file in userData.
@@ -65,6 +65,10 @@ export class SettingsStore {
         calibration: raw.calibration ?? null,
         injection: { ...DEFAULT_SETTINGS.injection, ...raw.injection },
         audio: { ...DEFAULT_SETTINGS.audio, ...raw.audio },
+        // Clamped on read, not only on write: this file is meant to be
+        // hand-editable, and a zoom of 40 in it would leave a window nobody
+        // could reach the settings screen inside to fix.
+        appearance: { zoom: clampZoom(raw.appearance?.zoom ?? DEFAULT_SETTINGS.appearance.zoom) },
       }
     } catch {
       // A hand-edited file with a trailing comma must not brick the app.
