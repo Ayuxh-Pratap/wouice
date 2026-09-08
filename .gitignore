@@ -5,9 +5,13 @@ build/
 .vite/
 *.log
 
-# large binaries and weights, never committed
-sidecars/
-models/
+# Large binaries and weights, never committed.
+# ANCHORED with a leading slash. Unanchored `sidecars/` matches at ANY depth,
+# which silently excluded app/v1/desktop/src/main/sidecars/ (the whole supervisor
+# implementation) from the repo. git status does not report ignored files, so
+# nothing pointed at it. Same trap applies to models/.
+/sidecars/
+/models/
 *.gguf
 *.bin
 *.onnx
