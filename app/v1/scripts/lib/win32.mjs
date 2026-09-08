@@ -50,6 +50,55 @@ const QueryFullProcessImageNameW = kernel32.func('__stdcall', 'QueryFullProcessI
   koffi.inout(koffi.pointer('uint32_t')),
 ])
 const CloseHandle = kernel32.func('__stdcall', 'CloseHandle', 'bool', ['void *'])
+const GetCurrentProcess = kernel32.func('__stdcall', 'GetCurrentProcess', 'void *', [])
+const advapi32 = koffi.load('advapi32.dll')
+const OpenProcessToken = advapi32.func('__stdcall', 'OpenProcessToken', 'bool', [
+  'void *',
+  'uint32_t',
+  koffi.out(koffi.pointer('void *')),
+])
+const GetTokenInformation = advapi32.func('__stdcall', 'GetTokenInformation', 'bool', [
+  'void *',
+  'int',
+  koffi.out(koffi.pointer('uint8_t')),
+  'uint32_t',
+  koffi.out(koffi.pointer('uint32_t')),
+])
+
+const TOKEN_QUERY = 0x0008
+/** TOKEN_INFORMATION_CLASS::TokenElevation */
+const TOKEN_ELEVATION = 20
+
+/**
+ * Is this process running elevated?
+ *
+ * Matters because Windows silently drops synthetic input sent from a lower
+ * integrity level to a higher one - `SendInput` reports success and nothing
+ * arrives. Detecting it is the difference between saying so and losing someone's
+ * dictation with no explanation.
+ *
+ * Returns null when the answer cannot be determined, which callers must treat
+ * as "assume it might be", not as "no".
+ */
+export function isProcessElevated(pid) {
+  const handle =
+    pid === 0 ? GetCurrentProcess() : OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+  if (!handle) return null
+
+  let result = null
+  const tokenBuf = Buffer.alloc(8)
+  if (OpenProcessToken(handle, TOKEN_QUERY, tokenBuf)) {
+    const token = koffi.decode(tokenBuf, 'void *')
+    const info = Buffer.alloc(4)
+    const returned = Buffer.alloc(4)
+    if (GetTokenInformation(token, TOKEN_ELEVATION, info, 4, returned)) {
+      result = info.readUInt32LE(0) !== 0
+    }
+    CloseHandle(token)
+  }
+  if (pid !== 0) CloseHandle(handle)
+  return result
+}
 
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
