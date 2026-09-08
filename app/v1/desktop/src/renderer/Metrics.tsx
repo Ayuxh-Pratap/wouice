@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { DictationMetric, ResourceMetric } from '../shared/ipc.js'
+import { DictationLog } from './DictationLog.js'
 import {
   ChartFrame,
   CompareBars,
@@ -19,7 +20,7 @@ function percentile(values: number[], p: number): number {
   return sorted[i] ?? 0
 }
 
-export function Metrics(): React.JSX.Element {
+export function Metrics({ developerMode }: { developerMode: boolean }): React.JSX.Element {
   const [dictations, setDictations] = useState<DictationMetric[]>([])
   const [resources, setResources] = useState<ResourceMetric[]>([])
 
@@ -123,6 +124,8 @@ export function Metrics(): React.JSX.Element {
           labels={['ASR', 'LLM']}
         />
       </ChartFrame>
+
+      {developerMode && <DictationLog dictations={dictations} />}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <ChartFrame

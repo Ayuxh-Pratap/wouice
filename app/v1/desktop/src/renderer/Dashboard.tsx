@@ -178,7 +178,7 @@ export function Dashboard(): React.JSX.Element {
       </div>
 
       <div className="mt-6">
-        <Metrics />
+        <Metrics developerMode={settings?.developerMode ?? true} />
       </div>
 
       {diag && (
