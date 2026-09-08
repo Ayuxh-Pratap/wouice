@@ -1,5 +1,12 @@
 export { OpenAiCompatClient, type OpenAiCompatConfig } from './client.js'
 export {
+  cleanupBudget,
+  estimateCleanupMs,
+  estimateTokens,
+  type CleanupBudget,
+} from './budget.js'
+export { consumeSse, type SseProgress } from './stream.js'
+export {
   DICTATION_CLEANUP_SYSTEM,
   isPlausibleCleanup,
   containsDevanagari,
