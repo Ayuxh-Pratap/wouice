@@ -1,6 +1,7 @@
 import { BrowserWindow, screen, shell } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { hideFromAltTab } from './injection/win32.js'
 import {
   DEFAULT_PET_SIZE,
   STAGE_OVERHANG,
@@ -111,6 +112,11 @@ export function createHud(): BrowserWindow {
   // Float above fullscreen apps too; dictation happens everywhere.
   hud.setAlwaysOnTop(true, 'screen-saver')
   hud.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // Out of Alt+Tab as well as out of the taskbar. `skipTaskbar` only does the
+  // latter - Electron implements it through ITaskbarList - and measuring the
+  // running app showed the overlay was the one window of Electron's four
+  // missing WS_EX_TOOLWINDOW, which is what Alt+Tab keys off.
+  hideFromAltTab(hud.getNativeWindowHandle())
   // Click-through by DEFAULT, not always: the stage is 432px wide and almost
   // entirely empty, so a window that swallowed clicks everywhere would be a
   // dead patch of desktop. `forward: true` keeps mouse-move messages coming so

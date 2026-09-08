@@ -75,6 +75,15 @@ const bindings = (() => {
       'void *',
       'int',
     ]) as Fn,
+    GetWindowLongPtrW: user32.func('__stdcall', 'GetWindowLongPtrW', 'int64_t', [
+      'void *',
+      'int',
+    ]) as Fn,
+    SetWindowLongPtrW: user32.func('__stdcall', 'SetWindowLongPtrW', 'int64_t', [
+      'void *',
+      'int',
+      'int64_t',
+    ]) as Fn,
     GetLastError: kernel32.func('__stdcall', 'GetLastError', 'uint32_t', []) as Fn,
     OpenProcess: kernel32.func('__stdcall', 'OpenProcess', 'void *', [
       'uint32_t',
@@ -285,4 +294,37 @@ export async function typeText(text: string): Promise<SendResult> {
     }
   }
   return { sent, expected: records.length, lastError: 0 }
+}
+
+/** `GWL_EXSTYLE`, and the one bit we need to add to it. */
+const GWL_EXSTYLE = -20
+const WS_EX_TOOLWINDOW = 0x00000080
+
+/**
+ * Keep a window out of Alt+Tab.
+ *
+ * `skipTaskbar: true` removes it from the TASKBAR - Electron does that through
+ * `ITaskbarList::DeleteTab` - and that is a different list. Alt+Tab shows every
+ * visible top-level window that has no owner and lacks `WS_EX_TOOLWINDOW`, and
+ * the overlay is exactly that: measured on the running app, it was the one
+ * window of Electron's four with the bit missing.
+ *
+ * An overlay in Alt+Tab is worse than untidy. It is created `focusable: false`,
+ * so tabbing to it hands focus to something that refuses it, and the person is
+ * left looking at whichever window Windows falls back to.
+ *
+ * Best effort. A machine without koffi has already degraded to clipboard-only
+ * delivery; a pet in the Alt+Tab list is not the thing to fail to start over.
+ */
+export function hideFromAltTab(handle: Buffer): boolean {
+  if (!bindings) return false
+  try {
+    const hwnd = koffi!.decode(handle, 'void *') as unknown
+    const current = Number(bindings.GetWindowLongPtrW(hwnd, GWL_EXSTYLE))
+    if (current & WS_EX_TOOLWINDOW) return true
+    bindings.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, current | WS_EX_TOOLWINDOW)
+    return Boolean(Number(bindings.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)) & WS_EX_TOOLWINDOW)
+  } catch {
+    return false
+  }
 }
