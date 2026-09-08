@@ -29,6 +29,7 @@ wouice/
 |---|---|
 | [`docs/design/02-spec.md`](docs/design/02-spec.md) | **The spec.** Contracts, schemas, prompts, failure matrix, acceptance criteria, build sequence. Start here to build. |
 | [`docs/design/01-decisions.md`](docs/design/01-decisions.md) | **The decision log.** Every choice, why we made it, what we rejected, what would reverse it. Start here to understand. |
+| [`docs/design/03-spike-results.md`](docs/design/03-spike-results.md) | **Measured evidence.** Latency, VRAM and Hinglish accuracy off this card, and how each conclusion was reached |
 | [`docs/product-analysis/`](docs/product-analysis/README.md) | Source-level analysis of four open-source voice projects, and the patterns worth stealing |
 | `app/v1/` | The application itself |
 
