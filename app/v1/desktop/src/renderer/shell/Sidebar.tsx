@@ -43,8 +43,8 @@ import { groupedRoutes, hashFor, type RouteDef, type RouteId } from './routes.js
  */
 function Mark(): React.JSX.Element {
   return (
-    <span className="grid size-[19px] shrink-0 place-items-center rounded-[5px] bg-gradient-to-b from-neutral-600 to-neutral-800 text-neutral-100 ring-1 ring-white/10">
-      <svg viewBox="0 0 24 24" className="size-3" fill="none" aria-hidden="true">
+    <span className="grid size-[26px] shrink-0 place-items-center rounded-[7px] bg-gradient-to-b from-neutral-500 to-neutral-800 text-neutral-50 ring-1 ring-white/15">
+      <svg viewBox="0 0 24 24" className="size-4" fill="none" aria-hidden="true">
         <path
           d="M12 4v16M7.5 8.5v7M16.5 8.5v7M3.5 11v2M20.5 11v2"
           stroke="currentColor"
@@ -149,8 +149,8 @@ function Search({ collapsed }: { collapsed: boolean }): React.JSX.Element {
 
   return (
     <div className="relative">
-      <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-neutral-600">
-        <Icon name="search" className="size-4" />
+      <span className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-neutral-600">
+        <Icon name="search" className="size-3.5" />
       </span>
       <input
         ref={input}
@@ -165,9 +165,9 @@ function Search({ collapsed }: { collapsed: boolean }): React.JSX.Element {
         }}
         placeholder="Search"
         aria-label="Search dictations"
-        className="w-full rounded-lg bg-black/25 py-2 pr-12 pl-9 shadow-[inset_0_1px_2px_rgb(0_0_0/0.35)] text-[13px] text-neutral-200 ring-1 ring-white/[0.06] outline-none placeholder:text-neutral-600 focus:ring-white/20"
+        className="w-full rounded-md bg-black/25 py-1 pr-9 pl-8 shadow-[inset_0_1px_2px_rgb(0_0_0/0.35)] text-[12px] text-neutral-300 ring-1 ring-white/[0.06] outline-none placeholder:text-neutral-600 focus:ring-white/20"
       />
-      <kbd className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-neutral-600">
+      <kbd className="pointer-events-none absolute top-1/2 right-1.5 -translate-y-1/2 rounded bg-white/5 px-1 py-0.5 font-mono text-[9px] text-neutral-600">
         ⌃K
       </kbd>
     </div>
@@ -206,8 +206,10 @@ export function Sidebar({
             it lines up with the rail's content, not with a nested indent. */}
         <div className="flex items-center gap-2.5">
           <Mark />
+          {/* The largest type in the rail, by design: nothing else here should
+              out-rank the name of the app. */}
           {!collapsed && (
-            <span className="text-[14px] font-semibold tracking-tight text-neutral-100 select-none">
+            <span className="text-[17px] font-semibold tracking-tight text-neutral-50 select-none">
               Wouice
             </span>
           )}
