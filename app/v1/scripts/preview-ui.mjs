@@ -28,6 +28,10 @@ const STUB = `<script>
   // Stand-in for the preload bridge. Shapes only - see shared/ipc.ts.
   const noop = () => () => {}
   const settingsListeners = new Set()
+  const hudListeners = new Set()
+  const hoverListeners = new Set()
+  const dragListeners = new Set()
+  const placeListeners = new Set()
   const settings = {
     hotkeys: { dictate: 'Control+Alt+W', meeting: 'Control+Alt+M', companion: 'Control+Alt+C' },
     models: { whisper: 'turbo', llama: 'qwen3-4b' },
@@ -43,6 +47,7 @@ const STUB = `<script>
     injection: { enabled: true, pasteOverrides: {} },
     audio: { deviceId: null, deviceLabel: '' },
     appearance: { zoom: 1 },
+    pet: { enabled: true, placement: { x: 0.97, y: 0.82 } },
   }
   const TEXTS = [
     'I think we should ship the thing and see what happens.',
@@ -65,6 +70,23 @@ const STUB = `<script>
     targetExe: 'code.exe', deliveryNote: id === 4 ? 'focus moved to chrome.exe' : '',
   })
   const rows = Array.from({ length: 23 }, (_, i) => dictation(i + 1)).reverse()
+  // Drive the overlay from the console: __hud('listening', 0.6), __hover(true),
+  // __side('left'). Nothing here proves the real IPC works - see the header.
+  window.__hud = (phase, level = 0, message, elapsedMs = 0) => {
+    for (const f of hudListeners) f({ phase, level, elapsedMs, message })
+  }
+  window.__hover = (on) => { for (const f of hoverListeners) f(on) }
+  window.__side = (side, pet = true) => { for (const f of placeListeners) f({ side, pet }) }
+  window.__speak = (ms = 4000) => {
+    window.__hud('arming')
+    const t0 = Date.now()
+    const timer = setInterval(() => {
+      const dt = Date.now() - t0
+      if (dt > ms) { clearInterval(timer); window.__hud('thinking'); return }
+      const level = Math.max(0, Math.sin(dt / 190) * 0.5 + Math.sin(dt / 61) * 0.35 + 0.25)
+      window.__hud('listening', level, undefined, dt)
+    }, 20)
+  }
   window.wouice = {
     deleteDictations: async () => 0,
     clearDictations: async () => 0,
@@ -117,7 +139,17 @@ const STUB = `<script>
     calibrate: async () => ({}), calibrateApply: async () => {},
     sendAudioFrame: () => {}, captureReady: () => {}, captureFailed: () => {}, cancelDictation: () => {},
     onStartCapture: noop, onStopCapture: noop, onMetric: noop, onDictationResult: noop,
-    onSidecarState: noop, onHudState: noop, onHotkeyFailed: noop,
+    onSidecarState: noop, onHotkeyFailed: noop,
+    // The overlay is driven by hand here. Main pushes phases and levels at it
+    // fifty times a second in the real app; in a browser tab there is nothing
+    // to push, so the harness exposes the same events for a person to fire.
+    onHudState: (fn) => { hudListeners.add(fn); return () => hudListeners.delete(fn) },
+    onHudHover: (fn) => { hoverListeners.add(fn); return () => hoverListeners.delete(fn) },
+    onHudDragging: (fn) => { dragListeners.add(fn); return () => dragListeners.delete(fn) },
+    onHudPlacement: (fn) => { placeListeners.add(fn); return () => placeListeners.delete(fn) },
+    petClick: () => console.log('[stub] pet clicked'),
+    petDragStart: () => { for (const f of dragListeners) f(true) },
+    petDragEnd: () => { for (const f of dragListeners) f(false) },
     onSettingsChanged: (fn) => {
       settingsListeners.add(fn)
       return () => settingsListeners.delete(fn)
