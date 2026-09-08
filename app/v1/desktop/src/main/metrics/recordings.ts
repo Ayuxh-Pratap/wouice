@@ -67,6 +67,25 @@ export class RecordingStore {
     return this.list().reduce((n, r) => n + r.bytes, 0)
   }
 
+  /**
+   * Delete one recording.
+   *
+   * The path is checked against this directory rather than trusted: it arrives
+   * from the renderer, and a delete that accepts any path it is handed is a
+   * delete that can be pointed anywhere.
+   */
+  remove(file: string): boolean {
+    const resolved = path.resolve(file)
+    if (path.dirname(resolved) !== path.resolve(this.dir)) return false
+    if (!resolved.toLowerCase().endsWith('.wav')) return false
+    try {
+      unlinkSync(resolved)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   clear(): void {
     for (const r of this.list()) {
       try {
