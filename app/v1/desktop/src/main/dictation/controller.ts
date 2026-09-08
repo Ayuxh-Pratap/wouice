@@ -19,6 +19,9 @@ import {
   type DictationState,
 } from './machine.js'
 import type { SidecarSupervisor } from '../sidecars/supervisor.js'
+// One definition, in the package that persists it. A second copy here is how a
+// shape drifts until a cast is needed to bridge them.
+import type { CaptureDiagnostics } from '@wouice/store'
 
 const SAMPLE_RATE = 16_000
 const FRAME_MS = 20
@@ -54,31 +57,14 @@ export interface DictationResult {
   audioPath: string | null
 }
 
-/**
- * Why the recording ended and what the audio looked like.
- *
- * Exists because `chunks 0` on a 38-second dictation is ambiguous on its own:
- * it could mean the speaker never left a long enough pause, or that chunking is
- * broken. Those need opposite responses, so record which it was.
- */
-export interface CaptureDiagnostics {
-  stoppedBy: 'silence' | 'hotkey' | 'cap' | 'unknown'
-  speechMs: number
-  silenceMs: number
-  longestPauseMs: number
-  /** The silence window in force when it stopped: short or long. */
-  windowMs: number
-  chunkAfterMs: number
-  chunkPauseMs: number
-  /** Loudest frame and mean speech level seen, against the threshold used. */
-  peakRms: number
-  meanSpeechRms: number
-  thresholdRms: number
-}
-
 export interface ControllerDeps {
   supervisor: SidecarSupervisor
-  silence?: SilenceConfig
+  /**
+   * Read live, not captured once. Calibration rewrites these levels while the
+   * app is running, and a snapshot taken at construction would mean the new
+   * threshold did nothing until the next restart.
+   */
+  silence?: () => SilenceConfig
   cleanupEnabled: () => boolean
   cleanupTimeoutMs: () => number
   retainAudio: () => boolean
@@ -163,7 +149,7 @@ export class DictationController extends EventEmitter {
     const out = silenceStep(
       this.silence,
       { rms: rms(frame), ms: FRAME_MS },
-      this.deps.silence ?? DEFAULT_SILENCE
+      this.deps.silence?.() ?? DEFAULT_SILENCE
     )
     this.silence = out.state
     this.emit('level', { level: out.state.level, elapsedMs: out.state.elapsedMs })
@@ -276,7 +262,7 @@ export class DictationController extends EventEmitter {
       const { text: final, llmMs, degraded } = cleaned
       if (sessionId !== this.state.sessionId) return
 
-      const cfg = this.deps.silence ?? DEFAULT_SILENCE
+      const cfg = this.deps.silence?.() ?? DEFAULT_SILENCE
       const capture: CaptureDiagnostics = {
         stoppedBy: this.stoppedBy,
         speechMs: this.silence.speechMs,
@@ -433,3 +419,4 @@ function concat(frames: Float32Array[]): Float32Array {
 }
 
 export { SAMPLE_RATE, FRAME_MS }
+export type { CaptureDiagnostics }
