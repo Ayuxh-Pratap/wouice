@@ -6,7 +6,7 @@ import {
   cleanupBudget,
   isPlausibleCleanup,
 } from '@wouice/llm'
-import { correct, biasPrompt, SEED_DICTIONARY } from '@wouice/dictionary'
+import { correct, biasPrompt, SEED_DICTIONARY, type DictionaryEntry } from '@wouice/dictionary'
 import {
   DEFAULT_SILENCE,
   initialSilenceState,
@@ -69,6 +69,16 @@ export interface ControllerDeps {
    * app is running, and a snapshot taken at construction would mean the new
    * threshold did nothing until the next restart.
    */
+  /**
+   * The user's own dictionary entries, merged ahead of the seed list.
+   *
+   * Read live rather than captured once: a rule added in settings should apply
+   * to the very next dictation, which is the only moment anyone is thinking
+   * about it.
+   */
+  userDictionary?: () => DictionaryEntry[]
+  /** Called with the rules that fired, so a rule at zero hits is visible. */
+  onRulesFired?: (applied: { from: string; count: number }[]) => void
   silence?: () => SilenceConfig
   cleanupEnabled: () => boolean
   retainAudio: () => boolean
@@ -261,7 +271,12 @@ export class DictationController extends EventEmitter {
 
       // Dictionary BEFORE the LLM, so the model sees correct proper nouns and
       // cannot helpfully renormalise them into something else.
-      const fixed = correct(raw, SEED_DICTIONARY)
+      // User entries first: a personal rule should win over a shipped one for
+      // the same phrase, and `correct` takes the longest match it is given.
+      const fixed = correct(raw, [...(this.deps.userDictionary?.() ?? []), ...SEED_DICTIONARY])
+      if (fixed.applied.length > 0) {
+        this.deps.onRulesFired?.(fixed.applied.map((a) => ({ from: a.from, count: a.count })))
+      }
       const cleaned = await this.cleanup(fixed.text)
       const { text: final, llmMs, degraded } = cleaned
       if (sessionId !== this.state.sessionId) return
