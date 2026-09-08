@@ -43,8 +43,8 @@ import { groupedRoutes, hashFor, type RouteDef, type RouteId } from './routes.js
  */
 function Mark(): React.JSX.Element {
   return (
-    <span className="grid size-[26px] shrink-0 place-items-center rounded-[7px] bg-gradient-to-b from-neutral-500 to-neutral-800 text-neutral-50 ring-1 ring-white/15">
-      <svg viewBox="0 0 24 24" className="size-4" fill="none" aria-hidden="true">
+    <span className="grid size-[22px] shrink-0 place-items-center rounded-[6px] bg-gradient-to-b from-neutral-500 to-neutral-800 text-neutral-50 ring-1 ring-white/15">
+      <svg viewBox="0 0 24 24" className="size-3.5" fill="none" aria-hidden="true">
         <path
           d="M12 4v16M7.5 8.5v7M16.5 8.5v7M3.5 11v2M20.5 11v2"
           stroke="currentColor"
@@ -209,7 +209,7 @@ export function Sidebar({
           {/* The largest type in the rail, by design: nothing else here should
               out-rank the name of the app. */}
           {!collapsed && (
-            <span className="text-[17px] font-semibold tracking-tight text-neutral-50 select-none">
+            <span className="text-[15px] font-semibold tracking-tight text-neutral-50 select-none">
               Wouice
             </span>
           )}
