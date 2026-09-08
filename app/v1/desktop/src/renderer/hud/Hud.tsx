@@ -108,7 +108,10 @@ export function Hud(): React.JSX.Element {
 
     const offStop = window.wouice.onStopCapture(() => void stop())
 
-    // Escape cancels from anywhere the HUD can see it.
+    // NOT the mechanism. This window is `focusable: false`, so it never has
+    // keyboard focus and this can never fire; cancelling works because main
+    // binds Escape globally for the length of a dictation. Kept only so the
+    // key still does the right thing if the HUD ever becomes focusable.
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') window.wouice.cancelDictation()
     }

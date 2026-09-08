@@ -1,4 +1,4 @@
-import { app, clipboard, dialog, ipcMain, shell } from 'electron'
+import { app, clipboard, dialog, globalShortcut, ipcMain, shell } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SidecarSupervisor, type SidecarSnapshot } from './sidecars/supervisor.js'
@@ -108,7 +108,40 @@ const HUD_PHASE: Record<string, string> = {
   error: 'error',
 }
 
+/**
+ * Escape, bound globally but ONLY while a dictation is in flight.
+ *
+ * A6 says Escape always returns to idle. The state machine has always handled
+ * it from every phase - and nothing could ever deliver the event. The only
+ * listener was a `keydown` in the HUD, and the HUD is created
+ * `focusable: false` precisely so it cannot take keyboard focus, so that
+ * handler could not fire even in principle. The criterion was unmeetable by a
+ * person, which running the real app is the only way to notice.
+ *
+ * Bound and unbound around the dictation rather than held for the session: a
+ * permanent global Escape would swallow the key for every other application on
+ * the machine, which is a far worse bug than the one being fixed.
+ */
+let escapeBound = false
+
+function setEscapeCancel(on: boolean): void {
+  if (on === escapeBound) return
+  try {
+    if (on) {
+      escapeBound = globalShortcut.register('Escape', () => dictation.send({ type: 'escape' }))
+    } else {
+      globalShortcut.unregister('Escape')
+      escapeBound = false
+    }
+  } catch {
+    // Another app owns Escape, or the platform refused. Cancelling by pressing
+    // the hotkey again still works; this is the convenience, not the mechanism.
+    escapeBound = false
+  }
+}
+
 dictation.on('phase', ({ phase, message }: { phase: string; message: string | null }) => {
+  setEscapeCancel(phase !== 'idle')
   broadcast(IPC.hudState, {
     phase: HUD_PHASE[phase] ?? 'idle',
     level: dictation.level,
