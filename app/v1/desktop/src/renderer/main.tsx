@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Hud } from './Hud.js'
+import { Hud } from './hud/Hud.js'
 import { App } from './App.js'
 import { isHudHash } from './shell/routes.js'
 import './index.css'
