@@ -3,6 +3,7 @@ import type { HotkeyReport } from '../shared/ipc.js'
 import type { Settings } from '../shared/settings.js'
 import { DashboardPage } from './pages/DashboardPage.js'
 import { DictationsPage } from './pages/DictationsPage.js'
+import { QualityPage } from './pages/QualityPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
 import { Sidebar } from './shell/Sidebar.js'
 import { parseHash, routeById, type ParsedRoute } from './shell/routes.js'
@@ -182,6 +183,7 @@ export function App(): React.JSX.Element {
 
             {route === 'dashboard' && <DashboardPage />}
             {route === 'dictations' && <DictationsPage developerMode={dev} query={query} />}
+            {route === 'quality' && <QualityPage />}
             {route === 'settings' && <SettingsPage settings={settings} />}
           </div>
         </main>

@@ -43,6 +43,13 @@ const PATHS: Record<IconName | 'chevronLeft' | 'chevronRight' | 'search', React.
       <path d="M12 8v4M10 10h4" />
     </>
   ),
+  // A tick inside a circle: a judgement recorded.
+  quality: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12 2.5 2.5 4.5-5" />
+    </>
+  ),
   settings: (
     <>
       <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />

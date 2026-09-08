@@ -10,13 +10,20 @@
  * without rendering anything.
  */
 
-export type RouteId = 'dashboard' | 'dictations' | 'meetings' | 'companion' | 'settings'
+export type RouteId =
+  | 'dashboard'
+  | 'dictations'
+  | 'meetings'
+  | 'companion'
+  | 'quality'
+  | 'settings'
 
 export type IconName =
   | 'gauge'
   | 'transcript'
   | 'meeting'
   | 'companion'
+  | 'quality'
   | 'settings'
 
 export interface RouteDef {
@@ -71,6 +78,14 @@ export const ROUTES: RouteDef[] = [
     icon: 'companion',
     blurb: 'A voice loop that answers back.',
     soon: true,
+  },
+  {
+    id: 'quality',
+    path: '/quality',
+    label: 'Quality',
+    group: 'System',
+    icon: 'quality',
+    blurb: 'Was the text good enough? Acceptance criterion A4, one dictation at a time.',
   },
   {
     id: 'settings',
