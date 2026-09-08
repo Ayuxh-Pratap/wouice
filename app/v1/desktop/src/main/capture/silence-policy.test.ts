@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_SETTINGS } from '../../shared/settings.js'
 import {
   DEFAULT_SILENCE,
   activeWindowMs,
@@ -225,5 +226,99 @@ describe('the level meter', () => {
     let state = initialSilenceState()
     for (let i = 0; i < 10; i++) state = step(state, { rms: 5, ms: FRAME_MS }, DEFAULT_SILENCE).state
     expect(state.level).toBeLessThanOrEqual(1)
+  })
+})
+
+describe('the config actually reaching the policy at runtime', () => {
+  /**
+   * THE REGRESSION THAT MOTIVATED THIS BLOCK.
+   *
+   * Settings declared a partial silence shape and the policy declared a fuller
+   * one, bridged in main by `as never`. Every test above passed, because they
+   * all used DEFAULT_SILENCE directly. In the running app the config came from
+   * settings, so `speechFactor` was undefined, the threshold was NaN, `rms >
+   * NaN` was always false, and NOTHING was ever classified as speech: auto-stop
+   * never armed and chunking never fired, through seven real dictations.
+   *
+   * A unit test of a pure function proves nothing if production feeds it a
+   * different object. These assert the object production actually passes.
+   */
+  const required: (keyof typeof DEFAULT_SILENCE)[] = [
+    'shortWindowMs',
+    'longWindowMs',
+    'adaptAfterMs',
+    'minSpeechMs',
+    'maxSessionMs',
+    'chunkAfterMs',
+    'chunkPauseMs',
+    'speechFactor',
+    'minNoiseFloor',
+  ]
+
+  it('the settings default supplies every field the policy reads', () => {
+    for (const key of required) {
+      expect(DEFAULT_SETTINGS.silence[key], `settings.silence.${key} is missing`).toBeTypeOf('number')
+      expect(Number.isFinite(DEFAULT_SETTINGS.silence[key]), `settings.silence.${key} is not finite`).toBe(true)
+    }
+  })
+
+  it('classifies loud audio as speech using the SETTINGS config, not the default', () => {
+    // The exact failure: a NaN threshold makes every comparison false.
+    let state = initialSilenceState()
+    for (let t = 0; t < 1_000; t += FRAME_MS) {
+      state = step(state, speech(), DEFAULT_SETTINGS.silence).state
+    }
+    expect(state.speechMs).toBeGreaterThan(0)
+    expect(state.heardSpeech).toBe(true)
+  })
+
+  it('auto-stops using the SETTINGS config', () => {
+    let state = initialSilenceState()
+    for (let t = 0; t < 2_000; t += FRAME_MS) {
+      state = step(state, speech(), DEFAULT_SETTINGS.silence).state
+    }
+    let verdict: SilenceVerdict = 'continue'
+    for (let t = 0; t < 6_000 && verdict === 'continue'; t += FRAME_MS) {
+      const out = step(state, silence(), DEFAULT_SETTINGS.silence)
+      state = out.state
+      verdict = out.verdict
+    }
+    expect(verdict).toBe('stop-silence')
+  })
+
+  it('emits chunks using the SETTINGS config', () => {
+    let state = initialSilenceState()
+    for (let t = 0; t < 21_000; t += FRAME_MS) {
+      state = step(state, speech(), DEFAULT_SETTINGS.silence).state
+    }
+    const out = step(state, { rms: QUIET, ms: DEFAULT_SETTINGS.silence.chunkPauseMs }, DEFAULT_SETTINGS.silence)
+    expect(out.verdict).toBe('emit-chunk')
+  })
+})
+
+describe('pause diagnostics', () => {
+  it('records the longest pause, so "chunks 0" is explainable', () => {
+    // Without this you cannot tell "he never paused" from "chunking is broken".
+    let state = initialSilenceState()
+    for (let t = 0; t < 1_000; t += FRAME_MS) state = step(state, speech(), DEFAULT_SILENCE).state
+    for (let t = 0; t < 400; t += FRAME_MS) state = step(state, silence(), DEFAULT_SILENCE).state
+    for (let t = 0; t < 500; t += FRAME_MS) state = step(state, speech(), DEFAULT_SILENCE).state
+    for (let t = 0; t < 300; t += FRAME_MS) state = step(state, silence(), DEFAULT_SILENCE).state
+    expect(state.longestSilenceMs).toBeGreaterThanOrEqual(380)
+    expect(state.longestSilenceMs).toBeLessThan(500)
+  })
+
+  it('ignores leading silence, which is not a pause', () => {
+    let state = initialSilenceState()
+    for (let t = 0; t < 5_000; t += FRAME_MS) state = step(state, silence(), DEFAULT_SILENCE).state
+    expect(state.longestSilenceMs).toBe(0)
+  })
+
+  it('totals silence separately from speech', () => {
+    let state = initialSilenceState()
+    for (let t = 0; t < 1_000; t += FRAME_MS) state = step(state, speech(), DEFAULT_SILENCE).state
+    for (let t = 0; t < 600; t += FRAME_MS) state = step(state, silence(), DEFAULT_SILENCE).state
+    expect(state.speechMs).toBeGreaterThan(900)
+    expect(state.totalSilenceMs).toBeGreaterThanOrEqual(580)
   })
 })

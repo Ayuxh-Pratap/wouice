@@ -19,38 +19,8 @@
  * nothing else.
  */
 
-export interface SilenceConfig {
-  /** Silence needed to stop, while total speech is under `adaptAfterMs`. */
-  shortWindowMs: number
-  /** Silence needed to stop after that. */
-  longWindowMs: number
-  /** Still talking at this point means long-form, which has thinking pauses. */
-  adaptAfterMs: number
-  /** Ignore a cough: below this much speech, a pause does not end anything. */
-  minSpeechMs: number
-  /** Hard cap. Purely a "did I forget this was recording" guard. */
-  maxSessionMs: number
-  /** Flush a chunk at the first pause after this much speech accumulates. */
-  chunkAfterMs: number
-  /** A pause this long is a safe place to cut a chunk. Shorter than a stop. */
-  chunkPauseMs: number
-  /** Frames above (noiseFloor * this) count as speech. */
-  speechFactor: number
-  /** Absolute floor, so a silent room cannot make the gate infinitely sensitive. */
-  minNoiseFloor: number
-}
-
-export const DEFAULT_SILENCE: SilenceConfig = {
-  shortWindowMs: 1_800,
-  longWindowMs: 3_000,
-  adaptAfterMs: 15_000,
-  minSpeechMs: 300,
-  maxSessionMs: 300_000,
-  chunkAfterMs: 20_000,
-  chunkPauseMs: 600,
-  speechFactor: 2.5,
-  minNoiseFloor: 0.004,
-}
+export { DEFAULT_SILENCE, type SilenceConfig } from '../../shared/settings.js'
+import { DEFAULT_SILENCE, type SilenceConfig } from '../../shared/settings.js'
 
 export interface SilenceState {
   /** Wall-clock ms since capture began. */
@@ -67,6 +37,16 @@ export interface SilenceState {
   noiseFloor: number
   /** Smoothed level for the meter, 0..1. Not used for decisions. */
   level: number
+  /**
+   * Longest pause seen after speech began.
+   *
+   * Diagnostic only, never a decision input. Without it, "chunks 0" is
+   * ambiguous: you cannot tell "the speaker never paused long enough" from
+   * "chunking is broken", and those need opposite responses.
+   */
+  longestSilenceMs: number
+  /** Total silence after speech began, so speech/silence ratio is visible. */
+  totalSilenceMs: number
 }
 
 export function initialSilenceState(): SilenceState {
@@ -78,6 +58,8 @@ export function initialSilenceState(): SilenceState {
     sinceChunkMs: 0,
     noiseFloor: DEFAULT_SILENCE.minNoiseFloor,
     level: 0,
+    longestSilenceMs: 0,
+    totalSilenceMs: 0,
   }
 }
 
@@ -134,14 +116,20 @@ export function step(
   const target = Math.min(1, frame.rms / 0.25)
   const level = target > state.level ? target : state.level * 0.85 + target * 0.15
 
+  const silenceMs = isSpeech ? 0 : state.silenceMs + frame.ms
   const next: SilenceState = {
     elapsedMs,
     speechMs: state.speechMs + (isSpeech ? frame.ms : 0),
-    silenceMs: isSpeech ? 0 : state.silenceMs + frame.ms,
+    silenceMs,
     heardSpeech: state.heardSpeech || state.speechMs + (isSpeech ? frame.ms : 0) >= cfg.minSpeechMs,
     sinceChunkMs: state.sinceChunkMs + (isSpeech ? frame.ms : 0),
     noiseFloor,
     level,
+    // Only count pauses once speech has started; leading silence is not a pause.
+    longestSilenceMs: state.heardSpeech
+      ? Math.max(state.longestSilenceMs, silenceMs)
+      : state.longestSilenceMs,
+    totalSilenceMs: state.totalSilenceMs + (isSpeech || !state.heardSpeech ? 0 : frame.ms),
   }
 
   if (elapsedMs >= cfg.maxSessionMs) return { state: next, verdict: 'stop-cap' }
