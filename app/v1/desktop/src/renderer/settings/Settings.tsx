@@ -238,6 +238,17 @@ export function SettingsPanel({
         </Row>
 
         <Row
+          label="Keep the pet on the desktop"
+          hint="A small character you can park anywhere and click to dictate. Off means the overlay only appears while it is working, along the bottom of the screen."
+        >
+          <Toggle
+            label="Keep the pet on the desktop"
+            on={settings.pet.enabled}
+            onChange={(enabled) => save({ pet: { ...settings.pet, enabled } })}
+          />
+        </Row>
+
+        <Row
           label="Stop when I pause for"
           hint={
             preset === 'custom'
