@@ -1,6 +1,9 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
-import type { DictationRecord } from '../shared/ipc.js'
-import { formatMs } from './charts/primitives.js'
+import type { DictationRecord } from '../../shared/ipc.js'
+import { formatMs } from '../charts/primitives.js'
+import { ConfirmButton } from '../settings/Field.js'
+import { Detail } from './Detail.js'
+import { finalText } from './stages.js'
 
 /**
  * The dictation history, as a table you can page through.
@@ -13,182 +16,75 @@ import { formatMs } from './charts/primitives.js'
  *
  * Paging happens in SQL rather than by slicing a loaded array, so the cost of
  * opening page 40 is the same as opening page 1.
+ *
+ * ROWS CAN BE DELETED. This is a recording of somebody's own voice and the text
+ * they dictated with it; being unable to remove any of it from inside the app
+ * that collected it was the wrong default. Selection is per row with a
+ * select-all for the visible page, and "delete everything" lives in Settings,
+ * where a whole-history action belongs.
  */
 
 const PAGE_SIZES = [20, 50, 100]
 
-const STAGE_HINT: Record<string, string> = {
-  raw: 'Straight out of Whisper, chunks joined',
-  corrected: 'After the deterministic dictionary pass',
-  system: 'The instruction the model was given',
-  user: 'The text sent alongside it',
-  received: 'Exactly what came back, before the plausibility check',
-}
-
-function ms(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(2)}s` : `${Math.round(n)}ms`
-}
-
 /**
- * Explain the chunk count in words.
+ * A checkbox drawn rather than borrowed.
  *
- * "chunks 0" on a 38-second dictation is ambiguous on its own: it could mean
- * the speaker never left a long enough pause, or that chunking is broken again.
- * Those need opposite responses, so say which it was.
+ * The native control renders as a bright white square on this ground - the
+ * loudest thing on a page whose brightest text is a mid grey - and no amount of
+ * `accent-color` fixes the box itself. A button with `role="checkbox"` keeps
+ * the semantics and the keyboard behaviour while looking like it belongs.
+ *
+ * `indeterminate` is a real third state here: "some of this page is selected"
+ * has to be distinguishable from "none of it is", or the select-all in the
+ * header lies about what pressing it will do.
  */
-function explainChunks(d: DictationRecord): string | null {
-  const c = d.capture
-  if (!c) return null
-  if (d.chunks > 0) return `${d.chunks} chunk(s) transcribed while you were still talking`
-  if (c.speechMs < c.chunkAfterMs) {
-    return `No chunks: ${ms(c.speechMs)} of speech, and chunking starts at ${ms(c.chunkAfterMs)}`
-  }
-  if (c.longestPauseMs < c.chunkPauseMs) {
-    return `No chunks: enough speech (${ms(c.speechMs)}) but your longest pause was ${ms(
-      c.longestPauseMs
-    )}, under the ${ms(c.chunkPauseMs)} needed to cut without splitting a word`
-  }
-  return `No chunks, unexpectedly: speech ${ms(c.speechMs)} and longest pause ${ms(
-    c.longestPauseMs
-  )} both clear the thresholds`
-}
-
-function Stage({
-  name,
+function Checkbox({
+  checked,
+  indeterminate = false,
+  onChange,
   label,
-  text,
-  changed,
 }: {
-  name: string
+  checked: boolean
+  indeterminate?: boolean
+  onChange(next: boolean): void
   label: string
-  text: string
-  changed: boolean
 }): React.JSX.Element {
-  return (
-    <div className="grid grid-cols-[7.5rem_1fr] gap-3 py-2">
-      <div>
-        <div className="flex items-center gap-1.5">
-          <span
-            className={`size-1.5 shrink-0 rounded-full ${changed ? 'bg-amber-400' : 'bg-neutral-700'}`}
-            title={changed ? 'this stage changed the text' : 'unchanged by this stage'}
-          />
-          <span className="text-[11px] font-medium text-neutral-300">{label}</span>
-        </div>
-        <div className="mt-0.5 pl-3 text-[10px] leading-tight text-neutral-600">
-          {STAGE_HINT[name]}
-        </div>
-      </div>
-      <p className="min-w-0 rounded-md bg-neutral-950/60 px-2.5 py-1.5 text-[12px] leading-relaxed break-words text-neutral-300">
-        {text || <span className="text-neutral-600">(empty)</span>}
-      </p>
-    </div>
-  )
-}
-
-function Detail({ d }: { d: DictationRecord }): React.JSX.Element {
-  const [copied, setCopied] = useState(false)
-  const hasText = Boolean(d.raw || d.received)
+  const on = checked || indeterminate
 
   return (
-    <td colSpan={6} className="bg-neutral-950/40 px-3 pb-3">
-      <div className="flex items-center justify-between pt-2">
-        <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-neutral-500">
-          <span>audio {(d.audioMs / 1000).toFixed(1)}s</span>
-          <span>asr {formatMs(d.asrMs)}</span>
-          <span>llm {d.llmMs ? formatMs(d.llmMs) : 'none'}</span>
-          <span>chunks {d.chunks}</span>
-          <span>lang {d.language}</span>
-          <span>{d.asrModel}</span>
-          <span>{d.llmModel}</span>
-        </div>
-        <button
-          onClick={() => {
-            void window.wouice.copyDiagnostic(d.at).then((ok) => setCopied(ok))
-            setTimeout(() => setCopied(false), 1_800)
-          }}
-          className="shrink-0 rounded-md px-2 py-1 text-[11px] text-neutral-400 ring-1 ring-white/10 hover:bg-white/5 hover:text-neutral-200"
-        >
-          {copied ? 'Copied to clipboard' : 'Copy diagnostic'}
-        </button>
-      </div>
-
-      {d.capture && (
-        <p className="mt-2 rounded-md bg-black/25 px-2.5 py-1.5 text-[11px] leading-relaxed text-neutral-400">
-          Stopped by <span className="text-neutral-200">{d.capture.stoppedBy}</span> after{' '}
-          {ms(d.capture.speechMs)} of speech and {ms(d.capture.silenceMs)} of silence. Longest pause{' '}
-          {ms(d.capture.longestPauseMs)}, silence window {ms(d.capture.windowMs)}.
-          <br />
-          {explainChunks(d)}
-        </p>
-      )}
-
-      <p className="mt-2 rounded-md bg-black/25 px-2.5 py-1.5 text-[11px] leading-relaxed text-neutral-400">
-        {d.inserted ? (
-          <>
-            Inserted into <span className="text-neutral-200">{d.targetExe || 'the focused window'}</span>{' '}
-            by {d.delivery === 'type' ? 'typing' : 'pasting'}
-            {d.deliveryNote && <> — {d.deliveryNote}</>}
-          </>
-        ) : (
-          <>
-            Copied to the clipboard only
-            {d.deliveryNote ? <> — {d.deliveryNote}</> : <> (this build predates insertion)</>}
-          </>
-        )}
-      </p>
-
-      {d.degraded && (
-        <p className="mt-2 rounded-md bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
-          Fell back: <span className="font-mono">{d.degraded}</span>. The text you got is the stage
-          before the language model.
-        </p>
-      )}
-
-      {hasText ? (
-        <div className="mt-1 divide-y divide-white/5">
-          <Stage name="raw" label="1 · Heard" text={d.raw} changed />
-          <Stage
-            name="corrected"
-            label="2 · Dictionary"
-            text={d.corrected}
-            changed={d.corrected !== d.raw}
-          />
-          <Stage name="system" label="3a · Instruction" text={d.sentSystem} changed={false} />
-          <Stage
-            name="user"
-            label="3b · Text sent"
-            text={d.sentUser}
-            changed={d.sentUser !== d.corrected}
-          />
-          <Stage
-            name="received"
-            label="4 · Got back"
-            text={d.received}
-            changed={d.received !== d.sentUser}
-          />
-          {d.applied.length > 0 && (
-            <div className="grid grid-cols-[7.5rem_1fr] gap-3 py-2">
-              <span className="pl-3 text-[11px] font-medium text-neutral-300">Rules fired</span>
-              <div className="flex flex-wrap gap-1.5">
-                {d.applied.map((a, i) => (
-                  <span
-                    key={i}
-                    className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[10px] text-neutral-400"
-                  >
-                    {a.from} → {a.to}
-                    {a.count > 1 && <span className="text-neutral-600"> ×{a.count}</span>}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={indeterminate ? 'mixed' : checked}
+      aria-label={label}
+      // Ticking a box must not also expand the row it sits in.
+      onClick={(e) => {
+        e.stopPropagation()
+        onChange(!checked)
+      }}
+      className={[
+        'grid size-[15px] shrink-0 place-items-center rounded-[4px] transition',
+        on
+          ? 'bg-neutral-200 text-neutral-900 ring-1 ring-neutral-200'
+          : 'bg-black/30 ring-1 ring-white/15 hover:ring-white/35',
+      ].join(' ')}
+    >
+      {indeterminate ? (
+        <span className="h-px w-2 rounded-full bg-current" />
       ) : (
-        <p className="py-3 text-[11px] text-neutral-600">
-          Imported from a build that predates stage capture, so no text was kept.
-        </p>
+        checked && (
+          <svg viewBox="0 0 12 12" className="size-2.5" fill="none" aria-hidden="true">
+            <path
+              d="M2 6.2 4.6 8.8 10 3.4"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )
       )}
-    </td>
+    </button>
   )
 }
 
@@ -207,6 +103,7 @@ export function DictationTable({
   const [search, setSearch] = useState(query)
   const [applied, setApplied] = useState(query)
   const [openAt, setOpenAt] = useState<number | null>(null)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
   const [loading, setLoading] = useState(true)
 
   // A search from the rail arrives as a navigation, so adopt it when it changes
@@ -254,22 +151,83 @@ export function DictationTable({
   }, [page, pages])
 
   const firstIndex = total - page * size
+  const onPage = rows.filter((d) => selected.has(d.at)).length
+  const allOnPage = rows.length > 0 && onPage === rows.length
+
+  const toggle = (at: number, on: boolean): void => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (on) next.add(at)
+      else next.delete(at)
+      return next
+    })
+  }
+
+  const toggleAllOnPage = (on: boolean): void => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const d of rows) {
+        if (on) next.add(d.at)
+        else next.delete(d.at)
+      }
+      return next
+    })
+  }
+
+  const removeSelected = (): void => {
+    const ats = [...selected]
+    void window.wouice.deleteDictations(ats).then(() => {
+      setSelected(new Set())
+      // An open row that has just been deleted would otherwise stay expanded
+      // over the row that slid up into its place.
+      if (openAt !== null && ats.includes(openAt)) setOpenAt(null)
+      load()
+    })
+  }
 
   return (
     <section className="lift rounded-xl bg-white/[0.035] ring-1 ring-white/[0.08]">
       <header className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-        <div>
-          {/* No heading here: the page it sits on is already called Dictations,
-              and two identical titles a centimetre apart is just noise. */}
+        {/*
+          The selection count REPLACES the summary rather than appearing beside
+          it. While rows are selected, how many there are in total is not the
+          question being asked.
+        */}
+        {selected.size > 0 ? (
+          <div className="flex items-center gap-3">
+            <p className="text-[12px] text-neutral-200">
+              {selected.size} selected
+              {selected.size > onPage && (
+                <span className="text-neutral-500"> · across more than this page</span>
+              )}
+            </p>
+            <button
+              onClick={() => setSelected(new Set())}
+              className="rounded-md px-2 py-1 text-[11px] text-neutral-500 transition hover:text-neutral-300"
+            >
+              Clear
+            </button>
+          </div>
+        ) : (
           <p className="text-[12px] text-neutral-400">
+            {/* No heading here: the page it sits on is already called Dictations,
+                and two identical titles a centimetre apart is just noise. */}
             {total === 0
               ? 'Nothing yet.'
               : applied
                 ? `${total} matching "${applied}"`
-                : `${total} in total. Click a row for every stage of the text.`}
+                : `${total} in total. Click a row to read it.`}
           </p>
-        </div>
+        )}
+
         <div className="flex items-center gap-2">
+          {selected.size > 0 && (
+            <ConfirmButton
+              label={`Delete ${selected.size}`}
+              confirmLabel={`Delete ${selected.size}?`}
+              onClick={removeSelected}
+            />
+          )}
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -293,9 +251,17 @@ export function DictationTable({
       </header>
 
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[42rem] border-collapse text-left">
+        <table className="w-full min-w-[44rem] border-collapse text-left">
           <thead>
             <tr className="border-y border-white/5 text-[10px] tracking-wide text-neutral-500 uppercase">
+              <th className="w-9 pl-4">
+                <Checkbox
+                  checked={allOnPage}
+                  indeterminate={onPage > 0 && !allOnPage}
+                  onChange={toggleAllOnPage}
+                  label="Select every dictation on this page"
+                />
+              </th>
               <th className="w-12 px-3 py-1.5 font-medium">#</th>
               <th className="w-32 px-3 py-1.5 font-medium">When</th>
               <th className="px-3 py-1.5 font-medium">Text</th>
@@ -307,7 +273,7 @@ export function DictationTable({
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center text-[12px] text-neutral-600">
+                <td colSpan={7} className="px-3 py-8 text-center text-[12px] text-neutral-600">
                   {loading
                     ? 'Loading…'
                     : applied
@@ -318,12 +284,23 @@ export function DictationTable({
             )}
             {rows.map((d, i) => {
               const open = openAt === d.at
+              const picked = selected.has(d.at)
               return (
                 <Fragment key={d.at}>
                   <tr
                     onClick={() => setOpenAt(open ? null : d.at)}
-                    className="cursor-pointer border-t border-white/5 align-top hover:bg-white/5"
+                    className={[
+                      'cursor-pointer border-t border-white/5 align-top transition',
+                      picked ? 'bg-white/[0.06]' : 'hover:bg-white/5',
+                    ].join(' ')}
                   >
+                    <td className="py-2 pl-4">
+                      <Checkbox
+                        checked={picked}
+                        onChange={(on) => toggle(d.at, on)}
+                        label={`Select the dictation from ${new Date(d.at).toLocaleString()}`}
+                      />
+                    </td>
                     <td className="px-3 py-2 font-mono text-[10px] text-neutral-600">
                       {firstIndex - i}
                     </td>
@@ -337,7 +314,7 @@ export function DictationTable({
                     </td>
                     <td className="max-w-0 px-3 py-2">
                       <span className="block truncate text-[12px] text-neutral-300">
-                        {d.received || d.corrected || d.raw || '(no text)'}
+                        {finalText(d) || '(no text)'}
                       </span>
                       {d.degraded && (
                         <span className="mt-0.5 inline-block rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300">
@@ -355,16 +332,9 @@ export function DictationTable({
                       <span className={`inline-block transition ${open ? 'rotate-90' : ''}`}>›</span>
                     </td>
                   </tr>
-                  {open && developerMode && (
+                  {open && (
                     <tr className="border-t border-white/5">
-                      <Detail d={d} />
-                    </tr>
-                  )}
-                  {open && !developerMode && (
-                    <tr className="border-t border-white/5">
-                      <td colSpan={6} className="bg-neutral-950/40 px-3 py-3">
-                        <p className="text-[12px] leading-relaxed text-neutral-300">{d.received}</p>
-                      </td>
+                      <Detail d={d} developerMode={developerMode} />
                     </tr>
                   )}
                 </Fragment>
