@@ -1,0 +1,10 @@
+@import 'tailwindcss';
+
+/* The HUD window is transparent; the body must not paint a background or the
+   rounded panel sits on an opaque rectangle. */
+html, body, #root { margin: 0; height: 100%; background: transparent; }
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

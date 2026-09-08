@@ -1,0 +1,89 @@
+import { useEffect, useState } from 'react'
+import type { HudState } from '../shared/ipc.js'
+
+/**
+ * The dictation overlay.
+ *
+ * Contains NO interactive controls, by rule. The window is created
+ * `focusable: false` so it cannot steal focus from the text field being
+ * dictated into, and anything needing focus would be dead UI at best and would
+ * break insertion at worst. Settings live in the main window.
+ */
+const PHASE_LABEL: Record<HudState['phase'], string> = {
+  idle: '',
+  arming: 'Starting',
+  listening: 'Listening',
+  thinking: 'Thinking',
+  inserted: 'Inserted',
+  copied: 'Copied',
+  error: 'Error',
+}
+
+/** Red means recording, and nothing else in the app is red. */
+const PHASE_DOT: Record<HudState['phase'], string> = {
+  idle: 'bg-neutral-600',
+  arming: 'bg-amber-400',
+  listening: 'bg-red-500',
+  thinking: 'bg-amber-400',
+  inserted: 'bg-emerald-400',
+  copied: 'bg-sky-400',
+  error: 'bg-red-600',
+}
+
+const BAR_COUNT = 28
+
+export function Hud(): React.JSX.Element {
+  const [state, setState] = useState<HudState>({ phase: 'idle', level: 0, elapsedMs: 0 })
+
+  useEffect(() => window.wouice.onHudState(setState), [])
+
+  const active = state.phase !== 'idle'
+  const seconds = (state.elapsedMs / 1000).toFixed(1)
+
+  return (
+    <div className="flex h-full w-full items-center justify-center p-2">
+      <div
+        className={[
+          'flex w-full items-center gap-3 rounded-2xl px-4 py-3',
+          'bg-neutral-900/90 backdrop-blur-xl',
+          'ring-1 ring-white/10 shadow-2xl shadow-black/50',
+          'transition-opacity duration-150',
+          active ? 'opacity-100' : 'opacity-0',
+        ].join(' ')}
+      >
+        <span
+          className={[
+            'size-2.5 shrink-0 rounded-full',
+            PHASE_DOT[state.phase],
+            state.phase === 'listening' ? 'animate-pulse' : '',
+          ].join(' ')}
+        />
+
+        <div className="flex h-7 flex-1 items-center gap-[3px]">
+          {Array.from({ length: BAR_COUNT }, (_, i) => {
+            // A fixed shape modulated by level, so the meter reads as a voice
+            // rather than a random flicker. Purely cosmetic until capture lands.
+            const falloff = 1 - Math.abs(i - (BAR_COUNT - 1) / 2) / ((BAR_COUNT - 1) / 2)
+            const height = active ? 3 + state.level * 26 * (0.35 + falloff * 0.65) : 3
+            return (
+              <span
+                key={i}
+                className="w-[3px] shrink-0 rounded-full bg-neutral-300/80 transition-[height] duration-75"
+                style={{ height: `${height}px` }}
+              />
+            )
+          })}
+        </div>
+
+        <div className="shrink-0 text-right">
+          <div className="text-[11px] font-medium leading-tight text-neutral-200">
+            {state.message ?? PHASE_LABEL[state.phase]}
+          </div>
+          {state.phase === 'listening' && (
+            <div className="font-mono text-[10px] leading-tight text-neutral-500">{seconds}s</div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}

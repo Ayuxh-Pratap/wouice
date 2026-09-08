@@ -1,0 +1,112 @@
+/**
+ * The model catalogue and sidecar definitions.
+ *
+ * Both sidecars are switchable at runtime per decision A8c. Only one Whisper
+ * model can be resident alongside the LLM, so switching means restarting that
+ * sidecar rather than loading a second copy:
+ *
+ *   large-v3 + Qwen   5744 of 6144 MiB   fits, ~400 spare
+ *   turbo    + Qwen   4889 of 6144 MiB   comfortable
+ *   both     + Qwen   6609               does not fit
+ */
+
+export type SidecarId = 'whisper' | 'llama'
+
+export interface ModelChoice {
+  id: string
+  label: string
+  /** File name inside <repo>/models/ */
+  file: string
+  /** Measured on the RTX 3050, see docs/design/03-spike-results.md */
+  vramMiB: number
+  note: string
+}
+
+export const WHISPER_MODELS: ModelChoice[] = [
+  {
+    id: 'large-v3',
+    label: 'Whisper large-v3',
+    file: 'ggml-large-v3-q5_0.bin',
+    vramMiB: 1720,
+    note: 'Default. Slower, but turbo silently truncates Hindi and this does not.',
+  },
+  {
+    id: 'turbo',
+    label: 'Whisper large-v3-turbo',
+    file: 'ggml-large-v3-turbo-q5_0.bin',
+    vramMiB: 865,
+    note: '3x faster, half the VRAM, better on English. Drops content on long Hindi.',
+  },
+]
+
+export const LLM_MODELS: ModelChoice[] = [
+  {
+    id: 'qwen3-4b',
+    label: 'Qwen3 4B Instruct',
+    file: 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
+    vramMiB: 3124,
+    note: 'Default. Strong instruction following.',
+  },
+  {
+    id: 'gemma3-4b',
+    label: 'Gemma 3 4B IT',
+    file: 'gemma-3-4b-it-Q4_K_M.gguf',
+    vramMiB: 3100,
+    note: 'Trained across 140+ languages with real Indic investment. Untested here.',
+  },
+]
+
+export interface SidecarDef {
+  id: SidecarId
+  /** Path inside <repo>/sidecars/ */
+  exe: string
+  defaultPort: number
+  /** Path that answers when the process is up. */
+  healthPath: string
+  models: ModelChoice[]
+  defaultModelId: string
+  /** Command line for a given model file and port. */
+  args(modelPath: string, port: number): string[]
+}
+
+export const SIDECARS: Record<SidecarId, SidecarDef> = {
+  whisper: {
+    id: 'whisper',
+    exe: 'whisper/Release/whisper-server.exe',
+    defaultPort: 8178,
+    // whisper-server has no /health; the root path answers once it is listening.
+    healthPath: '/',
+    models: WHISPER_MODELS,
+    defaultModelId: 'large-v3',
+    args: (modelPath, port) => [
+      '-m', modelPath,
+      '--host', '127.0.0.1',
+      '--port', String(port),
+    ],
+  },
+  llama: {
+    id: 'llama',
+    exe: 'llama/llama-server.exe',
+    defaultPort: 8179,
+    healthPath: '/health',
+    models: LLM_MODELS,
+    defaultModelId: 'qwen3-4b',
+    args: (modelPath, port) => [
+      '-m', modelPath,
+      '--host', '127.0.0.1',
+      '--port', String(port),
+      // 4k is plenty: a five-minute dictation is well under it, and 8k cost
+      // ~300 MiB we do not have.
+      '-c', '4096',
+      '-ngl', '99',
+      // Default is 4 KV slots, which measured ~3124 MiB. We only ever run one
+      // request at a time, so the other three are pure waste.
+      '--parallel', '1',
+      '--no-webui',
+    ],
+  },
+}
+
+export function findModel(id: SidecarId, modelId: string): ModelChoice | undefined {
+  return SIDECARS[id].models.find((m) => m.id === modelId)
+}
