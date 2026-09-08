@@ -122,6 +122,21 @@ function Detail({ d }: { d: DictationRecord }): React.JSX.Element {
         </p>
       )}
 
+      <p className="mt-2 rounded-md bg-neutral-900 px-2.5 py-1.5 text-[11px] leading-relaxed text-neutral-400">
+        {d.inserted ? (
+          <>
+            Inserted into <span className="text-neutral-200">{d.targetExe || 'the focused window'}</span>{' '}
+            by {d.delivery === 'type' ? 'typing' : 'pasting'}
+            {d.deliveryNote && <> — {d.deliveryNote}</>}
+          </>
+        ) : (
+          <>
+            Copied to the clipboard only
+            {d.deliveryNote ? <> — {d.deliveryNote}</> : <> (this build predates insertion)</>}
+          </>
+        )}
+      </p>
+
       {d.degraded && (
         <p className="mt-2 rounded-md bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200">
           Fell back: <span className="font-mono">{d.degraded}</span>. The text you got is the stage
