@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { zoomLabel } from '../../shared/settings.js'
 import { Icon } from './Icon.js'
 import { groupedRoutes, hashFor, type RouteDef, type RouteId } from './routes.js'
 
@@ -16,10 +17,44 @@ import { groupedRoutes, hashFor, type RouteDef, type RouteId } from './routes.js
  * in localStorage - it is not a decision about how the app behaves, and routing
  * it through the main process would make a toggle wait on IPC for no reason.
  *
+ * IT CARRIES THE WORDMARK, and starts at the very top of the window. An earlier
+ * version put the name in a separate strip across the whole width, which made
+ * it read as a band the app was sitting under rather than as the app's own
+ * heading. Here it occupies the same top band as Windows' caption buttons on
+ * the far side, in the rail's own column, and the panel beside it begins below
+ * the two of them.
+ *
+ * THE CHROME LIVES AT THE BOTTOM. The collapse toggle used to sit alone at the
+ * top right of the rail, where it cost a row of its own and drew the eye to the
+ * least interesting control on the screen. It and the interface-scale readout
+ * are housekeeping, so they are in a footer, out of the way of the navigation
+ * and still one click from anywhere.
+ *
  * Two routes are listed and not reachable. That is deliberate: the rail is
  * where the shape of the finished app is communicated, and Meetings and
  * Companion are the next two surfaces.
  */
+
+/**
+ * The app mark.
+ *
+ * Inline rather than an image file: it is five strokes, and an asset would be
+ * one more thing to keep in step with the theme every time the greys move.
+ */
+function Mark(): React.JSX.Element {
+  return (
+    <span className="grid size-[19px] shrink-0 place-items-center rounded-[5px] bg-gradient-to-b from-neutral-600 to-neutral-800 text-neutral-100 ring-1 ring-white/10">
+      <svg viewBox="0 0 24 24" className="size-3" fill="none" aria-hidden="true">
+        <path
+          d="M12 4v16M7.5 8.5v7M16.5 8.5v7M3.5 11v2M20.5 11v2"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+        />
+      </svg>
+    </span>
+  )
+}
 
 function Item({
   route,
@@ -143,10 +178,12 @@ export function Sidebar({
   active,
   collapsed,
   onToggle,
+  zoom,
 }: {
   active: RouteId
   collapsed: boolean
   onToggle(): void
+  zoom: number
 }): React.JSX.Element {
   return (
     <nav
@@ -155,19 +192,24 @@ export function Sidebar({
         collapsed ? 'w-[4.5rem]' : 'w-60',
       ].join(' ')}
     >
-      {/* No wordmark here any more: the title bar carries the app's name, and
-          two of them stacked ten pixels apart was the same word twice. */}
+      {/*
+        The same height as the strip above the content panel, so the wordmark
+        and the top of the panel sit on one line. Draggable, like the rest of
+        the band: there is nothing clickable in it to get in the way.
+      */}
       <header
-        className={`flex h-9 items-center ${collapsed ? 'justify-center' : 'justify-end px-2.5'}`}
+        className={`flex h-[var(--band)] shrink-0 items-center ${collapsed ? 'justify-center' : 'px-2.5'}`}
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
-        <button
-          onClick={onToggle}
-          title={collapsed ? 'Expand' : 'Collapse'}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          className="rounded-md p-1 text-neutral-600 transition hover:bg-white/5 hover:text-neutral-300"
-        >
-          <Icon name={collapsed ? 'chevronRight' : 'chevronLeft'} className="size-4" />
-        </button>
+        {/* Padded to start on the same vertical as the nav icons below. */}
+        <div className={`flex items-center gap-2.5 ${collapsed ? '' : 'px-3'}`}>
+          <Mark />
+          {!collapsed && (
+            <span className="text-[14px] font-semibold tracking-tight text-neutral-100 select-none">
+              Wouice
+            </span>
+          )}
+        </div>
       </header>
 
       <div className={collapsed ? 'px-2.5 pb-2' : 'px-2.5 pb-3'}>
@@ -192,6 +234,41 @@ export function Sidebar({
           </div>
         ))}
       </div>
+
+      {/*
+        Housekeeping. The scale appears only when it is not 100%: an indicator
+        that is always on screen is a permanent reminder of a setting almost
+        nobody changes twice, and one that appears the moment you are not at
+        100% is how you find your way back from a stray Ctrl+scroll. It links to
+        Settings because "why is everything huge" and "where do I fix that" are
+        the same thought.
+      */}
+      <footer
+        className={`flex shrink-0 items-center gap-1 px-2.5 pb-2.5 ${
+          collapsed ? 'justify-center' : 'justify-between'
+        }`}
+      >
+        {!collapsed &&
+          (Math.abs(zoom - 1) > 1e-6 ? (
+            <a
+              href={hashFor('settings')}
+              title="Interface scale - open settings"
+              className="rounded px-2 py-1 font-mono text-[10px] text-neutral-600 tabular-nums transition hover:bg-white/5 hover:text-neutral-300"
+            >
+              {zoomLabel(zoom)}
+            </a>
+          ) : (
+            <span />
+          ))}
+        <button
+          onClick={onToggle}
+          title={collapsed ? 'Expand' : 'Collapse'}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className="rounded-md p-1.5 text-neutral-600 transition hover:bg-white/5 hover:text-neutral-300"
+        >
+          <Icon name={collapsed ? 'chevronRight' : 'chevronLeft'} className="size-4" />
+        </button>
+      </footer>
     </nav>
   )
 }

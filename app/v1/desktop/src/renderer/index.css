@@ -46,6 +46,23 @@ body {
 /* The HUD is a fixed-size frameless window. Any overflow there produces a
    native scrollbar on top of a transparent rounded pill, which looks broken.
    It has nothing to scroll to, so forbid it outright. */
+/*
+ * The band across the top of the window: the sidebar's wordmark on the left,
+ * empty draggable space and then Windows' own caption buttons on the right.
+ *
+ * It has to clear the buttons, which `env(titlebar-area-height)` reports in CSS
+ * pixels - so it SHRINKS as the interface scale rises, and at 175% would be
+ * around twenty pixels, too short for the wordmark sitting in it. The floor is
+ * what keeps the band a comfortable height for our own content while the `max`
+ * guarantees it never crowds the buttons. Declared once; the sidebar header and
+ * the strip above the content panel both read it, and they must agree or the
+ * panel and the wordmark stop lining up.
+ *
+ * The fallback is for the preview harness, an ordinary browser tab with no
+ * window-controls overlay and therefore no env values at all.
+ */
+:root { --band: max(env(titlebar-area-height, 34px), 2.75rem); }
+
 body:has(#root > .hud-root) { overflow: hidden; }
 .hud-root { overflow: hidden; }
 

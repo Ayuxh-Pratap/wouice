@@ -109,10 +109,20 @@ export function sendToHud(channel: string, ...payload: unknown[]): void {
 const GROUND = '#0a0a0a'
 
 /**
- * Title bar height in CSS pixels at 100%. Stated once here; the renderer reads
- * it back from `env(titlebar-area-height)` rather than repeating the number.
+ * The caption row, in WINDOW pixels, and deliberately NOT scaled by the zoom.
+ *
+ * Windows draws the minimise, maximise and close glyphs to fill the overlay it
+ * is given, so a height that grows with the interface scale grows the buttons
+ * with it: at 125% they came out half again as large as the native ones on
+ * every other window on the desktop, which is exactly what a caption button
+ * must not do. Fixed here, they stay the size Windows draws everywhere else.
+ *
+ * The renderer reads the region back through `env(titlebar-area-height)`, which
+ * reports it in CSS pixels - so this shrinks from the layout's point of view as
+ * the scale rises, which is correct: it is a constant amount of screen, not a
+ * constant amount of interface.
  */
-const TITLE_BAR_HEIGHT = 40
+const TITLE_BAR_HEIGHT = 34
 
 /**
  * The window controls, coloured to disappear into the app.
@@ -123,14 +133,8 @@ const TITLE_BAR_HEIGHT = 40
  * over maximise, which a hand-drawn set of buttons silently loses - while the
  * strip they sit in becomes ours to draw.
  */
-function overlay(zoom: number): Parameters<BrowserWindow['setTitleBarOverlay']>[0] {
-  return {
-    color: GROUND,
-    symbolColor: '#a3a3a3',
-    // In window pixels, not CSS pixels. Scaling this with the zoom factor is
-    // what keeps `env(titlebar-area-height)` a constant 40 for the renderer.
-    height: Math.round(TITLE_BAR_HEIGHT * zoom),
-  }
+function overlay(): Parameters<BrowserWindow['setTitleBarOverlay']>[0] {
+  return { color: GROUND, symbolColor: '#a3a3a3', height: TITLE_BAR_HEIGHT }
 }
 
 /** History, dictionary, settings, diagnostics. An ordinary window. */
@@ -151,7 +155,7 @@ export function createMainWindow(zoom = 1): BrowserWindow {
     autoHideMenuBar: true,
     backgroundColor: GROUND,
     titleBarStyle: 'hidden',
-    titleBarOverlay: overlay(zoom),
+    titleBarOverlay: overlay(),
     webPreferences: {
       preload: PRELOAD,
       contextIsolation: true,
@@ -194,11 +198,9 @@ export function createMainWindow(zoom = 1): BrowserWindow {
  */
 export function applyZoom(zoom: number): void {
   if (!main || main.isDestroyed()) return
+  // Only the document scales. The caption row is left alone on purpose - see
+  // TITLE_BAR_HEIGHT.
   main.webContents.setZoomFactor(zoom)
-  // The overlay is measured in window pixels while the renderer measures in CSS
-  // pixels, so without this the buttons and the strip drawn beside them drift
-  // apart by exactly the zoom factor.
-  main.setTitleBarOverlay(overlay(zoom))
 }
 
 export function sendToMain(channel: string, payload: unknown): void {
