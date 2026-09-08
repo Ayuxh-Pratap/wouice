@@ -5,6 +5,7 @@ import type { SidecarId } from '../../shared/models.js'
 import { Calibration } from '../calibration/Calibration.js'
 import { SettingsPanel } from '../settings/Settings.js'
 import { SidecarCard } from '../settings/ModelCards.js'
+import { Facts } from '../settings/Facts.js'
 import { Storage } from '../settings/Storage.js'
 
 /**
@@ -63,31 +64,34 @@ export function SettingsPage({ settings }: { settings: Settings | null }): React
 
           {diag && (
             <section className="lift rounded-xl bg-white/[0.035] px-4 py-3 ring-1 ring-white/[0.08]">
-              <h3 className="text-[13px] font-semibold text-neutral-100">Diagnostics</h3>
-              <p className="mt-0.5 text-[11px] text-neutral-500">
-                Where everything lives, and what the app managed to claim at startup.
-              </p>
-              <dl className="mt-3 grid gap-x-4 gap-y-1.5 font-mono text-[11px] sm:grid-cols-[auto_1fr]">
-                {[
-                  ['sidecars', diag.sidecarRoot],
-                  ['models', diag.modelRoot],
-                  ['user data', diag.userData],
-                  ['platform', diag.platform],
-                  ['electron', diag.electron],
-                  [
-                    'hotkeys',
-                    Object.entries(diag.hotkeyRegistered)
-                      .map(([k, v]) => `${k}=${v ? 'ok' : 'FAILED'}`)
-                      .join('  ') || 'none',
-                  ],
-                ].map(([k, v]) => (
-                  <div key={k} className="contents">
-                    <dt className="text-neutral-500">{k}</dt>
-                    <dd className="truncate text-neutral-300">{v}</dd>
-                  </div>
-                ))}
-              </dl>
-              <Storage />
+              <header className="border-b border-white/5 pb-2">
+                <h3 className="text-[13px] font-semibold text-neutral-100">Diagnostics</h3>
+                <p className="mt-0.5 text-[11px] text-neutral-500">
+                  Where everything lives, and what the app managed to claim at startup.
+                </p>
+              </header>
+              {/* Both lists use `Facts`, so the two label columns are one
+                  column. They were separate `auto` grids and did not line up. */}
+              <div className="divide-y divide-white/5">
+                <div className="pt-3 pb-3">
+                  <Facts
+                    rows={[
+                      ['sidecars', diag.sidecarRoot],
+                      ['models', diag.modelRoot],
+                      ['user data', diag.userData],
+                      ['platform', diag.platform],
+                      ['electron', diag.electron],
+                      [
+                        'hotkeys',
+                        Object.entries(diag.hotkeyRegistered)
+                          .map(([k, v]) => `${k}=${v ? 'ok' : 'FAILED'}`)
+                          .join('  ') || 'none',
+                      ],
+                    ]}
+                  />
+                </div>
+                <Storage />
+              </div>
             </section>
           )}
         </>
