@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { DictationResult } from '../dictation/controller.js'
+import type { CaptureDiagnostics, DictationResult } from '../dictation/controller.js'
 
 const exec = promisify(execFile)
 
@@ -35,6 +35,33 @@ export interface DictationMetric {
   finalChars: number
   corrections: number
   degraded: string | null
+  /**
+   * Every stage of the text, for developer mode.
+   *
+   * Kept because the interesting question when output is wrong is always WHICH
+   * stage got it wrong: did the ASR mishear, did the dictionary rewrite
+   * something it should not have, or did the LLM take liberties? Without all
+   * four you are guessing.
+   *
+   * These are your transcripts sitting on your disk. That is a deliberate
+   * choice for a single-user local tool, and it never leaves the machine.
+   */
+  stages?: {
+    /** Straight out of whisper, joined across chunks. */
+    raw: string
+    /** After the deterministic dictionary pass. */
+    corrected: string
+    /** The real request: instruction and text, not just the text. */
+    sent: { system: string; user: string }
+    /** Exactly what came back, before any plausibility check. */
+    received: string
+    /** Which dictionary rules fired. */
+    applied: { from: string; to: string; count: number }[]
+  }
+  /** Why the recording ended, and what the audio looked like. */
+  capture?: CaptureDiagnostics
+  /** Retained WAV, when audio retention is on. */
+  audioPath?: string | null
 }
 
 export interface ResourceMetric {
@@ -89,8 +116,17 @@ export class MetricsStore {
       language: r.language,
       rawChars: r.raw.length,
       finalChars: r.final.length,
-      corrections: r.appliedCorrections,
+      corrections: r.applied.length,
       degraded: r.degraded,
+      stages: {
+        raw: r.raw,
+        corrected: r.corrected,
+        sent: r.sent,
+        received: r.received,
+        applied: r.applied,
+      },
+      capture: r.capture,
+      audioPath: r.audioPath,
     })
   }
 

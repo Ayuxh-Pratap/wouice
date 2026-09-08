@@ -37,7 +37,39 @@ export interface DictationResult {
   asrModel: string
   llmModel: string
   degraded: string | null
-  appliedCorrections: number
+  /**
+   * The ACTUAL request: system prompt and user message.
+   *
+   * The first version recorded only the user message, which is `corrected`
+   * verbatim, so the "Sent to LLM" panel could never differ from "Dictionary"
+   * and told you nothing. What is worth seeing is the instruction the model was
+   * given alongside the text.
+   */
+  sent: { system: string; user: string }
+  /** Exactly what came back, before the plausibility check ran. */
+  received: string
+  applied: { from: string; to: string; count: number }[]
+  capture: CaptureDiagnostics
+  /** Path to the retained WAV, when audio retention is on. */
+  audioPath: string | null
+}
+
+/**
+ * Why the recording ended and what the audio looked like.
+ *
+ * Exists because `chunks 0` on a 38-second dictation is ambiguous on its own:
+ * it could mean the speaker never left a long enough pause, or that chunking is
+ * broken. Those need opposite responses, so record which it was.
+ */
+export interface CaptureDiagnostics {
+  stoppedBy: 'silence' | 'hotkey' | 'cap' | 'unknown'
+  speechMs: number
+  silenceMs: number
+  longestPauseMs: number
+  /** The silence window in force when it stopped: short or long. */
+  windowMs: number
+  chunkAfterMs: number
+  chunkPauseMs: number
 }
 
 export interface ControllerDeps {
@@ -45,6 +77,9 @@ export interface ControllerDeps {
   silence?: SilenceConfig
   cleanupEnabled: () => boolean
   cleanupTimeoutMs: () => number
+  retainAudio: () => boolean
+  /** Persist the session audio and return its path, for diagnostics export. */
+  saveAudio: (pcm: Float32Array) => Promise<string | null>
 }
 
 /**
@@ -74,6 +109,9 @@ export class DictationController extends EventEmitter {
   private asrMsTotal = 0
   private detectedLanguage = 'auto'
   private errorTimer: NodeJS.Timeout | null = null
+  private stoppedBy: CaptureDiagnostics['stoppedBy'] = 'unknown'
+  /** Every frame of the session, kept only when audio retention is on. */
+  private sessionAudio: Float32Array[] = []
 
   constructor(private readonly deps: ControllerDeps) {
     super()
@@ -97,6 +135,9 @@ export class DictationController extends EventEmitter {
   }
 
   send(event: DictationEvent): void {
+    // A hotkey press while listening is the user stopping it by hand, which is
+    // a different diagnosis from an automatic stop.
+    if (event.type === 'hotkey' && this.state.phase === 'listening') this.stoppedBy = 'hotkey'
     const { state, action } = reduce(this.state, event)
     const changed = state.phase !== this.state.phase
     this.state = state
@@ -112,6 +153,7 @@ export class DictationController extends EventEmitter {
     if (this.state.phase !== 'listening' && this.state.phase !== 'arming') return
 
     this.pending.push(frame)
+    if (this.deps.retainAudio()) this.sessionAudio.push(frame)
     this.totalAudioMs += FRAME_MS
 
     const out = silenceStep(
@@ -127,9 +169,11 @@ export class DictationController extends EventEmitter {
         this.send({ type: 'chunkEmitted' })
         break
       case 'stop-silence':
+        this.stoppedBy = 'silence'
         this.send({ type: 'silenceStop' })
         break
       case 'stop-cap':
+        this.stoppedBy = 'cap'
         this.send({ type: 'capStop' })
         break
     }
@@ -224,8 +268,24 @@ export class DictationController extends EventEmitter {
       // Dictionary BEFORE the LLM, so the model sees correct proper nouns and
       // cannot helpfully renormalise them into something else.
       const fixed = correct(raw, SEED_DICTIONARY)
-      const { text: final, llmMs, degraded } = await this.cleanup(fixed.text)
+      const cleaned = await this.cleanup(fixed.text)
+      const { text: final, llmMs, degraded } = cleaned
       if (sessionId !== this.state.sessionId) return
+
+      const cfg = this.deps.silence ?? DEFAULT_SILENCE
+      const capture: CaptureDiagnostics = {
+        stoppedBy: this.stoppedBy,
+        speechMs: this.silence.speechMs,
+        silenceMs: this.silence.totalSilenceMs,
+        longestPauseMs: this.silence.longestSilenceMs,
+        windowMs:
+          this.silence.speechMs >= cfg.adaptAfterMs ? cfg.longWindowMs : cfg.shortWindowMs,
+        chunkAfterMs: cfg.chunkAfterMs,
+        chunkPauseMs: cfg.chunkPauseMs,
+      }
+      const audioPath = this.deps.retainAudio()
+        ? await this.deps.saveAudio(concat(this.sessionAudio))
+        : null
 
       this.send({ type: 'transcribed' })
 
@@ -243,7 +303,11 @@ export class DictationController extends EventEmitter {
         asrModel: this.deps.supervisor.snapshot('whisper').modelId,
         llmModel: this.deps.supervisor.snapshot('llama').modelId,
         degraded,
-        appliedCorrections: fixed.applied.length,
+        sent: { system: DICTATION_CLEANUP_SYSTEM, user: fixed.text },
+        received: cleaned.received,
+        applied: fixed.applied,
+        capture,
+        audioPath,
       }
       this.emit('result', result)
     } catch (err) {
@@ -256,10 +320,12 @@ export class DictationController extends EventEmitter {
   /** Clean up and render into English. Every failure degrades, none throws. */
   private async cleanup(
     text: string
-  ): Promise<{ text: string; llmMs: number; degraded: string | null }> {
-    if (!this.deps.cleanupEnabled()) return { text, llmMs: 0, degraded: null }
+  ): Promise<{ text: string; llmMs: number; degraded: string | null; received: string }> {
+    if (!this.deps.cleanupEnabled()) {
+      return { text, llmMs: 0, degraded: null, received: '(cleanup disabled)' }
+    }
     if (!this.deps.supervisor.canServe('llama')) {
-      return { text, llmMs: 0, degraded: 'llm-unavailable' }
+      return { text, llmMs: 0, degraded: 'llm-unavailable', received: '(model not ready)' }
     }
 
     const llm = new OpenAiCompatClient({
@@ -277,15 +343,23 @@ export class DictationController extends EventEmitter {
       })
       const verdict = isPlausibleCleanup(text, r.text)
       if (!verdict.ok) {
-        return { text, llmMs: r.latencyMs, degraded: `llm-rejected: ${verdict.reason}` }
+        return {
+          text,
+          llmMs: r.latencyMs,
+          degraded: `llm-rejected: ${verdict.reason}`,
+          received: r.text,
+        }
       }
       // An empty answer means "unintelligible"; keep the raw words rather than
       // inserting nothing.
-      if (!r.text.trim()) return { text, llmMs: r.latencyMs, degraded: 'llm-empty' }
-      return { text: r.text, llmMs: r.latencyMs, degraded: null }
+      if (!r.text.trim()) {
+        return { text, llmMs: r.latencyMs, degraded: 'llm-empty', received: r.text }
+      }
+      return { text: r.text, llmMs: r.latencyMs, degraded: null, received: r.text }
     } catch (err) {
       const kind = (err as { kind?: string }).kind ?? 'llm-failed'
-      return { text, llmMs: 0, degraded: `llm-${kind}` }
+      const detail = err instanceof Error ? err.message : String(err)
+      return { text, llmMs: 0, degraded: `llm-${kind}`, received: `(${detail})` }
     }
   }
 
@@ -306,14 +380,7 @@ export class DictationController extends EventEmitter {
   }
 
   private drainPending(): Float32Array {
-    if (this.pending.length === 0) return new Float32Array(0)
-    const total = this.pending.reduce((n, f) => n + f.length, 0)
-    const out = new Float32Array(total)
-    let offset = 0
-    for (const f of this.pending) {
-      out.set(f, offset)
-      offset += f.length
-    }
+    const out = concat(this.pending)
     this.pending = []
     return out
   }
@@ -326,6 +393,8 @@ export class DictationController extends EventEmitter {
     this.totalAudioMs = 0
     this.asrMsTotal = 0
     this.detectedLanguage = 'auto'
+    this.stoppedBy = 'unknown'
+    this.sessionAudio = []
   }
 
   /** Let a queued model switch proceed, per decision A8c. */
@@ -342,6 +411,18 @@ export class DictationController extends EventEmitter {
       sessionId: this.state.sessionId,
     })
   }
+}
+
+function concat(frames: Float32Array[]): Float32Array {
+  if (frames.length === 0) return new Float32Array(0)
+  const total = frames.reduce((n, f) => n + f.length, 0)
+  const out = new Float32Array(total)
+  let offset = 0
+  for (const f of frames) {
+    out.set(f, offset)
+    offset += f.length
+  }
+  return out
 }
 
 export { SAMPLE_RATE, FRAME_MS }
