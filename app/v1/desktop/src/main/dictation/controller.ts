@@ -4,9 +4,14 @@ import {
   OpenAiCompatClient,
   DICTATION_CLEANUP_SYSTEM,
   cleanupBudget,
-  isPlausibleCleanup,
 } from '@wouice/llm'
 import { correct, biasPrompt, SEED_DICTIONARY, type DictionaryEntry } from '@wouice/dictionary'
+import {
+  cleanupDisabled,
+  cleanupFailed,
+  cleanupSucceeded,
+  cleanupUnavailable,
+} from './cleanup-outcome.js'
 import {
   DEFAULT_SILENCE,
   initialSilenceState,
@@ -333,12 +338,10 @@ export class DictationController extends EventEmitter {
   private async cleanup(
     text: string
   ): Promise<{ text: string; llmMs: number; degraded: string | null; received: string }> {
-    if (!this.deps.cleanupEnabled()) {
-      return { text, llmMs: 0, degraded: null, received: '(cleanup disabled)' }
-    }
-    if (!this.deps.supervisor.canServe('llama')) {
-      return { text, llmMs: 0, degraded: 'llm-unavailable', received: '(model not ready)' }
-    }
+    // The decisions below live in `cleanup-outcome.ts`, which is pure and
+    // tested. This method owns the clock and the socket and nothing else.
+    if (!this.deps.cleanupEnabled()) return { ...cleanupDisabled(text), llmMs: 0 }
+    if (!this.deps.supervisor.canServe('llama')) return { ...cleanupUnavailable(text), llmMs: 0 }
 
     // Budgeted from the length of what was said, not a constant.
     //
@@ -363,37 +366,9 @@ export class DictationController extends EventEmitter {
         stallTimeoutMs: budget.stallTimeoutMs,
       })
 
-      // 'length' means the token cap cut the answer off mid-sentence. Accepting
-      // that would hand the user a truncated transcript that looks complete,
-      // which is worse than not cleaning it at all.
-      if (r.finishReason === 'length') {
-        return {
-          text,
-          llmMs: r.latencyMs,
-          degraded: 'llm-truncated',
-          received: r.text,
-        }
-      }
-
-      const verdict = isPlausibleCleanup(text, r.text)
-      if (!verdict.ok) {
-        return {
-          text,
-          llmMs: r.latencyMs,
-          degraded: `llm-rejected: ${verdict.reason}`,
-          received: r.text,
-        }
-      }
-      // An empty answer means "unintelligible"; keep the raw words rather than
-      // inserting nothing.
-      if (!r.text.trim()) {
-        return { text, llmMs: r.latencyMs, degraded: 'llm-empty', received: r.text }
-      }
-      return { text: r.text, llmMs: r.latencyMs, degraded: null, received: r.text }
+      return { ...cleanupSucceeded(text, r), llmMs: r.latencyMs }
     } catch (err) {
-      const kind = (err as { kind?: string }).kind ?? 'llm-failed'
-      const detail = err instanceof Error ? err.message : String(err)
-      return { text, llmMs: 0, degraded: `llm-${kind}`, received: `(${detail})` }
+      return { ...cleanupFailed(text, err), llmMs: 0 }
     }
   }
 
