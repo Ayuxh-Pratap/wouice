@@ -35,6 +35,10 @@ const api: WouiceApi = {
   getDiagnostics: (): Promise<Diagnostics> => ipcRenderer.invoke(IPC.getDiagnostics),
   hideHud: () => ipcRenderer.send(IPC.hideHud),
   getMetrics: (): Promise<MetricsSnapshot> => ipcRenderer.invoke(IPC.getMetrics),
+  copyDiagnostic: (at: number): Promise<boolean> => ipcRenderer.invoke(IPC.copyDiagnostic, at),
+  exportDiagnostics: (withAudio: boolean): Promise<string | null> =>
+    ipcRenderer.invoke(IPC.exportDiagnostics, withAudio),
+  revealMetrics: () => ipcRenderer.send(IPC.revealMetrics),
   // Float32Array crosses the bridge as a structured clone. At 16 kHz that is
   // ~64 KB/s, which is nothing, and it keeps ALL decision logic in main where
   // the state machine lives rather than splitting it across the bridge.

@@ -18,6 +18,9 @@ export const IPC = {
   getDiagnostics: 'app:diagnostics',
   hideHud: 'hud:hide',
   getMetrics: 'metrics:get',
+  copyDiagnostic: 'metrics:copyDiagnostic',
+  exportDiagnostics: 'metrics:export',
+  revealMetrics: 'metrics:reveal',
   // renderer -> main: one 20ms frame of 16kHz mono Float32
   audioFrame: 'capture:frame',
   captureReady: 'capture:ready',
@@ -51,6 +54,27 @@ export interface DictationMetric {
   finalChars: number
   corrections: number
   degraded: string | null
+  /** Every stage of the text, for developer mode. Absent on older records. */
+  stages?: {
+    raw: string
+    corrected: string
+    sent: { system: string; user: string }
+    received: string
+    applied: { from: string; to: string; count: number }[]
+  }
+  capture?: CaptureDiagnostics
+  audioPath?: string | null
+}
+
+/** Why the recording ended, and what the audio looked like. */
+export interface CaptureDiagnostics {
+  stoppedBy: 'silence' | 'hotkey' | 'cap' | 'unknown'
+  speechMs: number
+  silenceMs: number
+  longestPauseMs: number
+  windowMs: number
+  chunkAfterMs: number
+  chunkPauseMs: number
 }
 
 export interface ResourceMetric {
@@ -126,6 +150,11 @@ export interface WouiceApi {
   getDiagnostics(): Promise<Diagnostics>
   hideHud(): void
   getMetrics(): Promise<MetricsSnapshot>
+  /** Put one dictation's full diagnostic on the clipboard, ready to paste. */
+  copyDiagnostic(at: number): Promise<boolean>
+  /** Write a markdown export, optionally with the retained audio. Returns the path. */
+  exportDiagnostics(withAudio: boolean): Promise<string | null>
+  revealMetrics(): void
   sendAudioFrame(sessionId: number, frame: Float32Array): void
   captureReady(sessionId: number): void
   captureFailed(sessionId: number, reason: string): void

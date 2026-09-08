@@ -1,4 +1,4 @@
-import { app, clipboard, ipcMain } from 'electron'
+import { app, clipboard, dialog, ipcMain, shell } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SidecarSupervisor, type SidecarSnapshot } from './sidecars/supervisor.js'
@@ -12,6 +12,9 @@ import { IPC, type Diagnostics, type SidecarView } from '../shared/ipc.js'
 import type { SidecarId } from '../shared/models.js'
 import { DictationController } from './dictation/controller.js'
 import { MetricsStore, sampleResources } from './metrics/store.js'
+import { RecordingStore } from './metrics/recordings.js'
+import { formatDiagnostic, formatSession } from './metrics/diagnostic.js'
+import { writeFileSync, mkdirSync, copyFileSync } from 'node:fs'
 
 // MUST come before any app.getPath('userData') call, and those happen at module
 // scope below. Unpackaged, Electron otherwise names itself "Electron" and puts
@@ -35,12 +38,15 @@ const settings = new SettingsStore()
 const supervisor = new SidecarSupervisor(SIDECAR_ROOT, MODEL_ROOT)
 const hotkeys = new HotkeyManager()
 const metrics = new MetricsStore(app.getPath('userData'))
+const recordings = new RecordingStore(app.getPath('userData'))
 
 const dictation = new DictationController({
   supervisor,
-  silence: settings.get().silence as never,
+  silence: settings.get().silence,
   cleanupEnabled: () => settings.get().cleanup.enabled,
   cleanupTimeoutMs: () => settings.get().cleanup.timeoutMs,
+  retainAudio: () => settings.get().retainAudio,
+  saveAudio: async (pcm) => recordings.save(pcm),
 })
 
 /** Phase names the HUD understands; the machine has one more than it shows. */
@@ -188,6 +194,55 @@ function registerIpc(): void {
     if (sessionId === dictation.sessionId) dictation.send({ type: 'micFailed', reason })
   })
   ipcMain.on(IPC.cancelDictation, () => dictation.send({ type: 'escape' }))
+
+  ipcMain.handle(IPC.copyDiagnostic, (_e, at: number) => {
+    const all = metrics.dictations()
+    const i = all.findIndex((d) => d.at === at)
+    if (i === -1) return false
+    clipboard.writeText(formatDiagnostic(all[i]!, i + 1))
+    return true
+  })
+
+  ipcMain.handle(IPC.exportDiagnostics, async (_e, withAudio: boolean) => {
+    const all = metrics.dictations()
+    if (all.length === 0) return null
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Export Wouice diagnostics',
+      defaultPath: `wouice-diagnostics-${stamp}.md`,
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+    })
+    if (canceled || !filePath) return null
+
+    const snap = supervisor.snapshotAll()
+    const md = formatSession([...all].reverse(), {
+      app: app.getVersion(),
+      electron: process.versions.electron,
+      platform: `${process.platform} ${process.arch}`,
+      models: snap.map((x) => `${x.id}=${x.modelId}`).join(' '),
+    })
+    writeFileSync(filePath, md, 'utf8')
+
+    if (withAudio) {
+      // Alongside the markdown rather than inside it: audio next to the text
+      // that describes it means one folder to zip and send.
+      const dir = filePath.replace(/\.md$/, '') + '-audio'
+      mkdirSync(dir, { recursive: true })
+      for (const d of all) {
+        if (!d.audioPath) continue
+        try {
+          copyFileSync(d.audioPath, path.join(dir, path.basename(d.audioPath)))
+        } catch {
+          // Pruned since it was recorded. The markdown still stands alone.
+        }
+      }
+    }
+    shell.showItemInFolder(filePath)
+    return filePath
+  })
+
+  ipcMain.on(IPC.revealMetrics, () => shell.showItemInFolder(metrics.path))
 }
 
 // A second instance would fight over the hotkey and the sidecar ports.
