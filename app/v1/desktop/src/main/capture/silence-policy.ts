@@ -109,6 +109,33 @@ export function rms(samples: Float32Array): number {
  * long-form thinking pauses, 3.0s makes a one-liner feel sluggish. So the
  * window widens once the utterance has proven itself long.
  */
+/**
+ * Frame loudness as a 0..1 meter reading.
+ *
+ * CALIBRATED FROM THE SAME RECORDING AS THE THRESHOLDS, which the first version
+ * was not. It divided by 0.25, and the measured distribution on this machine's
+ * microphone is:
+ *
+ *   true silence   p5  0.00032   p25 0.00091
+ *   speech         p50 0.00436   p90 0.01778
+ *
+ * so an ordinary speech frame produced 0.0174 and a loud one 0.071. The meter
+ * was pinned to the bottom of its range for every sound a person can make into
+ * it - and the unit test that was supposed to catch this fed it `rms: 0.2`,
+ * eleven times louder than the loudest real frame, and passed.
+ *
+ * SQUARE ROOT, not a straight ratio. Loudness is perceived closer to the root
+ * of amplitude, and a linear meter over this range leaves normal speech
+ * huddled near zero while shouting takes the whole scale. With the full scale
+ * a little above p90, an ordinary frame reads about 0.38 and a loud one 0.77.
+ */
+const METER_FULL_SCALE = 0.03
+
+export function meterLevel(rms: number): number {
+  if (!Number.isFinite(rms) || rms <= 0) return 0
+  return Math.min(1, Math.sqrt(rms / METER_FULL_SCALE))
+}
+
 export function step(
   state: SilenceState,
   frame: Frame,
@@ -126,7 +153,7 @@ export function step(
 
   // Fast attack, slow release: the meter should jump on speech and fall gently,
   // which reads as a voice rather than a flicker.
-  const target = Math.min(1, frame.rms / 0.25)
+  const target = meterLevel(frame.rms)
   const level = target > state.level ? target : state.level * 0.85 + target * 0.15
 
   const silenceMs = isSpeech ? 0 : state.silenceMs + frame.ms

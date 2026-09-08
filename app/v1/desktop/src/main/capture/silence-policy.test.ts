@@ -9,6 +9,7 @@ import {
   type Frame,
   type SilenceState,
   type SilenceVerdict,
+  meterLevel,
 } from './silence-policy.js'
 
 const FRAME_MS = 20
@@ -369,5 +370,43 @@ describe('the threshold suits a real microphone', () => {
     expect(state.peakRms).toBeCloseTo(MEASURED.speechP90, 5)
     expect(state.meanSpeechRms).toBeCloseTo(MEASURED.speechP90, 5)
     expect(state.speechFrames).toBe(30)
+  })
+})
+
+describe('the meter against real speech, not a test signal', () => {
+  // The percentiles measured from 60 seconds of natural speech on this
+  // machine's microphone, and the reason the first version of this was wrong:
+  // it was tuned against `rms: 0.2`, which no frame here ever reaches.
+  const SILENCE_P25 = 0.00091
+  const SPEECH_P50 = 0.00436
+  const SPEECH_P90 = 0.01778
+
+  it('leaves room silence near the floor', () => {
+    expect(meterLevel(SILENCE_P25)).toBeLessThan(0.2)
+    expect(meterLevel(0)).toBe(0)
+  })
+
+  it('puts an ordinary speech frame in the middle of the scale', () => {
+    // The bug being guarded against: this used to read 0.017, which is a meter
+    // that never moves for anything a person can say.
+    const ordinary = meterLevel(SPEECH_P50)
+    expect(ordinary).toBeGreaterThan(0.3)
+    expect(ordinary).toBeLessThan(0.6)
+  })
+
+  it('gives a loud frame most of the scale without pinning it', () => {
+    const loud = meterLevel(SPEECH_P90)
+    expect(loud).toBeGreaterThan(0.7)
+    expect(loud).toBeLessThan(1)
+  })
+
+  it('separates speech from silence by something you can see', () => {
+    expect(meterLevel(SPEECH_P50) - meterLevel(SILENCE_P25)).toBeGreaterThan(0.2)
+  })
+
+  it('clips rather than overflowing on a signal that is out of range', () => {
+    expect(meterLevel(5)).toBe(1)
+    expect(meterLevel(-1)).toBe(0)
+    expect(meterLevel(Number.NaN)).toBe(0)
   })
 })
