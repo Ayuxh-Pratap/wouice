@@ -59,7 +59,7 @@ export function ChartFrame({
   empty?: string
 }): React.JSX.Element {
   return (
-    <section className="rounded-xl bg-neutral-900 p-4 ring-1 ring-white/10">
+    <section className="lift rounded-xl bg-white/[0.035] p-4 ring-1 ring-white/[0.08]">
       <header className="mb-3 flex items-start justify-between gap-4">
         <div>
           <h3 className="text-[13px] font-semibold text-neutral-100">{title}</h3>
@@ -91,7 +91,7 @@ export function Stat({
   const valueColor =
     tone === 'good' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : 'text-neutral-100'
   return (
-    <div className="rounded-xl bg-neutral-900 px-4 py-3 ring-1 ring-white/10">
+    <div className="lift rounded-xl bg-white/[0.035] px-4 py-3 ring-1 ring-white/[0.08]">
       <div className="text-[11px] text-neutral-500">{label}</div>
       <div className={`mt-0.5 font-mono text-xl tabular-nums ${valueColor}`}>{value}</div>
       {hint && <div className="text-[10px] text-neutral-600">{hint}</div>}

@@ -1,5 +1,39 @@
 @import 'tailwindcss';
 
+/*
+ * Depth, defined once.
+ *
+ * Every raised thing in this app is lit the same way: a hairline border, a
+ * one-pixel highlight along the top inside edge, and a soft shadow beneath. The
+ * highlight is what does the work - it reads as a lit lip catching light from
+ * above, which is what makes a flat rectangle look like an object rather than a
+ * region of different colour.
+ *
+ * One definition rather than a string of shadow classes repeated at a dozen
+ * call sites, because the moment two of them disagree the whole surface stops
+ * looking deliberate.
+ */
+@utility lift {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.055),
+    0 1px 2px rgb(0 0 0 / 0.35);
+}
+
+/* The same lighting, deeper, for the one panel that holds everything else. */
+@utility lift-panel {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 8px 24px -12px rgb(0 0 0 / 0.8),
+    0 2px 6px rgb(0 0 0 / 0.35);
+}
+
+/* Selected states: lit a little harder, so "this one" is visible at a glance. */
+@utility lift-active {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.09),
+    0 1px 2px rgb(0 0 0 / 0.4);
+}
+
 /* The HUD window is transparent; the body must not paint a background or the
    rounded panel sits on an opaque rectangle. */
 html, body, #root { margin: 0; height: 100%; background: transparent; }
