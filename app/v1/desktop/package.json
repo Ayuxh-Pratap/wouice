@@ -14,7 +14,8 @@
     "@wouice/asr": "*",
     "@wouice/dictionary": "*",
     "@wouice/llm": "*",
-    "@wouice/store": "*"
+    "@wouice/store": "*",
+    "koffi": "^3.2.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
