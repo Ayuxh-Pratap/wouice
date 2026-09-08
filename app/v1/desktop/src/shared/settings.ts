@@ -108,6 +108,24 @@ export interface Settings {
   retainAudio: boolean
   /** Null until the user calibrates; the levels above are then shipped defaults. */
   calibration: CalibrationRecord | null
+  injection: InjectionConfig
+}
+
+/**
+ * Putting the text at the cursor instead of only on the clipboard.
+ *
+ * `pasteOverrides` exists because the paste key is not universal. Spike V6b
+ * measured Windows Terminal accepting plain Ctrl+V, so the default is right for
+ * the terminal that ships with Windows - but Git Bash reads Ctrl+V as "quote the
+ * next character" and PuTTY ignores it entirely, and dictating into either with
+ * the wrong combination produces silence and no error at all. The built-in table
+ * cannot know every emulator, so someone who has found the right combination for
+ * theirs can say so here.
+ */
+export interface InjectionConfig {
+  enabled: boolean
+  /** Lowercase executable name -> combination, e.g. { 'mintty.exe': 'Ctrl+Shift+V' }. */
+  pasteOverrides: Record<string, string>
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -134,4 +152,5 @@ export const DEFAULT_SETTINGS: Settings = {
   developerMode: true,
   retainAudio: true,
   calibration: null,
+  injection: { enabled: true, pasteOverrides: {} },
 }

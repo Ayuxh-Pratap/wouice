@@ -63,6 +63,7 @@ export class SettingsStore {
         // Null is a meaningful value here - "never calibrated" - so this must
         // not fall back to the default when it is explicitly null.
         calibration: raw.calibration ?? null,
+        injection: { ...DEFAULT_SETTINGS.injection, ...raw.injection },
       }
     } catch {
       // A hand-edited file with a trailing comma must not brick the app.
