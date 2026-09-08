@@ -19,7 +19,7 @@ import {
   showHud,
   startPetDrag,
 } from './windows.js'
-import { IPC, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type SidecarView } from '../shared/ipc.js'
+import { IPC, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type RatingSheet, type SidecarView } from '../shared/ipc.js'
 import type { SidecarId } from '../shared/models.js'
 import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from './dictation/controller.js'
 import { sampleResources } from './metrics/sample.js'
@@ -386,6 +386,40 @@ function registerIpc(): void {
     recordings.forget(audioPaths)
     broadcast(IPC.metric, undefined)
     return deleted
+  })
+
+  /**
+   * The rating sheet, assembled in one place.
+   *
+   * Every one of the three handlers below returns the WHOLE sheet rather than
+   * just what it changed. The verdict, the count and the next dictation move
+   * together or the screen shows a number that no longer describes what is in
+   * front of it, and one shape crossing the bridge is how that is guaranteed
+   * rather than remembered.
+   */
+  const ratingSheet = (): RatingSheet => {
+    const { next, remaining } = store.dictations.nextUnrated()
+    return {
+      next,
+      remaining,
+      progress: store.ratings.progress(),
+      recent: store.ratings.all(12).flatMap((rating) => {
+        const d = store.dictations.byAt(rating.dictationAt)
+        // A verdict whose dictation has been deleted has nothing to show. The
+        // cascade should have taken it, so this is belt and braces.
+        return d ? [{ rating, text: d.received || d.corrected || d.raw, language: d.language }] : []
+      }),
+    }
+  }
+
+  ipcMain.handle(IPC.getRatingSheet, () => ratingSheet())
+  ipcMain.handle(IPC.rateDictation, (_e, at: number, ship: boolean, note: string) => {
+    store.ratings.set(at, ship, note)
+    return ratingSheet()
+  })
+  ipcMain.handle(IPC.clearRating, (_e, at: number) => {
+    store.ratings.clear(at)
+    return ratingSheet()
   })
 
   ipcMain.handle(IPC.getStorage, () => store.stats())

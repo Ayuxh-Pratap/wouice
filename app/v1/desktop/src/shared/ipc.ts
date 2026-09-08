@@ -1,6 +1,14 @@
 import type { SidecarId } from './models.js'
 import type { Settings } from './settings.js'
-import type { DictationRecord, DictionaryRecord, Page, ResourceRecord, StoreStats } from '@wouice/store'
+import type {
+  DictationRecord,
+  DictionaryRecord,
+  Page,
+  RatingProgress,
+  RatingRecord,
+  ResourceRecord,
+  StoreStats,
+} from '@wouice/store'
 
 /**
  * The IPC surface, typed in one place so main and renderer cannot drift.
@@ -21,6 +29,9 @@ export const IPC = {
   getMetrics: 'metrics:get',
   getDictationPage: 'metrics:page',
   deleteDictations: 'metrics:delete',
+  getRatingSheet: 'ratings:sheet',
+  rateDictation: 'ratings:set',
+  clearRating: 'ratings:clear',
   clearDictations: 'metrics:clear',
   getStorage: 'storage:stats',
   getDictionary: 'dictionary:list',
@@ -80,6 +91,8 @@ export type {
   CaptureDiagnostics,
   DictationRecord,
   Page,
+  RatingProgress,
+  RatingRecord,
   ResourceRecord,
   StoreStats,
   DictionaryRecord,
@@ -181,6 +194,23 @@ export interface HudState {
   message?: string
 }
 
+/**
+ * The rating screen's whole state.
+ *
+ * One shape and one round trip rather than four calls that can disagree with
+ * each other: the verdict you just recorded, the count it changed, and the next
+ * dictation to judge all have to move together or the screen shows a number
+ * that no longer matches what is in front of you.
+ */
+export interface RatingSheet {
+  /** The next dictation with no verdict, oldest first. Null when none are left. */
+  next: DictationRecord | null
+  remaining: number
+  progress: RatingProgress
+  /** Recent verdicts, newest first, so a misclick can be found and undone. */
+  recent: { rating: RatingRecord; text: string; language: string }[]
+}
+
 export interface SidecarView {
   id: SidecarId
   status: string
@@ -229,6 +259,12 @@ export interface WouiceApi {
   deleteDictations(ats: number[]): Promise<number>
   /** Delete every dictation and every retained recording. Returns the count. */
   clearDictations(): Promise<number>
+  /** Everything the rating screen needs, in one round trip. */
+  getRatingSheet(): Promise<RatingSheet>
+  /** Record a verdict and get the next one back. */
+  rateDictation(at: number, ship: boolean, note?: string): Promise<RatingSheet>
+  /** Undo a verdict, putting that dictation back in the queue. */
+  clearRating(at: number): Promise<RatingSheet>
   /** What is in the database: schema version, size, and per-table row counts. */
   getStorage(): Promise<StoreStats>
   getDictionary(): Promise<DictionaryRecord[]>

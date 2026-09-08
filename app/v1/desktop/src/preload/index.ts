@@ -39,6 +39,10 @@ const api: WouiceApi = {
     ipcRenderer.invoke(IPC.getDictationPage, offset, limit, query),
   deleteDictations: (ats: number[]) => ipcRenderer.invoke(IPC.deleteDictations, ats),
   clearDictations: () => ipcRenderer.invoke(IPC.clearDictations),
+  getRatingSheet: () => ipcRenderer.invoke(IPC.getRatingSheet),
+  rateDictation: (at: number, ship: boolean, note?: string) =>
+    ipcRenderer.invoke(IPC.rateDictation, at, ship, note ?? ''),
+  clearRating: (at: number) => ipcRenderer.invoke(IPC.clearRating, at),
   getStorage: () => ipcRenderer.invoke(IPC.getStorage),
   getDictionary: () => ipcRenderer.invoke(IPC.getDictionary),
   addDictionaryEntry: (entry) => ipcRenderer.invoke(IPC.addDictionaryEntry, entry),
