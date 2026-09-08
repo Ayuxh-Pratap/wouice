@@ -1,6 +1,13 @@
 import { clipboard } from 'electron'
 import { decideDelivery, withCombo, type Delivery, type Target } from './policy.js'
-import { foregroundTarget, injectionAvailable, pressCombo, typeText } from './win32.js'
+import {
+  foregroundTarget,
+  injectionAvailable,
+  isProcessElevated,
+  pressCombo,
+  selfElevated,
+  typeText,
+} from './win32.js'
 
 /**
  * Putting the transcript where the cursor is.
@@ -100,6 +107,10 @@ export class Injector {
       textLength: text.length,
       clipboardHasNonText,
       enabled: this.deps.enabled(),
+      // Asked about the CAPTURED window, which is the one the text is destined
+      // for, not whatever happens to be in front at this instant.
+      targetElevated: this.captured ? isProcessElevated(this.captured.pid) : null,
+      selfElevated: selfElevated(),
     })
     delivery = withCombo(delivery, this.captured?.exe ?? '', this.deps.pasteOverrides())
 

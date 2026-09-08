@@ -25,6 +25,8 @@ const ctx = (patch: Partial<DeliveryContext> = {}): DeliveryContext => ({
   textLength: 50,
   clipboardHasNonText: false,
   enabled: true,
+  targetElevated: false,
+  selfElevated: false,
   ...patch,
 })
 
@@ -61,11 +63,9 @@ describe('it refuses rather than guessing', () => {
   })
 
   it('copies when the target executable could not be read', () => {
-    // OpenProcess being refused usually means a higher integrity level, where
-    // Windows drops our input silently. Better to decline out loud.
     const d = decideDelivery(ctx({ captured: target({ exe: '' }) }))
     expect(d.method).toBe('copy')
-    expect(d.reason).toMatch(/elevated/i)
+    expect(d.reason).toMatch(/identify/i)
   })
 
   it('copies an empty transcript rather than sending a bare keystroke', () => {
@@ -76,6 +76,39 @@ describe('it refuses rather than guessing', () => {
     for (const patch of [{ enabled: false }, { captured: null }, { current: null }]) {
       expect(decideDelivery(ctx(patch)).restoreClipboard).toBe(false)
     }
+  })
+})
+
+describe('elevated windows', () => {
+  // V6c measured this: SendInput reported all four events accepted and not one
+  // character reached an elevated window. Nothing afterwards can detect it, so
+  // refusing beforehand is the only defence.
+  it('refuses an elevated target when we are not elevated', () => {
+    const d = decideDelivery(ctx({ targetElevated: true }))
+    expect(d.method).toBe('copy')
+    expect(d.reason).toMatch(/administrator/i)
+  })
+
+  it('refuses when elevation could not be determined', () => {
+    // Being wrong costs a transcript; being cautious costs a clipboard paste.
+    const d = decideDelivery(ctx({ targetElevated: null }))
+    expect(d.method).toBe('copy')
+    expect(d.reason).toMatch(/could not check/i)
+  })
+
+  it('allows an elevated target when we are elevated too', () => {
+    expect(decideDelivery(ctx({ targetElevated: true, selfElevated: true })).method).toBe('paste')
+  })
+
+  it('allows a normal target from an elevated app: input flows downward', () => {
+    expect(decideDelivery(ctx({ targetElevated: false, selfElevated: true })).method).toBe('paste')
+  })
+
+  it('does not let the typing fallback slip past the elevation check', () => {
+    // Typing is just as blocked as pasting; the clipboard case must not reorder
+    // the rules and end up sending keystrokes that go nowhere.
+    const d = decideDelivery(ctx({ targetElevated: true, clipboardHasNonText: true, textLength: 10 }))
+    expect(d.method).toBe('copy')
   })
 })
 
@@ -100,9 +133,11 @@ describe('when the clipboard holds something we cannot put back', () => {
     expect(d.reason).toMatch(/clipboard was replaced/i)
   })
 
-  it('stays well below the shortest measured failure', () => {
-    // Typing was exact at 21 chars and broken at 585; the boundary is unmeasured.
-    expect(TYPE_SAFE_MAX_CHARS).toBeLessThan(585)
+  it('stays below the measured boundary, with margin', () => {
+    // V6d: exact on 5/5 up to 320 chars, 3/5 at 400, 0/5 at 500.
+    expect(TYPE_SAFE_MAX_CHARS).toBeLessThan(320)
+    // And not so timid that it never types anything worth typing.
+    expect(TYPE_SAFE_MAX_CHARS).toBeGreaterThanOrEqual(120)
   })
 
   it('still refuses when focus moved, before considering the clipboard', () => {

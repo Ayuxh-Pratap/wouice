@@ -27,6 +27,7 @@ interface Koffi {
   pointer(type: string): unknown
   out(type: unknown): unknown
   inout(type: unknown): unknown
+  decode(buffer: Buffer, type: string): unknown
   version?: string
 }
 
@@ -56,6 +57,7 @@ const bindings = (() => {
   const k = koffi
   const user32 = k.load('user32.dll')
   const kernel32 = k.load('kernel32.dll')
+  const advapi32 = k.load('advapi32.dll')
 
   return {
     GetForegroundWindow: user32.func('__stdcall', 'GetForegroundWindow', 'void *', []) as Fn,
@@ -86,20 +88,84 @@ const bindings = (() => {
       k.inout(k.pointer('uint32_t')),
     ]) as Fn,
     CloseHandle: kernel32.func('__stdcall', 'CloseHandle', 'bool', ['void *']) as Fn,
+    GetCurrentProcess: kernel32.func('__stdcall', 'GetCurrentProcess', 'void *', []) as Fn,
+    OpenProcessToken: advapi32.func('__stdcall', 'OpenProcessToken', 'bool', [
+      'void *',
+      'uint32_t',
+      k.out(k.pointer('void *')),
+    ]) as Fn,
+    GetTokenInformation: advapi32.func('__stdcall', 'GetTokenInformation', 'bool', [
+      'void *',
+      'int',
+      k.out(k.pointer('uint8_t')),
+      'uint32_t',
+      k.out(k.pointer('uint32_t')),
+    ]) as Fn,
   }
 })()
 
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+const TOKEN_QUERY = 0x0008
+/** TOKEN_INFORMATION_CLASS::TokenElevation */
+const TOKEN_ELEVATION = 20
+
+/**
+ * Is this process running elevated?
+ *
+ * MEASURED, in spike V6c. Windows silently drops synthetic input crossing from
+ * a lower integrity level to a higher one: `SendInput` returned 4 of 4 events
+ * accepted, and not one character reached an elevated window. The transcript
+ * would be gone with nothing anywhere reporting a problem.
+ *
+ * The first version of the policy guessed at this by checking whether the
+ * target's executable could be read, on the theory that a refused `OpenProcess`
+ * meant higher integrity. V6c disproved it: `powershell.exe` running as
+ * administrator reported its name perfectly well, so the guard never fired.
+ * `TokenElevation` gives the real answer, and gives it from outside.
+ *
+ * `pid: 0` means this process. Returns null when the answer cannot be
+ * determined, which callers must read as "assume it might be", never as "no".
+ */
+export function isProcessElevated(pid: number): boolean | null {
+  if (!bindings) return null
+  const handle =
+    pid === 0
+      ? bindings.GetCurrentProcess()
+      : bindings.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+  if (!handle) return null
+
+  let result: boolean | null = null
+  const tokenBuf = Buffer.alloc(8)
+  if (bindings.OpenProcessToken(handle, TOKEN_QUERY, tokenBuf)) {
+    const token = koffi!.decode(tokenBuf, 'void *')
+    const info = Buffer.alloc(4)
+    const returned = Buffer.alloc(4)
+    if (bindings.GetTokenInformation(token, TOKEN_ELEVATION, info, 4, returned)) {
+      result = info.readUInt32LE(0) !== 0
+    }
+    bindings.CloseHandle(token)
+  }
+  if (pid !== 0) bindings.CloseHandle(handle)
+  return result
+}
+
+/** Cached: a process cannot change its own elevation while it runs. */
+let selfElevatedCache: boolean | null | undefined
+export function selfElevated(): boolean {
+  if (selfElevatedCache === undefined) selfElevatedCache = isProcessElevated(0)
+  return selfElevatedCache === true
+}
 /** Chrome puts the whole page title in there, so this is generous on purpose. */
 const TITLE_CHARS = 1024
 
 /**
  * Everything the policy needs about the window in front.
  *
- * Returns `exe: ''` when the process could not be opened, which the policy
- * reads as "possibly elevated, do not send input". That is the closest thing to
- * an elevation check available without a token query, and erring toward
- * refusing costs a clipboard paste rather than a lost transcript.
+ * Returns `exe: ''` when the process could not be opened at all - a protected
+ * process, or one that exited between the two calls. That is NOT an elevation
+ * check: V6c measured an elevated `powershell.exe` reporting its name perfectly
+ * well through `PROCESS_QUERY_LIMITED_INFORMATION`, which is exactly what the
+ * "limited" access right exists for. Elevation is `isProcessElevated`.
  */
 export function foregroundTarget(): Target | null {
   if (!bindings) return null

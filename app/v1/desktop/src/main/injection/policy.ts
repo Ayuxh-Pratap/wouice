@@ -127,12 +127,22 @@ export function sameTarget(captured: Target | null, current: Target | null): boo
 /**
  * How long a transcript may be before typing stops being trusted.
  *
- * PROVISIONAL. V6b measured typing exact at 21 characters in all three targets
- * and broken at 585 in two of them; the boundary between was not bisected. Until
- * V6d does that, this sits far below the shortest known failure rather than
- * anywhere near it - a wrong guess here is a silently truncated sentence.
+ * MEASURED in spike V6d, five runs at each length through Chrome, then confirmed
+ * against VS Code - the harsher target, which had lost all 585 characters where
+ * Chrome lost a third:
+ *
+ *   40-320 chars   exact on 5 of 5
+ *   400 chars      exact on 3 of 5, worst run landed 365
+ *   500 chars      exact on 0 of 5, worst run landed 381
+ *   585 chars      exact on 0 of 5, worst run landed 399
+ *
+ * 320 held in both targets. This sits below it on purpose: V6b watched a
+ * configuration pass five consecutive runs and fail the sixth under different
+ * load, so the boundary is where a race starts showing, not where it starts
+ * existing. The costs are lopsided - too high silently truncates a sentence,
+ * too low needlessly replaces a clipboard image - so the margin goes downward.
  */
-export const TYPE_SAFE_MAX_CHARS = 120
+export const TYPE_SAFE_MAX_CHARS = 240
 
 export type DeliveryMethod = 'paste' | 'type' | 'copy'
 
@@ -159,6 +169,14 @@ export interface DeliveryContext {
   clipboardHasNonText: boolean
   /** The user's setting. Off means copy and let them paste. */
   enabled: boolean
+  /**
+   * Whether the target runs elevated. `null` means it could not be determined,
+   * which is treated as "it might be" - the cost of being wrong is a lost
+   * transcript, and the cost of being cautious is a clipboard paste.
+   */
+  targetElevated: boolean | null
+  /** Whether WE are elevated. Input flows down the integrity ladder, never up. */
+  selfElevated: boolean
 }
 
 /**
@@ -173,10 +191,22 @@ export function decideDelivery(ctx: DeliveryContext): Delivery {
   if (!ctx.enabled) return copy('insertion is turned off')
   if (!ctx.captured) return copy('no window was captured when you pressed the hotkey')
 
-  // An unreadable executable means OpenProcess was refused, which usually means
-  // the target runs at a higher integrity level than we do. Windows will drop
-  // our input there anyway, and it does so silently, so decline out loud.
-  if (!ctx.captured.exe) return copy('could not identify the window, so it may be elevated')
+  if (!ctx.captured.exe) return copy('could not identify the window')
+
+  // Windows drops synthetic input crossing from a lower integrity level to a
+  // higher one, and drops it silently: V6c measured SendInput reporting all four
+  // events accepted while not one character reached an elevated window. There is
+  // no way to notice afterwards, so the only defence is refusing beforehand.
+  //
+  // Elevated -> non-elevated is fine, which is why this asks about the gap and
+  // not simply about the target.
+  if (!ctx.selfElevated && ctx.targetElevated !== false) {
+    return copy(
+      ctx.targetElevated === true
+        ? 'that window runs as administrator, and Windows blocks input from apps that do not'
+        : 'could not check that window, and Windows blocks input into elevated ones'
+    )
+  }
 
   if (!ctx.current) return copy('no window is in the foreground')
   if (!sameTarget(ctx.captured, ctx.current)) {
