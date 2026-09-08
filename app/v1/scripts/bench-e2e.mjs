@@ -27,8 +27,13 @@ const LLAMA_URL = process.env.LLAMA_URL ?? 'http://127.0.0.1:8179'
 const args = process.argv.slice(2)
 const runsFlag = args.indexOf('--runs')
 const RUNS = runsFlag === -1 ? 3 : Number(args[runsFlag + 1])
+// A LABEL, not a choice. whisper-server serves whatever model it was started
+// with and ignores the field in the request, so this only names the result -
+// it cannot change it. Passing a model this server is not running produced a
+// measurement reported as large-v3 that was actually turbo, and a 2x error in
+// the A1 figure. Use `compare-models.mjs`, which starts the servers itself.
 const asrFlag = args.indexOf('--asr')
-const ASR_MODEL = asrFlag === -1 ? 'ggml-large-v3-q5_0' : args[asrFlag + 1]
+const ASR_MODEL = asrFlag === -1 ? 'whatever-is-loaded' : args[asrFlag + 1]
 const files = args.filter((a) => a.endsWith('.wav'))
 
 function percentile(values, p) {
@@ -59,6 +64,7 @@ async function main() {
   const llm = new OpenAiCompatClient({ baseUrl: LLAMA_URL, model: 'local' })
 
   heading(`End to end: ${wavs.length} samples x ${RUNS} runs, asr=${ASR_MODEL}`)
+  console.log('  NOTE: this measures whatever model the running server has loaded.\n')
 
   // One throwaway pass. The first request after a model loads pays for warm-up
   // that no real dictation ever pays again, and including it would flatter or
