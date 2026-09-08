@@ -2,6 +2,19 @@ import { useCallback, useEffect, useState } from 'react'
 import type { RatingSheet } from '../../shared/ipc.js'
 
 /**
+ * TEMPORARY. DELETE THIS SCREEN WHEN A4 IS MET.
+ *
+ * This is quality-assurance scaffolding, not a feature. It exists to close one
+ * acceptance criterion and has no place in the product afterwards - not hidden
+ * behind developer mode, not kept "in case": gone. What goes with it is the
+ * route and its `RouteId`, the `quality` icon, the three IPC channels and their
+ * handlers, the `RatingSheet` type, `Ratings` and its tests,
+ * `Dictations.nextUnrated`, and the preview stub.
+ *
+ * Migration 5 stays. Migrations are append-only - a machine that has run one
+ * will not run it again - so the `ratings` table remains and simply stops
+ * being read.
+ *
  * Acceptance criterion A4, made answerable.
  *
  * WHY A SCREEN AND NOT A SCRIPT. A4 asks for twenty Hinglish samples with at
