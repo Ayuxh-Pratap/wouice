@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { DEFAULT_SETTINGS, clampZoom, type Settings } from '../shared/settings.js'
+import { isCharacterId, isPetSize } from '../shared/pet.js'
 
 /**
  * Settings as a single JSON file in userData.
@@ -75,6 +76,13 @@ export class SettingsStore {
           // whatever it is handed, so the clamp lives with the arithmetic that
           // needs it rather than being repeated at every entry point.
           placement: { ...DEFAULT_SETTINGS.pet.placement, ...raw.pet?.placement },
+          // Checked against the list rather than trusted: an id from an older
+          // build, or a typo in the file, would otherwise reach the renderer
+          // and render nothing at all with no clue as to why.
+          character: isCharacterId(raw.pet?.character)
+            ? raw.pet.character
+            : DEFAULT_SETTINGS.pet.character,
+          size: isPetSize(raw.pet?.size) ? raw.pet.size : DEFAULT_SETTINGS.pet.size,
         },
       }
     } catch {

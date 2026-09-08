@@ -1,5 +1,12 @@
 import type { SidecarId } from './models.js'
-import { DEFAULT_PLACEMENT, type PetPlacement } from './pet.js'
+import {
+  DEFAULT_CHARACTER,
+  DEFAULT_PET_SIZE,
+  DEFAULT_PLACEMENT,
+  type CharacterId,
+  type PetPlacement,
+  type PetSize,
+} from './pet.js'
 
 /**
  * Silence detection and chunking parameters.
@@ -130,6 +137,16 @@ export interface PetConfig {
   enabled: boolean
   /** Where it is parked. See `PetPlacement` - fractions, not pixels. */
   placement: PetPlacement
+  /** Which character. The artwork and frame data live in the renderer. */
+  character: CharacterId
+  /**
+   * How big to draw her.
+   *
+   * The sheets disagree about how much of a cell the character fills, so no one
+   * size suits all of them - and how big is comfortable also depends on the
+   * monitor she is sitting on.
+   */
+  size: PetSize
 }
 
 /**
@@ -243,7 +260,12 @@ export const DEFAULT_SETTINGS: Settings = {
   injection: { enabled: true, pasteOverrides: {} },
   audio: { deviceId: null, deviceLabel: '' },
   appearance: { zoom: 1 },
-  pet: { enabled: true, placement: DEFAULT_PLACEMENT },
+  pet: {
+    enabled: true,
+    placement: DEFAULT_PLACEMENT,
+    character: DEFAULT_CHARACTER,
+    size: DEFAULT_PET_SIZE,
+  },
 }
 
 /**
