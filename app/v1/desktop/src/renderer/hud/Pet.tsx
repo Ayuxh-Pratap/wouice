@@ -1,117 +1,109 @@
-import { PET_SIZE } from '../../shared/pet.js'
+import { petPixels, type CharacterId, type PetSize } from '../../shared/pet.js'
 import type { Tone } from './phase.js'
+import { characterOf, poseFrames, spriteStyle, type Pose } from './sprite.js'
 
 /**
- * The character.
+ * The character on the desktop.
  *
- * IT IS THE APP'S OWN MARK, not a mascot. The five-bar waveform glyph is
- * already the icon in the title bar and the rail, and making it the face means
- * one identity across the tray, the window and the desktop - and no question
- * about whose artwork it is when this ships to anyone else.
+ * NO PLATE BEHIND HER. The first version drew the app's waveform mark inside a
+ * rounded card, which was fine as a glyph and wrong as a pet: a card is a
+ * button, and a button in the corner of the screen is something you avoid
+ * rather than something that lives there. The sprite sits directly on the
+ * desktop with a soft contact shadow under it, so it reads as an object in the
+ * room rather than a control floating over one.
  *
- * STATE IS IN THE COLOUR AND THE POSTURE, NOT THE CHARM. A character read out
- * of the corner of the eye is worse at conveying state than a coloured dot, so
- * the bars carry it: still and dim when asleep, breathing when waking, moving
- * with the voice when listening, sweeping while thinking. Red still means
- * recording and nothing else in the app is red.
+ * STATE IS THE POSE PLUS ONE RING OF LIGHT. A character read out of the corner
+ * of the eye is worse than a coloured dot at conveying state, so the glow does
+ * that job - red while recording, and nothing else in the app is red - and the
+ * pose says what she is doing. Three poses, no more: idle, waiting through the
+ * whole of a dictation, and a wave when it lands.
  *
- * ANIMATION IS COMPOSITOR-ONLY. This window sits on top of everything for the
- * whole session, and the machine it runs on is holding two model sidecars in
- * 6 GB of VRAM. Transform and opacity are the only properties animated here, so
- * the work stays off the main thread and off the GPU's memory.
+ * ANIMATION IS ONE COMPOSITED PROPERTY. `background-position-x` stepped by
+ * `steps()`, which the compositor handles without touching layout or paint.
+ * This window is on top of everything for the whole session on a machine
+ * already holding two model sidecars in 6 GB of VRAM.
  */
 
-const RING: Record<Tone, string> = {
-  idle: 'ring-white/10',
-  waking: 'ring-amber-400/40',
-  listening: 'ring-red-500/50',
-  thinking: 'ring-amber-400/40',
-  inserted: 'ring-emerald-400/50',
-  copied: 'ring-sky-400/50',
-  error: 'ring-red-600/60',
+/**
+ * The tint of the shadow she stands on. That is the whole of the state colour.
+ *
+ * MUCH LESS THAN IT WAS. The first version put a blurred aura over her whole
+ * body as well, at around 0.35 alpha, and on a dark desktop it read as a lens
+ * flare with a character somewhere inside it - the loudest thing on the screen,
+ * for a state you are meant to catch out of the corner of your eye. All that is
+ * left is a coloured contact shadow at her feet: enough to tell red from amber
+ * from green at a glance, not enough to look at.
+ */
+const AURA: Record<Tone, string> = {
+  idle: 'rgb(0 0 0 / 0.45)',
+  waking: 'rgb(251 191 36 / 0.22)',
+  listening: 'rgb(239 68 68 / 0.26)',
+  thinking: 'rgb(251 191 36 / 0.22)',
+  inserted: 'rgb(52 211 153 / 0.24)',
+  copied: 'rgb(56 189 248 / 0.24)',
+  error: 'rgb(220 38 38 / 0.30)',
 }
-
-const GLOW: Record<Tone, string> = {
-  idle: 'shadow-black/50',
-  waking: 'shadow-amber-500/20',
-  listening: 'shadow-red-600/25',
-  thinking: 'shadow-amber-500/20',
-  inserted: 'shadow-emerald-500/25',
-  copied: 'shadow-sky-500/25',
-  error: 'shadow-red-700/30',
-}
-
-const BAR: Record<Tone, string> = {
-  idle: 'bg-neutral-500',
-  waking: 'bg-amber-300',
-  listening: 'bg-red-400',
-  thinking: 'bg-amber-300',
-  inserted: 'bg-emerald-300',
-  copied: 'bg-sky-300',
-  error: 'bg-red-400',
-}
-
-/** Resting heights, as a fraction of the tallest bar. The glyph's own shape. */
-const SHAPE = [0.34, 0.62, 1, 0.62, 0.34]
 
 export function Pet({
+  character,
+  size,
   tone,
-  level,
+  pose,
   hovered,
   dragging,
+  children,
 }: {
+  character: CharacterId
+  size: PetSize
   tone: Tone
-  /** 0..1, live only while listening. */
-  level: number
+  pose: Pose
   hovered: boolean
   dragging: boolean
+  /** The thought bubble, positioned against this box. */
+  children?: React.ReactNode
 }): React.JSX.Element {
-  const listening = tone === 'listening'
+  const who = characterOf(character)
+  // Main sizes the window from the same setting, so the two agree by
+  // construction rather than by both happening to use the same constant.
+  const box = petPixels(size)
+  const sprite = spriteStyle(who, pose, box)
 
   return (
     <div
-      className="relative shrink-0 select-none"
-      style={{ width: PET_SIZE, height: PET_SIZE }}
+      className="relative grid shrink-0 place-items-end justify-items-center select-none"
+      style={{ width: box, height: box }}
       aria-hidden="true"
     >
+      {/*
+        One contact shadow, and nothing else. Squashed and drawn under her feet,
+        which is what makes it read as ground rather than as a halo.
+      */}
+      <span
+        className="pointer-events-none absolute bottom-0 left-1/2 h-2.5 w-[62%] -translate-x-1/2 rounded-[50%] blur-[5px] transition-colors duration-500"
+        style={{ background: AURA[tone] }}
+      />
+
+      {children}
+
       <div
         className={[
-          'absolute inset-1.5 grid place-items-center rounded-[22px]',
-          'bg-neutral-900/85 backdrop-blur-xl',
-          'ring-1 shadow-xl transition-all duration-300',
-          RING[tone],
-          GLOW[tone],
-          // Grows a little under the cursor and presses in while being moved,
-          // so a click has some acknowledgement of its own on a window that
-          // cannot show a cursor change.
-          dragging ? 'scale-95' : hovered ? 'scale-[1.06]' : 'scale-100',
-          tone === 'idle' && !hovered ? 'opacity-75' : 'opacity-100',
+          'pet-sprite relative',
+          // The step count has to be literal in the stylesheet, and it differs
+          // between characters: Mai's idle is seven frames, the others' six.
+          `pet-steps-${poseFrames(who, pose)}`,
+          // Grows a touch under the cursor and presses in while being moved:
+          // this window can never change the mouse pointer, so the only
+          // acknowledgement a click can get is from the pet itself.
+          'transition-transform duration-200',
+          dragging ? 'scale-95' : hovered ? 'scale-110' : 'scale-100',
         ].join(' ')}
-      >
-        <div className="flex h-8 items-center gap-[3px]">
-          {SHAPE.map((base, i) => {
-            // While listening the middle bars answer to the voice more than the
-            // outer ones, which reads as a voice rather than a level meter.
-            const reach = listening ? 0.45 + base * 0.55 : 0
-            const scale = base + level * reach * 0.9
-            return (
-              <span
-                key={i}
-                className={[
-                  'w-[3px] origin-center rounded-full transition-transform duration-75',
-                  BAR[tone],
-                  tone === 'waking' || tone === 'thinking' ? 'pet-breathe' : '',
-                ].join(' ')}
-                style={{
-                  height: 26,
-                  transform: `scaleY(${Math.min(1.5, Math.max(0.12, scale))})`,
-                  animationDelay: `${i * 90}ms`,
-                }}
-              />
-            )
-          })}
-        </div>
-      </div>
+        style={{
+          ...sprite,
+          // Pixel art. Smoothing it turns a crisp chibi into a smear.
+          imageRendering: 'pixelated',
+          filter: tone === 'idle' && !hovered ? 'saturate(0.85) brightness(0.92)' : 'none',
+        }}
+      />
     </div>
   )
 }
