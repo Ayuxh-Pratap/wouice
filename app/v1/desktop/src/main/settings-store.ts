@@ -58,6 +58,8 @@ export class SettingsStore {
         models: { ...DEFAULT_SETTINGS.models, ...raw.models },
         silence: { ...DEFAULT_SETTINGS.silence, ...raw.silence },
         cleanup: { ...DEFAULT_SETTINGS.cleanup, ...raw.cleanup },
+        developerMode: raw.developerMode ?? DEFAULT_SETTINGS.developerMode,
+        retainAudio: raw.retainAudio ?? DEFAULT_SETTINGS.retainAudio,
       }
     } catch {
       // A hand-edited file with a trailing comma must not brick the app.
