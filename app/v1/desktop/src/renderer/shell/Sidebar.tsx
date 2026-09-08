@@ -201,8 +201,10 @@ export function Sidebar({
         className={`flex h-[var(--band)] shrink-0 items-center ${collapsed ? 'justify-center' : 'px-2.5'}`}
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
-        {/* Padded to start on the same vertical as the nav icons below. */}
-        <div className={`flex items-center gap-2.5 ${collapsed ? '' : 'px-3'}`}>
+        {/* Flush with the left edge of the search field and the nav rows, not
+            with the icons inside them: the mark is the rail's own heading, so
+            it lines up with the rail's content, not with a nested indent. */}
+        <div className="flex items-center gap-2.5">
           <Mark />
           {!collapsed && (
             <span className="text-[14px] font-semibold tracking-tight text-neutral-100 select-none">
