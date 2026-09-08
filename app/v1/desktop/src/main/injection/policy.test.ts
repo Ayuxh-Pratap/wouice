@@ -47,7 +47,13 @@ describe('it refuses rather than guessing', () => {
   it('copies when no window was captured at key-down', () => {
     const d = decideDelivery(ctx({ captured: null }))
     expect(d.method).toBe('copy')
-    expect(d.reason).toMatch(/captured/i)
+    expect(d.reason).toMatch(/in front/i)
+  })
+
+  it('does not blame the hotkey, which may not have been what started it', () => {
+    // A dictation can be started by clicking the pet. Telling someone they
+    // pressed a key they did not press sends them looking in the wrong place.
+    expect(decideDelivery(ctx({ captured: null })).reason).not.toMatch(/hotkey/i)
   })
 
   it('copies when focus moved during transcription', () => {

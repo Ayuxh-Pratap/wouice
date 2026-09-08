@@ -269,19 +269,34 @@ supervisor.on('state', (snap: SidecarSnapshot) => {
   refreshTray(trayDeps)
 })
 
+/**
+ * Start or stop a dictation. THE ONLY WAY IN, for every trigger.
+ *
+ * WHY THIS IS A FUNCTION. The hotkey used to do two things - capture the window
+ * in front, then send the event - and when the pet gained a click it was given
+ * only the second. Every dictation started by clicking the pet therefore ran
+ * with no captured target and fell back to the clipboard, reporting "no window
+ * was captured when you pressed the hotkey" at somebody who had not pressed it.
+ *
+ * The comment on the click handler said two ways in through different code are
+ * two state machines waiting to disagree. They were. This is the fix that makes
+ * that true rather than aspirational.
+ */
+function startDictation(): void {
+  // BEFORE anything else. This is key-down, and the window in front right now
+  // is the one the user means. Capturing at paste time instead would deliver
+  // into whatever they alt-tabbed to while transcription ran.
+  injector.captureTarget()
+  dictation.send({ type: 'hotkey', now: Date.now() })
+}
+
 function registerHotkeys(): void {
   const { hotkeys: keys } = settings.get()
   const results = hotkeys.register([
     {
       name: 'dictate',
       accelerator: keys.dictate,
-      handler: () => {
-        // BEFORE anything else. This is key-down, and the window in front right
-        // now is the one the user means. Capturing at paste time instead would
-        // deliver into whatever they alt-tabbed to while transcription ran.
-        injector.captureTarget()
-        dictation.send({ type: 'hotkey', now: Date.now() })
-      },
+      handler: startDictation,
     },
   ])
 
@@ -411,10 +426,8 @@ function registerIpc(): void {
   })
   ipcMain.on(IPC.cancelDictation, () => dictation.send({ type: 'escape' }))
 
-  // Tapping the pet is the hotkey. Deliberately the same event and not a
-  // parallel path: two ways to start a dictation that go through different code
-  // are two state machines waiting to disagree.
-  ipcMain.on(IPC.petClick, () => dictation.send({ type: 'hotkey', now: Date.now() }))
+  // Tapping the pet IS the hotkey - the same function, not a parallel path.
+  ipcMain.on(IPC.petClick, () => startDictation())
   ipcMain.on(IPC.petDragStart, () => startPetDrag())
   ipcMain.on(IPC.petDragEnd, () => {
     const placement = endPetDrag()

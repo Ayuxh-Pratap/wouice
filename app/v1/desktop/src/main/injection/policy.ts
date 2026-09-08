@@ -189,7 +189,10 @@ export function decideDelivery(ctx: DeliveryContext): Delivery {
   const copy = (reason: string): Delivery => ({ method: 'copy', restoreClipboard: false, reason })
 
   if (!ctx.enabled) return copy('insertion is turned off')
-  if (!ctx.captured) return copy('no window was captured when you pressed the hotkey')
+  // Not "when you pressed the hotkey": a dictation can also be started by
+  // clicking the pet, and telling someone they pressed a key they did not press
+  // sends them looking in the wrong place.
+  if (!ctx.captured) return copy('no window was in front when the dictation started')
 
   if (!ctx.captured.exe) return copy('could not identify the window')
 
