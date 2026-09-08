@@ -27,7 +27,22 @@ export interface SilenceConfig {
   chunkPauseMs: number
   /** Frames above (noiseFloor * this) count as speech. */
   speechFactor: number
-  /** Absolute floor, so a silent room cannot make the gate infinitely sensitive. */
+  /**
+   * Absolute floor, so a silent room cannot make the gate infinitely sensitive.
+   *
+   * CALIBRATED FROM A REAL RECORDING, not chosen. Measuring 60 seconds of
+   * natural speech on this machine's microphone gave:
+   *
+   *   true silence   p5  0.00032   p25 0.00091
+   *   speech         p50 0.00436   p90 0.01778
+   *
+   * The original 0.004 x 2.5 = 0.010 sat ABOVE the median speech frame, so 70%
+   * of a continuous 60-second dictation was classified as silence, speechMs
+   * never reached the 20s chunking threshold, and chunking never fired.
+   *
+   * 0.0015 x 2.0 = 0.003 lands in the gap between the two distributions. The
+   * adaptive floor still raises it in a noisy room; this is only the minimum.
+   */
   minNoiseFloor: number
 }
 
@@ -39,8 +54,8 @@ export const DEFAULT_SILENCE: SilenceConfig = {
   maxSessionMs: 300_000,
   chunkAfterMs: 20_000,
   chunkPauseMs: 600,
-  speechFactor: 2.5,
-  minNoiseFloor: 0.004,
+  speechFactor: 2.0,
+  minNoiseFloor: 0.0015,
 }
 
 /**

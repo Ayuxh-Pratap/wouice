@@ -171,7 +171,11 @@ describe('the session cap', () => {
 
 describe('the adaptive noise floor', () => {
   it('rises in a noisy room so background hum is not heard as speech', () => {
-    const hum = { rms: 0.01, ms: FRAME_MS }
+    // 0.0025 is genuine room noise for this microphone: measured silence sits
+    // at 0.0003-0.0009 and speech at 0.004-0.034, so this is above the floor
+    // and below any real speech. (0.01 used to be the value here, which the
+    // threshold calibration correctly reclassified as speech.)
+    const hum = { rms: 0.0025, ms: FRAME_MS }
     let state = initialSilenceState()
     for (let t = 0; t < 5_000; t += FRAME_MS) state = step(state, hum, DEFAULT_SILENCE).state
     expect(state.noiseFloor).toBeGreaterThan(DEFAULT_SILENCE.minNoiseFloor)
@@ -199,7 +203,7 @@ describe('the adaptive noise floor', () => {
   it('still detects loud speech in a noisy room', () => {
     let state = initialSilenceState()
     for (let t = 0; t < 5_000; t += FRAME_MS) {
-      state = step(state, { rms: 0.01, ms: FRAME_MS }, DEFAULT_SILENCE).state
+      state = step(state, { rms: 0.0025, ms: FRAME_MS }, DEFAULT_SILENCE).state
     }
     for (let t = 0; t < 1_000; t += FRAME_MS) {
       state = step(state, speech(), DEFAULT_SILENCE).state
@@ -320,5 +324,50 @@ describe('pause diagnostics', () => {
     for (let t = 0; t < 600; t += FRAME_MS) state = step(state, silence(), DEFAULT_SILENCE).state
     expect(state.speechMs).toBeGreaterThan(900)
     expect(state.totalSilenceMs).toBeGreaterThanOrEqual(580)
+  })
+})
+
+describe('the threshold suits a real microphone', () => {
+  /**
+   * Calibrated against 60 seconds of natural speech recorded on this machine.
+   * The original 0.004 x 2.5 = 0.010 sat above the MEDIAN speech frame, so 70%
+   * of a continuous dictation counted as silence and chunking never fired.
+   * These pin the distribution so a future tweak cannot quietly undo it.
+   */
+  const MEASURED = {
+    silenceP5: 0.00032,
+    silenceP25: 0.00091,
+    speechP50: 0.00436,
+    speechP90: 0.01778,
+  }
+
+  const threshold = DEFAULT_SILENCE.minNoiseFloor * DEFAULT_SILENCE.speechFactor
+
+  it('sits above real silence', () => {
+    expect(threshold).toBeGreaterThan(MEASURED.silenceP25)
+  })
+
+  it('sits BELOW the median speech frame, which is what broke chunking', () => {
+    expect(threshold).toBeLessThan(MEASURED.speechP50)
+  })
+
+  it('counts a median-loudness speech frame as speech', () => {
+    const out = step(initialSilenceState(), { rms: MEASURED.speechP50, ms: FRAME_MS }, DEFAULT_SILENCE)
+    expect(out.state.speechMs).toBe(FRAME_MS)
+  })
+
+  it('counts a quiet inter-word gap as silence', () => {
+    const out = step(initialSilenceState(), { rms: MEASURED.silenceP25, ms: FRAME_MS }, DEFAULT_SILENCE)
+    expect(out.state.speechMs).toBe(0)
+  })
+
+  it('records the levels seen, so a mismatched mic is visible in diagnostics', () => {
+    let state = initialSilenceState()
+    for (let t = 0; t < 600; t += FRAME_MS) {
+      state = step(state, { rms: MEASURED.speechP90, ms: FRAME_MS }, DEFAULT_SILENCE).state
+    }
+    expect(state.peakRms).toBeCloseTo(MEASURED.speechP90, 5)
+    expect(state.meanSpeechRms).toBeCloseTo(MEASURED.speechP90, 5)
+    expect(state.speechFrames).toBe(30)
   })
 })

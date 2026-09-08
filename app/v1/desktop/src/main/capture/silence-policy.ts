@@ -47,6 +47,16 @@ export interface SilenceState {
   longestSilenceMs: number
   /** Total silence after speech began, so speech/silence ratio is visible. */
   totalSilenceMs: number
+  /**
+   * Loudest frame seen, and a running mean of frames above the floor.
+   *
+   * Diagnostic only. If the threshold is ever mismatched to a microphone again,
+   * these put the evidence directly in the exported diagnostic instead of
+   * requiring someone to go and analyse a WAV by hand.
+   */
+  peakRms: number
+  meanSpeechRms: number
+  speechFrames: number
 }
 
 export function initialSilenceState(): SilenceState {
@@ -60,6 +70,9 @@ export function initialSilenceState(): SilenceState {
     level: 0,
     longestSilenceMs: 0,
     totalSilenceMs: 0,
+    peakRms: 0,
+    meanSpeechRms: 0,
+    speechFrames: 0,
   }
 }
 
@@ -130,6 +143,11 @@ export function step(
       ? Math.max(state.longestSilenceMs, silenceMs)
       : state.longestSilenceMs,
     totalSilenceMs: state.totalSilenceMs + (isSpeech || !state.heardSpeech ? 0 : frame.ms),
+    peakRms: Math.max(state.peakRms, frame.rms),
+    speechFrames: state.speechFrames + (isSpeech ? 1 : 0),
+    meanSpeechRms: isSpeech
+      ? (state.meanSpeechRms * state.speechFrames + frame.rms) / (state.speechFrames + 1)
+      : state.meanSpeechRms,
   }
 
   if (elapsedMs >= cfg.maxSessionMs) return { state: next, verdict: 'stop-cap' }
