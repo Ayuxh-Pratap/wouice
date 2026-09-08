@@ -9,6 +9,8 @@ import {
   zoomLabel,
 } from '../../shared/settings.js'
 import { listInputs } from '../capture/mic.js'
+import { CHARACTER_LIST, posterStyle } from '../hud/sprite.js'
+import { PET_SIZE_LABELS, type PetSize } from '../../shared/pet.js'
 import { DictionaryEditor } from './DictionaryEditor.js'
 import { ConfirmButton, Choice, Row, Section, Toggle } from './Field.js'
 
@@ -128,6 +130,53 @@ function DeleteEverything(): React.JSX.Element {
   )
 }
 
+/**
+ * Which character sits on the desktop.
+ *
+ * Shown as the characters themselves rather than a dropdown of names: the only
+ * thing anybody is choosing between here is what they look like, and a list
+ * reading "Kim / Mai / Summer" asks you to remember which is which.
+ *
+ * The first frame of each idle row, held still. Animating all three at once in
+ * a settings screen would be three sprite loops running for a decision that
+ * takes two seconds.
+ */
+function CharacterPicker({
+  settings,
+  save,
+}: {
+  settings: SettingsShape
+  save(patch: Partial<SettingsShape>): void
+}): React.JSX.Element {
+  return (
+    <div className="flex gap-2">
+      {CHARACTER_LIST.map((c) => {
+        const chosen = settings.pet.character === c.id
+        return (
+          <button
+            key={c.id}
+            onClick={() => save({ pet: { ...settings.pet, character: c.id } })}
+            title={c.name}
+            aria-pressed={chosen}
+            className={[
+              'grid place-items-end justify-items-center rounded-lg px-1 pt-1 transition',
+              chosen
+                ? 'lift-active bg-white/[0.09] ring-1 ring-white/20'
+                : 'bg-black/20 opacity-60 ring-1 ring-white/[0.06] hover:opacity-100',
+            ].join(' ')}
+          >
+            <span
+              style={{ ...posterStyle(c, 52), imageRendering: 'pixelated' }}
+              className="bg-no-repeat"
+            />
+            <span className="pb-0.5 text-[10px] text-neutral-400">{c.name}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function Recordings({ retain }: { retain: boolean }): React.JSX.Element {
   const [files, setFiles] = useState<RetainedAudio[]>([])
   const [open, setOpen] = useState(false)
@@ -190,6 +239,10 @@ export function SettingsPanel({
 }: {
   settings: SettingsShape | null
 }): React.JSX.Element | null {
+  // Shown only after switching her on in this session; there is nothing to warn
+  // about when she was already there at startup.
+  const [justEnabled, setJustEnabled] = useState(false)
+
   if (!settings) return null
 
   const save = (patch: Partial<SettingsShape>): void => {
@@ -239,14 +292,47 @@ export function SettingsPanel({
 
         <Row
           label="Keep the pet on the desktop"
-          hint="A small character you can park anywhere and click to dictate. Off means the overlay only appears while it is working, along the bottom of the screen."
+          hint={
+            justEnabled
+              ? 'She is there, but will not take a click or a drag until the app is restarted. Known, and not yet fixed.'
+              : 'A small character you can park anywhere and click to dictate. Off means the overlay only appears while it is working, along the bottom of the screen.'
+          }
         >
           <Toggle
             label="Keep the pet on the desktop"
             on={settings.pet.enabled}
-            onChange={(enabled) => save({ pet: { ...settings.pet, enabled } })}
+            onChange={(enabled) => {
+              // Switching her ON mid-session leaves her unclickable until a
+              // restart. The cause is not found, and two attempts at fixing it
+              // were removed rather than left in place pretending. Saying so
+              // here costs nothing and is at least true.
+              setJustEnabled(enabled && !settings.pet.enabled)
+              save({ pet: { ...settings.pet, enabled } })
+            }}
           />
         </Row>
+
+        {settings.pet.enabled && (
+          <Row label="Character" hint="Click her to dictate, drag her anywhere.">
+            <CharacterPicker settings={settings} save={save} />
+          </Row>
+        )}
+
+        {settings.pet.enabled && (
+          <Row
+            label="How big"
+            hint="The drawings do not all fill the same amount of their frame, so what looks right differs between them - and between a laptop panel and a large monitor."
+          >
+            <Choice<PetSize>
+              value={settings.pet.size}
+              options={(['small', 'medium', 'large', 'huge'] as const).map((v) => ({
+                value: v,
+                label: PET_SIZE_LABELS[v],
+              }))}
+              onChange={(size) => save({ pet: { ...settings.pet, size } })}
+            />
+          </Row>
+        )}
 
         <Row
           label="Stop when I pause for"
