@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState } from 'react'
 
 /**
  * Chart primitives, hand-rolled in SVG.
@@ -25,6 +25,39 @@ export const SERIES = {
 const INK = { primary: '#e5e5e5', secondary: '#a3a3a3', muted: '#737373' } as const
 const GRID = '#262626'
 const SURFACE = '#171717'
+
+/**
+ * The chart's own width, in CSS pixels.
+ *
+ * WHY MEASURED, AND NOT A STRETCHED viewBox. Both SVG charts used a fixed
+ * 800-unit viewBox with `w-full`, which asks the browser to scale the entire
+ * drawing to whatever width it lands in. On a 32-inch monitor the wide chart
+ * stretched to about 1770px, so its `fontSize={9}` axis labels rendered at
+ * twenty-odd pixels - twice the size of the app's own text sitting beside them -
+ * and the bars grew with them. The chart was not too big; it was drawn at a
+ * different scale from everything around it.
+ *
+ * Measuring makes one SVG unit one CSS pixel. Axis labels are then 9px in every
+ * window, and they scale with the interface scale exactly like the rest of the
+ * type, because CSS pixels are what the zoom factor acts on.
+ */
+function useWidth(): [React.RefObject<HTMLDivElement | null>, number] {
+  const ref = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(0)
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const observer = new ResizeObserver((entries) => {
+      // contentRect is in CSS pixels, which is the unit the SVG will draw in.
+      setWidth(Math.max(0, Math.round(entries[0]?.contentRect.width ?? 0)))
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
+  return [ref, width]
+}
 
 export function formatMs(ms: number): string {
   if (ms >= 10_000) return `${(ms / 1000).toFixed(1)}s`
@@ -155,8 +188,8 @@ export function StackedBars({
 }): React.JSX.Element {
   const [tip, setTip] = useState<Tip | null>(null)
   const clipId = useId()
+  const [ref, width] = useWidth()
 
-  const width = 100 * 8
   const padTop = 10
   const padBottom = 18
   const padLeft = 44
@@ -164,14 +197,20 @@ export function StackedBars({
   const plotW = width - padLeft - 8
 
   const max = Math.max(...data.map((d) => d.a + d.b), 1)
-  const barW = Math.max(3, Math.min(16, plotW / data.length - 4))
   const stepX = plotW / Math.max(data.length, 1)
+  // Width follows the step rather than a constant. Fifteen 16px bars spread
+  // across a 32-inch monitor's 1200px panel is a fifth of the plot inked and
+  // four fifths gap, which reads as a sparse scatter rather than a comparison.
+  const barW = Math.max(3, Math.min(26, stepX * 0.55))
 
   const ticks = [0, max / 2, max]
 
   return (
-    <div className="relative">
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ overflow: 'visible' }}>
+    // The height is reserved before the width is known, so the first paint does
+    // not push everything below the chart down by 148px a frame later.
+    <div ref={ref} className="relative" style={{ height }}>
+      {width > 0 && (
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ overflow: 'visible' }}>
         <defs>
           <clipPath id={clipId}>
             <rect x={0} y={0} width={width} height={height} />
@@ -238,6 +277,7 @@ export function StackedBars({
         />
         {tip && <Tooltip tip={tip} width={width} />}
       </svg>
+      )}
     </div>
   )
 }
@@ -270,8 +310,8 @@ export function LineChart({
 }): React.JSX.Element {
   const [tip, setTip] = useState<Tip | null>(null)
   const gradId = useId()
+  const [ref, width] = useWidth()
 
-  const width = 100 * 8
   const padTop = 10
   const padBottom = 18
   const padLeft = 44
@@ -288,7 +328,9 @@ export function LineChart({
     : ''
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ overflow: 'visible' }}>
+    <div ref={ref} className="relative" style={{ height }}>
+      {width > 0 && (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} style={{ overflow: 'visible' }}>
       <defs>
         <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={SERIES.one} stopOpacity={0.28} />
@@ -358,6 +400,8 @@ export function LineChart({
         </>
       )}
     </svg>
+      )}
+    </div>
   )
 }
 

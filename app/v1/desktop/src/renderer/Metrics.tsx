@@ -131,6 +131,9 @@ export function Metrics(): React.JSX.Element {
             b: d.llmMs,
           }))}
           labels={['ASR', 'LLM']}
+          // Taller than the two half-width charts above: this one spans the
+          // whole panel, and at the shared 148px it reads as a letterbox.
+          height={184}
         />
       </ChartFrame>
     </div>
