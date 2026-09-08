@@ -41,6 +41,7 @@ const STUB = `<script>
                    languages: [{ label: 'english', detected: 'english' }] },
     injection: { enabled: true, pasteOverrides: {} },
     audio: { deviceId: null, deviceLabel: '' },
+    appearance: { zoom: 1 },
   }
   const TEXTS = [
     'I think we should ship the thing and see what happens.',
@@ -64,6 +65,8 @@ const STUB = `<script>
   })
   const rows = Array.from({ length: 23 }, (_, i) => dictation(i + 1)).reverse()
   window.wouice = {
+    deleteDictations: async () => 0,
+    clearDictations: async () => 0,
     getSettings: async () => settings,
     setSettings: async (p) => Object.assign(settings, p),
     getSidecars: async () => [
