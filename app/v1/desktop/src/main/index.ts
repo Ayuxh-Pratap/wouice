@@ -14,6 +14,8 @@ import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from
 import { sampleResources } from './metrics/sample.js'
 import { importJsonl, openStore, type DictationRecord } from '@wouice/store'
 import { RecordingStore } from './metrics/recordings.js'
+import { Injector, type InjectionResult } from './injection/injector.js'
+import { injectionAvailable, injectionUnavailableReason } from './injection/win32.js'
 import { analyseCalibration, applyCalibration, describeLanguages, frameLevels } from './capture/calibrate.js'
 import { WhisperCppClient } from '@wouice/asr'
 import { describeCalibration, formatDiagnostic, formatSession } from './metrics/diagnostic.js'
@@ -55,6 +57,15 @@ const store = openStore({
 })
 const recordings = new RecordingStore(app.getPath('userData'))
 
+/**
+ * Text injection. Falls back to clipboard-only if the native layer is missing,
+ * which is what every build before this one did anyway.
+ */
+const injector = new Injector({
+  enabled: () => settings.get().injection.enabled,
+  pasteOverrides: () => settings.get().injection.pasteOverrides,
+})
+
 const dictation = new DictationController({
   supervisor,
   silence: () => settings.get().silence,
@@ -93,37 +104,50 @@ dictation.on('startCapture', (sessionId: number) => sendToHud(IPC.startCapture, 
 dictation.on('stopCapture', (sessionId: number) => sendToHud(IPC.stopCapture, sessionId))
 
 dictation.on('result', (r) => {
-  // Delivery is clipboard-only until injection lands in step 5. Copying still
-  // makes the tool usable today: one Ctrl+V and the text is placed.
-  clipboard.writeText(r.final)
-  // After delivery, never before: a telemetry write must not be able to delay
-  // or fail the text the user already spoke.
-  try {
-    store.dictations.insert(toRecord(r))
-  } catch (err) {
-    console.warn('[store] could not record dictation:', err)
-  }
-  broadcast(IPC.metric, undefined)
-  broadcast(IPC.dictationResult, {
-    final: r.final,
-    raw: r.raw,
-    language: r.language,
-    asrMs: r.asrMs,
-    llmMs: r.llmMs,
-    degraded: r.degraded,
-    delivered: 'copied',
-  })
-  broadcast(IPC.hudState, {
-    phase: 'copied',
-    level: 0,
-    elapsedMs: 0,
-    message: `Copied · ${r.final.length} chars`,
-  })
-  setTimeout(() => dictation.send({ type: 'delivered' }), 1_400)
+  void (async () => {
+    const delivery = await injector.deliver(r.final)
+
+    try {
+      store.dictations.insert(toRecord(r, delivery))
+    } catch (err) {
+      console.warn('[store] could not record dictation:', err)
+    }
+    broadcast(IPC.metric, undefined)
+    broadcast(IPC.dictationResult, {
+      final: r.final,
+      raw: r.raw,
+      language: r.language,
+      asrMs: r.asrMs,
+      llmMs: r.llmMs,
+      degraded: r.degraded,
+      delivered: delivery.delivered,
+    })
+    broadcast(IPC.hudState, {
+      phase: delivery.delivered === 'inserted' ? 'inserted' : 'copied',
+      level: 0,
+      elapsedMs: 0,
+      message: hudMessage(delivery, r.final.length),
+    })
+    setTimeout(() => dictation.send({ type: 'delivered' }), 1_400)
+  })()
 })
 
+/**
+ * What the HUD says about where the text went.
+ *
+ * "Copied" on its own is the message that wastes someone's time: they look for
+ * text that never arrived and have no idea why. When insertion did not happen,
+ * the reason goes in the pill.
+ */
+function hudMessage(delivery: InjectionResult, chars: number): string {
+  if (delivery.delivered === 'inserted') {
+    return delivery.clipboardReplaced ? `Inserted · clipboard replaced` : `Inserted · ${chars} chars`
+  }
+  return delivery.reason ? `Copied · ${delivery.reason}` : `Copied · ${chars} chars`
+}
+
 /** Controller result -> stored record. The only place the two shapes meet. */
-function toRecord(r: DictationResult): DictationRecord {
+function toRecord(r: DictationResult, delivery: InjectionResult): DictationRecord {
   return {
     at: Date.now(),
     audioMs: r.audioMs,
@@ -146,6 +170,10 @@ function toRecord(r: DictationResult): DictationRecord {
     applied: r.applied,
     capture: r.capture,
     audioPath: r.audioPath,
+    inserted: delivery.delivered === 'inserted',
+    delivery: delivery.method,
+    targetExe: delivery.targetExe,
+    deliveryNote: delivery.reason,
   }
 }
 
@@ -219,7 +247,13 @@ function registerHotkeys(): void {
     {
       name: 'dictate',
       accelerator: keys.dictate,
-      handler: () => dictation.send({ type: 'hotkey', now: Date.now() }),
+      handler: () => {
+        // BEFORE anything else. This is key-down, and the window in front right
+        // now is the one the user means. Capturing at paste time instead would
+        // deliver into whatever they alt-tabbed to while transcription ran.
+        injector.captureTarget()
+        dictation.send({ type: 'hotkey', now: Date.now() })
+      },
     },
   ])
 
@@ -289,10 +323,12 @@ function registerIpc(): void {
   })
   ipcMain.on(IPC.cancelDictation, () => dictation.send({ type: 'escape' }))
 
-  ipcMain.handle(IPC.copyDiagnostic, (_e, at: number) => {
+  ipcMain.handle(IPC.copyDiagnostic, async (_e, at: number) => {
     const d = store.dictations.byAt(at)
     if (!d) return false
-    clipboard.writeText(formatDiagnostic(d, d.id ?? 0, describeCalibration(settings.get())))
+    // Awaited: Electron 44's clipboard is asynchronous, so returning true from
+    // an unawaited write claims success before the write has happened.
+    await clipboard.writeText(formatDiagnostic(d, d.id ?? 0, describeCalibration(settings.get())))
     return true
   })
 
@@ -460,6 +496,12 @@ if (!app.requestSingleInstanceLock()) {
       // The original is untouched by any failure here, so the next launch
       // simply tries again. Never a reason to refuse to start.
       console.warn('[store] could not import metrics.jsonl:', err)
+    }
+
+    if (!injectionAvailable()) {
+      console.warn(
+        `[injection] unavailable, falling back to clipboard only: ${injectionUnavailableReason()}`
+      )
     }
 
     const { models } = settings.get()
