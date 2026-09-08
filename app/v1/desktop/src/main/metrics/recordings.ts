@@ -86,6 +86,21 @@ export class RecordingStore {
     }
   }
 
+  /**
+   * Delete the recordings belonging to dictations that have just been removed.
+   *
+   * Goes through `remove`, so the same directory check applies: these paths
+   * come out of the database, which was written by this app, but a stored path
+   * is still not a reason to unlink whatever it happens to say today.
+   *
+   * A path that is already gone is not a failure. The recording store prunes
+   * oldest-first, so any dictation older than the last twenty has no file left
+   * and there is nothing here to report.
+   */
+  forget(files: string[]): void {
+    for (const f of files) this.remove(f)
+  }
+
   clear(): void {
     for (const r of this.list()) {
       try {
