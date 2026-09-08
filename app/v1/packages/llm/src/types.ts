@@ -30,7 +30,20 @@ export interface LlmRequest {
   maxTokens?: number
   /** 0 for cleanup and notes: the same audio must yield the same text. */
   temperature?: number
+  /**
+   * Total allowance. A backstop, not a prediction.
+   *
+   * It used to be the only limit, at a flat 4000 ms, which killed any dictation
+   * over about 120 words: the work scales with what was said and the constant
+   * did not. Callers should compute this from the input - see `cleanupBudget`.
+   */
   timeoutMs?: number
+  /** Nothing at all yet. Covers prompt processing, which grows with the input. */
+  firstTokenTimeoutMs?: number
+  /** Gap between tokens. This catches a STOPPED model, not a slow one. */
+  stallTimeoutMs?: number
+  /** Called with each delta as it arrives, for progress. */
+  onToken?(delta: string): void
   signal?: AbortSignal
 }
 
@@ -41,6 +54,13 @@ export interface LlmResult {
   model: string
   /** Set when the primary provider failed and a fallback answered. */
   fellBackFrom?: string
+  /** How long until the first token. Prompt processing, separated from generation. */
+  firstTokenMs?: number
+  /**
+   * Why generation stopped. 'length' means the token cap cut it off, which is a
+   * silent truncation unless somebody looks at this.
+   */
+  finishReason?: string | null
 }
 
 export interface LlmHealth {
