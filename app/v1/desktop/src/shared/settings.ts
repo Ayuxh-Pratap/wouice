@@ -138,8 +138,13 @@ export const DEFAULT_SETTINGS: Settings = {
     meeting: 'Control+Alt+M',
     companion: 'Control+Alt+C',
   },
+  // Measured, not assumed. The 2x2 matrix over nine Hinglish recordings put
+  // turbo + qwen3-4b fastest end to end AND best on language: p50 2230 ms with
+  // 9 of 9 samples rendered into English. large-v3 costs 2.5x the recognition
+  // time for 5% more transcript, and gemma3-4b returns a third of Hindi-heavy
+  // samples untranslated - silently, and reproducibly on the same inputs.
   models: {
-    whisper: 'large-v3',
+    whisper: 'turbo',
     llama: 'qwen3-4b',
   },
   silence: DEFAULT_SILENCE,

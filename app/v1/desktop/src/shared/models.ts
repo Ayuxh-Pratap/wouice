@@ -28,14 +28,14 @@ export const WHISPER_MODELS: ModelChoice[] = [
     label: 'Whisper large-v3',
     file: 'ggml-large-v3-q5_0.bin',
     vramMiB: 1720,
-    note: 'Default. Slower, but turbo silently truncates Hindi and this does not.',
+    note: 'Most faithful on Hindi, but 2.5x slower. Use it if turbo drops words.',
   },
   {
     id: 'turbo',
     label: 'Whisper large-v3-turbo',
     file: 'ggml-large-v3-turbo-q5_0.bin',
     vramMiB: 865,
-    note: '3x faster, half the VRAM, better on English. Drops content on long Hindi.',
+    note: 'Default. 2.5x faster, half the VRAM. Rarely drops part of a sentence.',
   },
 ]
 
@@ -45,14 +45,14 @@ export const LLM_MODELS: ModelChoice[] = [
     label: 'Qwen3 4B Instruct',
     file: 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
     vramMiB: 3124,
-    note: 'Default. Strong instruction following.',
+    note: 'Default. Renders Hindi as English reliably; measured 9 of 9 samples.',
   },
   {
     id: 'gemma3-4b',
     label: 'Gemma 3 4B IT',
     file: 'gemma-3-4b-it-Q4_K_M.gguf',
     vramMiB: 3100,
-    note: 'Trained across 140+ languages with real Indic investment. Untested here.',
+    note: 'Good on most Hindi, but returns some of it untranslated. 6 of 9.',
   },
 ]
 
@@ -77,7 +77,7 @@ export const SIDECARS: Record<SidecarId, SidecarDef> = {
     // whisper-server has no /health; the root path answers once it is listening.
     healthPath: '/',
     models: WHISPER_MODELS,
-    defaultModelId: 'large-v3',
+    defaultModelId: 'turbo',
     args: (modelPath, port) => [
       '-m', modelPath,
       '--host', '127.0.0.1',
