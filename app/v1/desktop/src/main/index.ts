@@ -8,11 +8,11 @@ import { SettingsStore } from './settings-store.js'
 import { HotkeyManager } from './hotkeys.js'
 import { createTray, destroyTray, refreshTray } from './tray.js'
 import { broadcast, createHud, createMainWindow, hideHud, sendToHud, showHud } from './windows.js'
-import { IPC, type CalibrationInput, type CalibrationReport, type Diagnostics, type SidecarView } from '../shared/ipc.js'
+import { IPC, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type SidecarView } from '../shared/ipc.js'
 import type { SidecarId } from '../shared/models.js'
 import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from './dictation/controller.js'
 import { sampleResources } from './metrics/sample.js'
-import { importJsonl, openStore, type DictationRecord } from '@wouice/store'
+import { importJsonl, openStore, validateEntry, type DictationRecord } from '@wouice/store'
 import { RecordingStore } from './metrics/recordings.js'
 import { Injector, type InjectionResult } from './injection/injector.js'
 import { injectionAvailable, injectionUnavailableReason } from './injection/win32.js'
@@ -69,6 +69,19 @@ const injector = new Injector({
 const dictation = new DictationController({
   supervisor,
   silence: () => settings.get().silence,
+  userDictionary: () =>
+    store.dictionary.active().map((e) =>
+      e.kind === 'term'
+        ? { kind: 'term' as const, hear: e.hear, enabled: true }
+        : { kind: 'correction' as const, hear: e.hear, write: e.write, enabled: true }
+    ),
+  onRulesFired: (applied) => {
+    try {
+      store.dictionary.recordHits(applied.map((a) => ({ hear: a.from, count: a.count })))
+    } catch {
+      // Bookkeeping. Never worth interrupting a dictation for.
+    }
+  },
   cleanupEnabled: () => settings.get().cleanup.enabled,
   retainAudio: () => settings.get().retainAudio,
   saveAudio: async (pcm) => recordings.save(pcm),
@@ -99,7 +112,9 @@ dictation.on('level', ({ level, elapsedMs }: { level: number; elapsedMs: number 
   sendToHud(IPC.hudState, { phase: 'listening', level, elapsedMs })
 })
 
-dictation.on('startCapture', (sessionId: number) => sendToHud(IPC.startCapture, sessionId))
+dictation.on('startCapture', (sessionId: number) =>
+  sendToHud(IPC.startCapture, sessionId, settings.get().audio.deviceId)
+)
 dictation.on('stopCapture', (sessionId: number) => sendToHud(IPC.stopCapture, sessionId))
 
 dictation.on('result', (r) => {
@@ -311,6 +326,32 @@ function registerIpc(): void {
   )
 
   ipcMain.handle(IPC.getStorage, () => store.stats())
+
+  ipcMain.handle(IPC.getDictionary, () => store.dictionary.all())
+  ipcMain.handle(IPC.addDictionaryEntry, (_e, entry: NewDictionaryEntry) => {
+    // Validated in main, not only in the form: the rule that a correction must
+    // be more specific than the word it replaces protects every future
+    // transcript, and a renderer is not the place to enforce it.
+    const check = validateEntry(entry)
+    if (!check.ok) return check.reason
+    const id = store.dictionary.add({
+      kind: entry.kind,
+      hear: entry.hear.trim(),
+      write: entry.kind === 'correction' ? entry.write.trim() : '',
+      enabled: entry.enabled,
+    })
+    return id === null ? 'You already have a rule for that.' : null
+  })
+  ipcMain.handle(IPC.updateDictionaryEntry, (_e, id: number, patch: DictionaryPatch) => {
+    store.dictionary.update(id, patch)
+  })
+  ipcMain.handle(IPC.removeDictionaryEntry, (_e, id: number) => store.dictionary.remove(id))
+
+  ipcMain.handle(IPC.getRecordings, () => recordings.list())
+  ipcMain.handle(IPC.deleteRecording, (_e, file: string) => {
+    recordings.remove(file)
+  })
+  ipcMain.handle(IPC.clearRecordings, () => recordings.clear())
   ipcMain.on(IPC.audioFrame, (_e, sessionId: number, frame: Float32Array) =>
     dictation.pushFrame(sessionId, frame)
   )

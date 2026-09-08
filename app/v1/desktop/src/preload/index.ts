@@ -38,6 +38,13 @@ const api: WouiceApi = {
   getDictationPage: (offset, limit, query) =>
     ipcRenderer.invoke(IPC.getDictationPage, offset, limit, query),
   getStorage: () => ipcRenderer.invoke(IPC.getStorage),
+  getDictionary: () => ipcRenderer.invoke(IPC.getDictionary),
+  addDictionaryEntry: (entry) => ipcRenderer.invoke(IPC.addDictionaryEntry, entry),
+  updateDictionaryEntry: (id, patch) => ipcRenderer.invoke(IPC.updateDictionaryEntry, id, patch),
+  removeDictionaryEntry: (id) => ipcRenderer.invoke(IPC.removeDictionaryEntry, id),
+  getRecordings: () => ipcRenderer.invoke(IPC.getRecordings),
+  deleteRecording: (file) => ipcRenderer.invoke(IPC.deleteRecording, file),
+  clearRecordings: () => ipcRenderer.invoke(IPC.clearRecordings),
   copyDiagnostic: (at: number): Promise<boolean> => ipcRenderer.invoke(IPC.copyDiagnostic, at),
   exportDiagnostics: (withAudio: boolean): Promise<string | null> =>
     ipcRenderer.invoke(IPC.exportDiagnostics, withAudio),
@@ -53,7 +60,15 @@ const api: WouiceApi = {
   captureFailed: (sessionId: number, reason: string) =>
     ipcRenderer.send(IPC.captureFailed, sessionId, reason),
   cancelDictation: () => ipcRenderer.send(IPC.cancelDictation),
-  onStartCapture: (cb) => subscribe<number>(IPC.startCapture, cb),
+  onStartCapture: (cb) => {
+    // Two arguments, so this cannot use `subscribe`: the microphone travels
+    // with the message rather than being fetched separately, which is what
+    // guarantees the device in force is the one settings named.
+    const handler = (_e: unknown, sessionId: number, deviceId: string | null): void =>
+      cb(sessionId, deviceId)
+    ipcRenderer.on(IPC.startCapture, handler)
+    return () => ipcRenderer.removeListener(IPC.startCapture, handler)
+  },
   onStopCapture: (cb) => subscribe<number>(IPC.stopCapture, cb),
   onMetric: (cb) => subscribe<void>(IPC.metric, cb),
   onDictationResult: (cb) => subscribe<DictationOutcome>(IPC.dictationResult, cb),

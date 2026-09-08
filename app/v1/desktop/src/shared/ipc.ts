@@ -1,6 +1,6 @@
 import type { SidecarId } from './models.js'
 import type { Settings } from './settings.js'
-import type { DictationRecord, Page, ResourceRecord, StoreStats } from '@wouice/store'
+import type { DictationRecord, DictionaryRecord, Page, ResourceRecord, StoreStats } from '@wouice/store'
 
 /**
  * The IPC surface, typed in one place so main and renderer cannot drift.
@@ -21,6 +21,13 @@ export const IPC = {
   getMetrics: 'metrics:get',
   getDictationPage: 'metrics:page',
   getStorage: 'storage:stats',
+  getDictionary: 'dictionary:list',
+  addDictionaryEntry: 'dictionary:add',
+  updateDictionaryEntry: 'dictionary:update',
+  removeDictionaryEntry: 'dictionary:remove',
+  getRecordings: 'recordings:list',
+  deleteRecording: 'recordings:delete',
+  clearRecordings: 'recordings:clear',
   copyDiagnostic: 'metrics:copyDiagnostic',
   exportDiagnostics: 'metrics:export',
   revealMetrics: 'metrics:reveal',
@@ -59,6 +66,7 @@ export type {
   Page,
   ResourceRecord,
   StoreStats,
+  DictionaryRecord,
   CalibrationRecord as CalibrationRun,
 } from '@wouice/store'
 
@@ -118,6 +126,22 @@ export interface CalibrationReport {
   runId: number
   /** Plain-English notes about language handling. */
   notes: string[]
+}
+
+export interface NewDictionaryEntry {
+  kind: 'term' | 'correction'
+  hear: string
+  write: string
+  enabled: boolean
+}
+
+export type DictionaryPatch = Partial<{ hear: string; write: string; enabled: boolean }>
+
+/** One retained WAV, for the settings screen to list and delete. */
+export interface RetainedAudio {
+  file: string
+  at: number
+  bytes: number
 }
 
 export interface DictationOutcome {
@@ -184,6 +208,14 @@ export interface WouiceApi {
   getDictationPage(offset: number, limit: number, query?: string): Promise<Page<DictationRecord>>
   /** What is in the database: schema version, size, and per-table row counts. */
   getStorage(): Promise<StoreStats>
+  getDictionary(): Promise<DictionaryRecord[]>
+  /** Returns the problem when the entry was refused, or null when it was added. */
+  addDictionaryEntry(entry: NewDictionaryEntry): Promise<string | null>
+  updateDictionaryEntry(id: number, patch: DictionaryPatch): Promise<void>
+  removeDictionaryEntry(id: number): Promise<void>
+  getRecordings(): Promise<RetainedAudio[]>
+  deleteRecording(file: string): Promise<void>
+  clearRecordings(): Promise<void>
   /** Put one dictation's full diagnostic on the clipboard, ready to paste. */
   copyDiagnostic(at: number): Promise<boolean>
   /** Write a markdown export, optionally with the retained audio. Returns the path. */
@@ -197,7 +229,7 @@ export interface WouiceApi {
   captureReady(sessionId: number): void
   captureFailed(sessionId: number, reason: string): void
   cancelDictation(): void
-  onStartCapture(cb: (sessionId: number) => void): () => void
+  onStartCapture(cb: (sessionId: number, deviceId: string | null) => void): () => void
   onStopCapture(cb: (sessionId: number) => void): () => void
   onMetric(cb: () => void): () => void
   onDictationResult(cb: (r: DictationOutcome) => void): () => void

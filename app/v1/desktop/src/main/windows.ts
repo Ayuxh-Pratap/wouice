@@ -95,8 +95,8 @@ export function hideHud(): void {
   if (hud && !hud.isDestroyed()) hud.hide()
 }
 
-export function sendToHud(channel: string, payload: unknown): void {
-  if (hud && !hud.isDestroyed()) hud.webContents.send(channel, payload)
+export function sendToHud(channel: string, ...payload: unknown[]): void {
+  if (hud && !hud.isDestroyed()) hud.webContents.send(channel, ...payload)
 }
 
 /** History, dictionary, settings, diagnostics. An ordinary window. */
