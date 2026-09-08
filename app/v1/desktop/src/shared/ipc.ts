@@ -1,5 +1,6 @@
 import type { SidecarId } from './models.js'
 import type { Settings } from './settings.js'
+import type { DictationRecord, Page, ResourceRecord, StoreStats } from '@wouice/store'
 
 /**
  * The IPC surface, typed in one place so main and renderer cannot drift.
@@ -18,9 +19,13 @@ export const IPC = {
   getDiagnostics: 'app:diagnostics',
   hideHud: 'hud:hide',
   getMetrics: 'metrics:get',
+  getDictationPage: 'metrics:page',
+  getStorage: 'storage:stats',
   copyDiagnostic: 'metrics:copyDiagnostic',
   exportDiagnostics: 'metrics:export',
   revealMetrics: 'metrics:reveal',
+  calibrate: 'calibrate:run',
+  calibrateApply: 'calibrate:apply',
   // renderer -> main: one 20ms frame of 16kHz mono Float32
   audioFrame: 'capture:frame',
   captureReady: 'capture:ready',
@@ -39,58 +44,80 @@ export const IPC = {
   dictationResult: 'dictation:result',
 } as const
 
-export interface DictationMetric {
-  kind: 'dictation'
-  at: number
-  audioMs: number
-  asrMs: number
-  llmMs: number
-  totalMs: number
-  chunks: number
-  asrModel: string
-  llmModel: string
-  language: string
-  rawChars: number
-  finalChars: number
-  corrections: number
-  degraded: string | null
-  /** Every stage of the text, for developer mode. Absent on older records. */
-  stages?: {
-    raw: string
-    corrected: string
-    sent: { system: string; user: string }
-    received: string
-    applied: { from: string; to: string; count: number }[]
-  }
-  capture?: CaptureDiagnostics
-  audioPath?: string | null
-}
+/**
+ * Record shapes come from `@wouice/store`, which is the thing that persists
+ * them. Re-exported rather than redeclared: a second copy of a shape is exactly
+ * how `SilenceConfig` ended up missing three fields on one side, bridged with a
+ * cast, and silently breaking speech detection at runtime.
+ *
+ * Type-only, so the renderer never pulls `node:sqlite` into its bundle.
+ */
+export type {
+  AppliedRule,
+  CaptureDiagnostics,
+  DictationRecord,
+  Page,
+  ResourceRecord,
+  StoreStats,
+  CalibrationRecord as CalibrationRun,
+} from '@wouice/store'
 
-/** Why the recording ended, and what the audio looked like. */
-export interface CaptureDiagnostics {
-  stoppedBy: 'silence' | 'hotkey' | 'cap' | 'unknown'
-  speechMs: number
-  silenceMs: number
-  longestPauseMs: number
-  windowMs: number
-  chunkAfterMs: number
-  chunkPauseMs: number
-  peakRms?: number
-  meanSpeechRms?: number
-  thresholdRms?: number
-}
-
-export interface ResourceMetric {
-  kind: 'resource'
-  at: number
-  vramUsedMiB: number
-  vramTotalMiB: number
-  rssMiB: number
-}
-
+/** What the dashboard needs for its charts and headline figures. */
 export interface MetricsSnapshot {
-  dictations: DictationMetric[]
-  resources: ResourceMetric[]
+  /** Oldest first: the charts read left to right. */
+  dictations: DictationRecord[]
+  resources: ResourceRecord[]
+  /** Computed over the WHOLE history in SQL, not over the slice above. */
+  summary: {
+    count: number
+    p50Ms: number
+    p95Ms: number
+    degraded: number
+    chars: number
+  }
+  byAsrModel: { model: string; meanMs: number; n: number }[]
+}
+
+export type CalibrationLabel = 'english' | 'hindi' | 'mixed'
+
+/**
+ * One recorded prompt, sent whole for analysis.
+ *
+ * Deliberately raw audio and nothing else. Levels are measured in main with the
+ * same function the live silence gate uses, so a calibration can never be
+ * computed against a slightly different measure than the one it is tuning.
+ */
+export interface CalibrationInput {
+  label: CalibrationLabel
+  /** The whole recording: 16 kHz mono Float32. */
+  pcm: Float32Array
+  /** Wall-clock length, for display. */
+  durationMs: number
+}
+
+export interface CalibrationReport {
+  minNoiseFloor: number
+  speechFactor: number
+  threshold: number
+  quality: 'good' | 'weak' | 'unusable'
+  reason: string
+  observed: {
+    frames: number
+    silenceLevel: number
+    speechLevel: number
+    separation: number
+    speechRatio: number
+  }
+  /** What the ASR made of each prompt, so accuracy is visible before committing. */
+  transcripts: { label: CalibrationLabel; text: string; language: string; durationMs: number }[]
+  /** The threshold that was in force before this run, for comparison. */
+  previousThreshold: number
+  /** Which microphone this was measured on. */
+  device: string
+  /** Row id of this run in the calibration history. 0 if it could not be stored. */
+  runId: number
+  /** Plain-English notes about language handling. */
+  notes: string[]
 }
 
 export interface DictationOutcome {
@@ -153,11 +180,19 @@ export interface WouiceApi {
   getDiagnostics(): Promise<Diagnostics>
   hideHud(): void
   getMetrics(): Promise<MetricsSnapshot>
+  /** One page of history, newest first, with the total so pages can be counted. */
+  getDictationPage(offset: number, limit: number, query?: string): Promise<Page<DictationRecord>>
+  /** What is in the database: schema version, size, and per-table row counts. */
+  getStorage(): Promise<StoreStats>
   /** Put one dictation's full diagnostic on the clipboard, ready to paste. */
   copyDiagnostic(at: number): Promise<boolean>
   /** Write a markdown export, optionally with the retained audio. Returns the path. */
   exportDiagnostics(withAudio: boolean): Promise<string | null>
   revealMetrics(): void
+  /** Analyse recorded prompts. Does not change settings. */
+  calibrate(samples: CalibrationInput[], device: string): Promise<CalibrationReport>
+  /** Commit a calibration to settings. */
+  calibrateApply(report: CalibrationReport): Promise<void>
   sendAudioFrame(sessionId: number, frame: Float32Array): void
   captureReady(sessionId: number): void
   captureFailed(sessionId: number, reason: string): void

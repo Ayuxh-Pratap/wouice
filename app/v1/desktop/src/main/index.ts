@@ -8,12 +8,15 @@ import { SettingsStore } from './settings-store.js'
 import { HotkeyManager } from './hotkeys.js'
 import { createTray, destroyTray, refreshTray } from './tray.js'
 import { broadcast, createHud, createMainWindow, hideHud, sendToHud, showHud } from './windows.js'
-import { IPC, type Diagnostics, type SidecarView } from '../shared/ipc.js'
+import { IPC, type CalibrationInput, type CalibrationReport, type Diagnostics, type SidecarView } from '../shared/ipc.js'
 import type { SidecarId } from '../shared/models.js'
-import { DictationController } from './dictation/controller.js'
-import { MetricsStore, sampleResources } from './metrics/store.js'
+import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from './dictation/controller.js'
+import { sampleResources } from './metrics/sample.js'
+import { importJsonl, openStore, type DictationRecord } from '@wouice/store'
 import { RecordingStore } from './metrics/recordings.js'
-import { formatDiagnostic, formatSession } from './metrics/diagnostic.js'
+import { analyseCalibration, applyCalibration, describeLanguages, frameLevels } from './capture/calibrate.js'
+import { WhisperCppClient } from '@wouice/asr'
+import { describeCalibration, formatDiagnostic, formatSession } from './metrics/diagnostic.js'
 import { writeFileSync, mkdirSync, copyFileSync } from 'node:fs'
 
 // MUST come before any app.getPath('userData') call, and those happen at module
@@ -37,12 +40,24 @@ const MODEL_ROOT = path.join(REPO_ROOT, 'models')
 const settings = new SettingsStore()
 const supervisor = new SidecarSupervisor(SIDECAR_ROOT, MODEL_ROOT)
 const hotkeys = new HotkeyManager()
-const metrics = new MetricsStore(app.getPath('userData'))
+/**
+ * One SQLite file for dictations, telemetry and calibration history.
+ *
+ * Replaces an append-only JSONL log that kept its last 2000 events in memory
+ * and showed the last twenty. Everything older was on disk and unreachable:
+ * there was no way to page back through history, no way to search it, and the
+ * headline figures silently described only the tail. `metrics.jsonl` is
+ * absorbed on first launch and renamed rather than deleted.
+ */
+const store = openStore({
+  dir: app.getPath('userData'),
+  onMigrate: (id, name) => console.log(`[store] migration ${id}: ${name}`),
+})
 const recordings = new RecordingStore(app.getPath('userData'))
 
 const dictation = new DictationController({
   supervisor,
-  silence: settings.get().silence,
+  silence: () => settings.get().silence,
   cleanupEnabled: () => settings.get().cleanup.enabled,
   cleanupTimeoutMs: () => settings.get().cleanup.timeoutMs,
   retainAudio: () => settings.get().retainAudio,
@@ -81,7 +96,13 @@ dictation.on('result', (r) => {
   // Delivery is clipboard-only until injection lands in step 5. Copying still
   // makes the tool usable today: one Ctrl+V and the text is placed.
   clipboard.writeText(r.final)
-  metrics.recordDictation(r)
+  // After delivery, never before: a telemetry write must not be able to delay
+  // or fail the text the user already spoke.
+  try {
+    store.dictations.insert(toRecord(r))
+  } catch (err) {
+    console.warn('[store] could not record dictation:', err)
+  }
   broadcast(IPC.metric, undefined)
   broadcast(IPC.dictationResult, {
     final: r.final,
@@ -100,6 +121,66 @@ dictation.on('result', (r) => {
   })
   setTimeout(() => dictation.send({ type: 'delivered' }), 1_400)
 })
+
+/** Controller result -> stored record. The only place the two shapes meet. */
+function toRecord(r: DictationResult): DictationRecord {
+  return {
+    at: Date.now(),
+    audioMs: r.audioMs,
+    asrMs: r.asrMs,
+    llmMs: r.llmMs,
+    totalMs: r.totalMs,
+    chunks: r.chunks,
+    asrModel: r.asrModel,
+    llmModel: r.llmModel,
+    language: r.language,
+    rawChars: r.raw.length,
+    finalChars: r.final.length,
+    corrections: r.applied.length,
+    degraded: r.degraded,
+    raw: r.raw,
+    corrected: r.corrected,
+    sentSystem: r.sent.system,
+    sentUser: r.sent.user,
+    received: r.received,
+    applied: r.applied,
+    capture: r.capture,
+    audioPath: r.audioPath,
+  }
+}
+
+/**
+ * Keep every calibration run, accepted or not.
+ *
+ * A rejected run is evidence rather than noise: three weak results in a row on
+ * the same microphone says the room or the hardware is the problem, not the
+ * algorithm, and that is only visible if the misses are kept alongside the hits.
+ */
+function recordCalibration(report: Omit<CalibrationReport, 'runId'>): number {
+  try {
+    return store.calibrations.insert({
+      at: Date.now(),
+      device: report.device,
+      quality: report.quality,
+      silenceLevel: report.observed.silenceLevel,
+      speechLevel: report.observed.speechLevel,
+      separation: report.observed.separation,
+      threshold: report.threshold,
+      minNoiseFloor: report.minNoiseFloor,
+      speechFactor: report.speechFactor,
+      applied: false,
+      samples: report.transcripts.map((t) => ({
+        label: t.label,
+        text: t.text,
+        language: t.language,
+        durationMs: t.durationMs,
+      })),
+    })
+  } catch (err) {
+    console.warn('[store] could not record calibration:', err)
+    return 0
+  }
+}
 
 function toView(s: SidecarSnapshot): SidecarView {
   return {
@@ -181,9 +262,22 @@ function registerIpc(): void {
   }))
   ipcMain.on(IPC.hideHud, () => hideHud())
   ipcMain.handle(IPC.getMetrics, () => ({
-    dictations: metrics.dictations(),
-    resources: metrics.resources(),
+    // Oldest first for the charts; SQL returns newest first because that is
+    // what every other reader wants.
+    dictations: store.dictations.recent(60).reverse(),
+    resources: store.resources.recent(120),
+    // Over the whole history, computed in SQL. The old version averaged
+    // whatever happened to be in memory, so the headline figures quietly
+    // described the tail rather than the record.
+    summary: store.dictations.summary(),
+    byAsrModel: store.dictations.meanAsrByModel(),
   }))
+
+  ipcMain.handle(IPC.getDictationPage, (_e, offset: number, limit: number, query?: string) =>
+    store.dictations.page(offset, limit, query)
+  )
+
+  ipcMain.handle(IPC.getStorage, () => store.stats())
   ipcMain.on(IPC.audioFrame, (_e, sessionId: number, frame: Float32Array) =>
     dictation.pushFrame(sessionId, frame)
   )
@@ -196,15 +290,16 @@ function registerIpc(): void {
   ipcMain.on(IPC.cancelDictation, () => dictation.send({ type: 'escape' }))
 
   ipcMain.handle(IPC.copyDiagnostic, (_e, at: number) => {
-    const all = metrics.dictations()
-    const i = all.findIndex((d) => d.at === at)
-    if (i === -1) return false
-    clipboard.writeText(formatDiagnostic(all[i]!, i + 1))
+    const d = store.dictations.byAt(at)
+    if (!d) return false
+    clipboard.writeText(formatDiagnostic(d, d.id ?? 0, describeCalibration(settings.get())))
     return true
   })
 
   ipcMain.handle(IPC.exportDiagnostics, async (_e, withAudio: boolean) => {
-    const all = metrics.dictations()
+    // Bounded: an export is meant to be read and pasted, and the whole history
+    // could be thousands of transcripts.
+    const all = store.dictations.recent(200)
     if (all.length === 0) return null
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
@@ -216,11 +311,15 @@ function registerIpc(): void {
     if (canceled || !filePath) return null
 
     const snap = supervisor.snapshotAll()
-    const md = formatSession([...all].reverse(), {
+    const md = formatSession(all, {
       app: app.getVersion(),
       electron: process.versions.electron,
       platform: `${process.platform} ${process.arch}`,
       models: snap.map((x) => `${x.id}=${x.modelId}`).join(' '),
+      // Whether the levels below were measured or inherited. Without this,
+      // "why did it not stop when I stopped talking?" is unanswerable from an
+      // export alone: shipped defaults and a bad calibration look identical.
+      levels: describeCalibration(settings.get()),
     })
     writeFileSync(filePath, md, 'utf8')
 
@@ -242,7 +341,89 @@ function registerIpc(): void {
     return filePath
   })
 
-  ipcMain.on(IPC.revealMetrics, () => shell.showItemInFolder(metrics.path))
+  ipcMain.on(IPC.revealMetrics, () => shell.showItemInFolder(store.file))
+
+  /**
+   * Calibration. Analyses only; nothing is written until the user accepts.
+   *
+   * The speech threshold cannot ship as a constant: a value derived from one
+   * microphone classified 70% of speech as silence on that very machine, and
+   * anyone with a different mic or a quieter voice hits the same wall. So it is
+   * measured here from the user's own voice.
+   */
+  ipcMain.handle(IPC.calibrate, async (_e, inputs: CalibrationInput[], device: string): Promise<CalibrationReport> => {
+    const samples = inputs.map((i) => ({
+      label: i.label,
+      rms: frameLevels(Float32Array.from(i.pcm), (SAMPLE_RATE * FRAME_MS) / 1000),
+    }))
+    const result = analyseCalibration(samples)
+
+    // Transcribe each prompt as well. The numbers say whether the gate will
+    // work; only the text says whether the recognition is any good, and it is
+    // the only place the "was my Hindi actually heard as Hindi?" question gets
+    // a straight answer.
+    const transcripts: CalibrationReport['transcripts'] = []
+    if (supervisor.canServe('whisper')) {
+      const asr = new WhisperCppClient({
+        baseUrl: supervisor.baseUrl('whisper'),
+        model: supervisor.snapshot('whisper').modelId,
+      })
+      for (const i of inputs) {
+        try {
+          const r = await asr.transcribe(Float32Array.from(i.pcm), { language: 'auto' })
+          transcripts.push({
+            label: i.label,
+            text: r.text.trim(),
+            language: r.language,
+            durationMs: i.durationMs,
+          })
+        } catch (err) {
+          transcripts.push({
+            label: i.label,
+            text: err instanceof Error ? err.message : 'transcription failed',
+            language: 'unknown',
+            durationMs: i.durationMs,
+          })
+        }
+      }
+    }
+
+    const cfg = settings.get().silence
+    const report: Omit<CalibrationReport, 'runId'> = {
+      ...result,
+      transcripts,
+      previousThreshold: cfg.minNoiseFloor * cfg.speechFactor,
+      device,
+      notes: describeLanguages(
+        samples.map((s) => ({
+          ...s,
+          language: transcripts.find((t) => t.label === s.label)?.language,
+        }))
+      ),
+    }
+    // Written now, before the user has decided anything. A run they looked at
+    // and walked away from is the record of a microphone or a room that did not
+    // work, and that is worth more than a history of successes only.
+    return { ...report, runId: recordCalibration(report) }
+  })
+
+  ipcMain.handle(IPC.calibrateApply, (_e, report: CalibrationReport) => {
+    if (report.quality === 'unusable') return
+    if (report.runId) store.calibrations.markApplied(report.runId)
+    const next = settings.set({
+      silence: applyCalibration(settings.get().silence, report),
+      calibration: {
+        at: Date.now(),
+        device: report.device,
+        quality: report.quality,
+        silenceLevel: report.observed.silenceLevel,
+        speechLevel: report.observed.speechLevel,
+        separation: report.observed.separation,
+        languages: report.transcripts.map((t) => ({ label: t.label, detected: t.language })),
+      },
+    })
+    broadcast(IPC.settingsChanged, next)
+  })
 }
 
 // A second instance would fight over the hotkey and the sidecar ports.
@@ -264,6 +445,23 @@ if (!app.requestSingleInstanceLock()) {
       )
     }
 
+    // Only now, holding the single-instance lock. The import RENAMES the old
+    // log, so a second launch that is about to quit must never reach it: the
+    // instance still running would lose the file it is appending to.
+    try {
+      const imported = importJsonl(store.db, path.join(app.getPath('userData'), 'metrics.jsonl'))
+      if (imported.ran) {
+        console.log(
+          `[store] imported ${imported.dictations} dictation(s) and ${imported.resources} sample(s)` +
+            (imported.malformed ? `, skipped ${imported.malformed} malformed line(s)` : '')
+        )
+      }
+    } catch (err) {
+      // The original is untouched by any failure here, so the next launch
+      // simply tries again. Never a reason to refuse to start.
+      console.warn('[store] could not import metrics.jsonl:', err)
+    }
+
     const { models } = settings.get()
     supervisor.register('whisper', models.whisper)
     supervisor.register('llama', models.llama)
@@ -282,9 +480,17 @@ if (!app.requestSingleInstanceLock()) {
     // Slow on purpose: spawning nvidia-smi costs ~80ms and the headroom this
     // watches changes on the scale of seconds, never milliseconds. It is never
     // called on the dictation path.
+    let samples = 0
     const sample = async (): Promise<void> => {
       const r = await sampleResources()
-      if (r) metrics.record({ kind: 'resource', at: Date.now(), ...r })
+      try {
+        store.resources.insert({ at: Date.now(), ...r })
+        // This is the one table that grows on its own, so it is the one table
+        // that trims itself. Hourly is often enough for a row every 15s.
+        if (++samples % 240 === 0) store.resources.prune()
+      } catch (err) {
+        console.warn('[store] could not record sample:', err)
+      }
     }
     void sample()
     setInterval(() => void sample(), 15_000)
@@ -299,5 +505,6 @@ if (!app.requestSingleInstanceLock()) {
     // Sidecars are children, but killing them explicitly avoids orphaned
     // processes holding the GPU if Electron exits uncleanly.
     await supervisor.stopAll()
+    store.close()
   })
 }
