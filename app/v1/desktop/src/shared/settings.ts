@@ -59,6 +59,24 @@ export const DEFAULT_SILENCE: SilenceConfig = {
 }
 
 /**
+ * What a calibration run concluded, kept alongside the levels it produced.
+ *
+ * The levels alone cannot say whether they were measured or shipped, and that
+ * distinction matters: a threshold tuned on a headset is wrong for the laptop's
+ * built-in microphone. Recording the device it was measured on is what lets the
+ * app notice the input has changed and say so, instead of quietly misbehaving.
+ */
+export interface CalibrationRecord {
+  at: number
+  device: string
+  quality: 'good' | 'weak'
+  silenceLevel: number
+  speechLevel: number
+  separation: number
+  languages: { label: string; detected: string }[]
+}
+
+/**
  * Everything the user can change. Persisted as JSON in userData so it survives
  * restarts and can be edited by hand when something goes wrong.
  */
@@ -88,6 +106,8 @@ export interface Settings {
    * because this is your voice accumulating on your own disk.
    */
   retainAudio: boolean
+  /** Null until the user calibrates; the levels above are then shipped defaults. */
+  calibration: CalibrationRecord | null
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -113,4 +133,5 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   developerMode: true,
   retainAudio: true,
+  calibration: null,
 }

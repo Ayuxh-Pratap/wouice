@@ -60,6 +60,9 @@ export class SettingsStore {
         cleanup: { ...DEFAULT_SETTINGS.cleanup, ...raw.cleanup },
         developerMode: raw.developerMode ?? DEFAULT_SETTINGS.developerMode,
         retainAudio: raw.retainAudio ?? DEFAULT_SETTINGS.retainAudio,
+        // Null is a meaningful value here - "never calibrated" - so this must
+        // not fall back to the default when it is explicitly null.
+        calibration: raw.calibration ?? null,
       }
     } catch {
       // A hand-edited file with a trailing comma must not brick the app.
