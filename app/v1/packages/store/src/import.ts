@@ -120,6 +120,11 @@ export function importJsonl(db: Db, file: string): ImportResult {
       applied: s?.applied ?? [],
       capture: parsed.capture ?? null,
       audioPath: parsed.audioPath ?? null,
+      // Everything in the JSONL era went to the clipboard and nowhere else.
+      inserted: false,
+      delivery: 'copy',
+      targetExe: '',
+      deliveryNote: '',
     })
   }
 

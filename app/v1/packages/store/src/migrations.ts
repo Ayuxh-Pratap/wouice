@@ -128,6 +128,19 @@ export const MIGRATIONS: Migration[] = [
       INSERT INTO dictations_fts (dictations_fts) VALUES ('rebuild');
     `,
   },
+  {
+    id: 3,
+    name: 'how each dictation was delivered',
+    sql: `
+      -- Additive, with defaults, so every row written before injection existed
+      -- reads as "copied to the clipboard" - which is exactly what happened.
+      ALTER TABLE dictations ADD COLUMN inserted INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE dictations ADD COLUMN delivery TEXT NOT NULL DEFAULT 'copy';
+      ALTER TABLE dictations ADD COLUMN target_exe TEXT NOT NULL DEFAULT '';
+      -- Why it was not inserted, when it was not. Empty on a clean paste.
+      ALTER TABLE dictations ADD COLUMN delivery_note TEXT NOT NULL DEFAULT '';
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */

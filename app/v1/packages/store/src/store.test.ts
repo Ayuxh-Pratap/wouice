@@ -36,6 +36,10 @@ const base: DictationRecord = {
   applied: [],
   capture: null,
   audioPath: null,
+  inserted: false,
+  delivery: 'copy',
+  targetExe: '',
+  deliveryNote: '',
 }
 
 const at = (n: number, patch: Partial<DictationRecord> = {}): DictationRecord => ({
@@ -84,6 +88,41 @@ describe('migrations', () => {
     }).toThrow()
     expect(db.version).toBe(before)
     db.close()
+  })
+
+  it('upgrades an existing database in place, keeping its rows', () => {
+    // The migration that matters most: someone already has history when the
+    // delivery columns arrive, and it must survive the upgrade.
+    const dir = mkdtempSync(path.join(tmpdir(), 'wouice-upgrade-'))
+    const file = path.join(dir, 'x.db')
+    try {
+      const first = openDb({ file })
+      // Roll back to the schema before delivery tracking existed.
+      first.raw.exec('PRAGMA user_version = 2')
+      first.raw.exec('ALTER TABLE dictations DROP COLUMN inserted')
+      first.raw.exec('ALTER TABLE dictations DROP COLUMN delivery')
+      first.raw.exec('ALTER TABLE dictations DROP COLUMN target_exe')
+      first.raw.exec('ALTER TABLE dictations DROP COLUMN delivery_note')
+      first.raw
+        .prepare(
+          `INSERT INTO dictations (at, audio_ms, asr_ms, llm_ms, total_ms, chunks,
+             asr_model, llm_model, language, raw_chars, final_chars, corrections, received)
+           VALUES (5, 1, 1, 1, 1, 0, 'm', 'm', 'en', 1, 1, 0, 'older row')`
+        )
+        .run()
+      first.close()
+
+      const second = openDb({ file })
+      expect(second.version).toBe(LATEST_VERSION)
+      const row = new Dictations(second).byAt(5)
+      expect(row?.received).toBe('older row')
+      // Everything before injection existed did go to the clipboard.
+      expect(row?.inserted).toBe(false)
+      expect(row?.delivery).toBe('copy')
+      second.close()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('survives being reopened from a real file', () => {
@@ -188,6 +227,16 @@ describe('dictations', () => {
 
   it('reports an empty summary without dividing by zero', () => {
     expect(repo.summary()).toEqual({ count: 0, p50Ms: 0, p95Ms: 0, degraded: 0, chars: 0 })
+  })
+
+  it('round-trips how the text was delivered', () => {
+    repo.insert(
+      at(9, { inserted: true, delivery: 'paste', targetExe: 'code.exe', deliveryNote: '' })
+    )
+    const back = repo.byAt(9)
+    expect(back?.inserted).toBe(true)
+    expect(back?.delivery).toBe('paste')
+    expect(back?.targetExe).toBe('code.exe')
   })
 
   it('groups mean ASR time by model', () => {

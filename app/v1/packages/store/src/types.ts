@@ -67,6 +67,14 @@ export interface DictationRecord {
   capture: CaptureDiagnostics | null
   /** Retained WAV, when audio retention is on. */
   audioPath: string | null
+  /** True when the text reached the cursor, false when it only reached the clipboard. */
+  inserted: boolean
+  /** How: 'paste', 'type', or 'copy'. */
+  delivery: string
+  /** Which application it went to. Empty when it went nowhere. */
+  targetExe: string
+  /** Why it was not inserted, when it was not. Empty on a clean paste. */
+  deliveryNote: string
 }
 
 export interface ResourceRecord {

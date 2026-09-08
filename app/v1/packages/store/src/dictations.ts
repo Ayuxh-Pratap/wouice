@@ -33,6 +33,10 @@ interface Row {
   applied: string
   capture: string | null
   audio_path: string | null
+  inserted: number
+  delivery: string
+  target_exe: string
+  delivery_note: string
 }
 
 /** Never let a malformed JSON column take the whole listing down with it. */
@@ -69,24 +73,31 @@ function toRecord(r: Row): DictationRecord {
     applied: parse<AppliedRule[]>(r.applied, []),
     capture: parse<CaptureDiagnostics | null>(r.capture, null),
     audioPath: r.audio_path,
+    inserted: r.inserted === 1,
+    delivery: r.delivery,
+    targetExe: r.target_exe,
+    deliveryNote: r.delivery_note,
   }
 }
 
 const COLUMNS = `
   id, at, audio_ms, asr_ms, llm_ms, total_ms, chunks, asr_model, llm_model,
   language, raw_chars, final_chars, corrections, degraded, raw, corrected,
-  sent_system, sent_user, received, applied, capture, audio_path
+  sent_system, sent_user, received, applied, capture, audio_path,
+  inserted, delivery, target_exe, delivery_note
 `
 
 const INSERT = `
   INSERT INTO dictations (
     at, audio_ms, asr_ms, llm_ms, total_ms, chunks, asr_model, llm_model,
     language, raw_chars, final_chars, corrections, degraded, raw, corrected,
-    sent_system, sent_user, received, applied, capture, audio_path
+    sent_system, sent_user, received, applied, capture, audio_path,
+    inserted, delivery, target_exe, delivery_note
   ) VALUES (
     :at, :audio_ms, :asr_ms, :llm_ms, :total_ms, :chunks, :asr_model, :llm_model,
     :language, :raw_chars, :final_chars, :corrections, :degraded, :raw, :corrected,
-    :sent_system, :sent_user, :received, :applied, :capture, :audio_path
+    :sent_system, :sent_user, :received, :applied, :capture, :audio_path,
+    :inserted, :delivery, :target_exe, :delivery_note
   )
 `
 
@@ -113,6 +124,10 @@ function bind(d: DictationRecord): Record<string, string | number | null> {
     applied: JSON.stringify(d.applied),
     capture: d.capture ? JSON.stringify(d.capture) : null,
     audio_path: d.audioPath,
+    inserted: d.inserted ? 1 : 0,
+    delivery: d.delivery,
+    target_exe: d.targetExe,
+    delivery_note: d.deliveryNote,
   }
 }
 
