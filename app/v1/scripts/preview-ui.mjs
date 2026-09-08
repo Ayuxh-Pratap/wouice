@@ -70,6 +70,19 @@ const STUB = `<script>
     targetExe: 'code.exe', deliveryNote: id === 4 ? 'focus moved to chrome.exe' : '',
   })
   const rows = Array.from({ length: 23 }, (_, i) => dictation(i + 1)).reverse()
+  let ratingSheet = {
+    next: dictation(7),
+    remaining: 9,
+    progress: { rated: 11, shipped: 9, hinglishRated: 6, hinglishShipped: 4,
+                sampleTarget: 20, shipTarget: 17, met: false },
+    recent: [
+      { rating: { dictationAt: rows[0].at, ship: true, note: '', at: Date.now() },
+        text: rows[0].received, language: rows[0].language },
+      { rating: { dictationAt: rows[1].at, ship: false, note: 'dropped the last clause',
+                  at: Date.now() - 60000 },
+        text: rows[1].received, language: rows[1].language },
+    ],
+  }
   // Drive the overlay from the console: __hud('listening', 0.6), __hover(true),
   // __side('left'). Nothing here proves the real IPC works - see the header.
   window.__hud = (phase, level = 0, message, elapsedMs = 0) => {
@@ -89,6 +102,28 @@ const STUB = `<script>
   }
   window.wouice = {
     deleteDictations: async () => 0,
+    // The rating sheet, stubbed well enough to look at: one unrated dictation,
+    // a scoreboard part-way to A4, and a couple of verdicts to undo.
+    getRatingSheet: async () => ratingSheet,
+    rateDictation: async (at, ship, note) => {
+      ratingSheet = {
+        ...ratingSheet,
+        remaining: Math.max(0, ratingSheet.remaining - 1),
+        progress: {
+          ...ratingSheet.progress,
+          rated: ratingSheet.progress.rated + 1,
+          shipped: ratingSheet.progress.shipped + (ship ? 1 : 0),
+        },
+        recent: [
+          { rating: { dictationAt: at, ship, note: note ?? '', at: Date.now() },
+            text: rows[0].received, language: rows[0].language },
+          ...ratingSheet.recent,
+        ].slice(0, 12),
+        next: ratingSheet.remaining > 1 ? dictation(ratingSheet.remaining) : null,
+      }
+      return ratingSheet
+    },
+    clearRating: async () => ratingSheet,
     clearDictations: async () => 0,
     getSettings: async () => settings,
     // Echoed back to the listeners, the way main does. Without this the preview
