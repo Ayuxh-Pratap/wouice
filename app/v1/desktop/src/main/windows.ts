@@ -2,13 +2,16 @@ import { BrowserWindow, screen, shell } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  PET_SIZE,
-  PET_STAGE,
+  DEFAULT_PET_SIZE,
+  STAGE_OVERHANG,
+  petPixels,
   petSide,
   placementFromPet,
   snap,
   stageBounds,
+  stageSize,
   type PetPlacement,
+  type PetSize,
 } from '../shared/pet.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -28,6 +31,12 @@ let main: BrowserWindow | null = null
  */
 let placement: PetPlacement = { x: 0.97, y: 0.82 }
 let petEnabled = true
+let petSize: PetSize = DEFAULT_PET_SIZE
+
+/** The character's edge length in pixels, for the size currently chosen. */
+function px(): number {
+  return petPixels(petSize)
+}
 
 /**
  * ONE DISPLAY, DELIBERATELY, FOR NOW.
@@ -70,7 +79,7 @@ function load(win: BrowserWindow, route: string): void {
 export function createHud(): BrowserWindow {
   if (hud && !hud.isDestroyed()) return hud
 
-  const bounds = stageBounds(placement, petArea())
+  const bounds = stageBounds(placement, petArea(), px())
   hud = new BrowserWindow({
     ...bounds,
     show: false,
@@ -108,10 +117,12 @@ export function createHud(): BrowserWindow {
   // the cursor can still be tracked while clicks pass through, which is what
   // lets it become clickable at the moment the cursor is over the pet.
   hud.setIgnoreMouseEvents(true, { forward: true })
+  hovering = false
 
   load(hud, '/hud')
   hud.on('closed', () => {
     hud = null
+    hovering = false
   })
   return hud
 }
@@ -142,13 +153,9 @@ export function hideHud(): void {
 /** The pet's own square within the stage, in screen coordinates. */
 function currentPetRect(): Electron.Rectangle {
   const b = hud!.getBounds()
-  const left = petSide(placement) === 'left' ? b.x : b.x + PET_STAGE.width - PET_SIZE
-  return {
-    x: left,
-    y: b.y + Math.round((PET_STAGE.height - PET_SIZE) / 2),
-    width: PET_SIZE,
-    height: PET_SIZE,
-  }
+  const size = px()
+  const left = petSide(placement) === 'left' ? b.x : b.x + b.width - size
+  return { x: left, y: b.y + STAGE_OVERHANG, width: size, height: size }
 }
 
 /**
@@ -161,15 +168,27 @@ function currentPetRect(): Electron.Rectangle {
  * with no way for anyone to work out why. Asking Windows where the cursor is
  * cannot get stuck in the wrong state, because it is not a state.
  */
-let interactive = false
+/**
+ * Whether the cursor was over the pet last time we looked. RENDERER STATE ONLY.
+ *
+ * The window is told what it should be on every tick rather than only when this
+ * changes; this exists solely to avoid re-sending an event the renderer already
+ * has. That is fewer moving parts than caching the window's state and keeping
+ * the cache honest, not more.
+ */
+let hovering = false
 let hoverTimer: ReturnType<typeof setInterval> | null = null
 
 function setInteractive(on: boolean): void {
-  if (!hud || hud.isDestroyed() || on === interactive) return
-  interactive = on
+  if (!hud || hud.isDestroyed()) return
+  // Unconditional. This is the line that makes the state real rather than
+  // remembered.
   if (on) hud.setIgnoreMouseEvents(false)
   else hud.setIgnoreMouseEvents(true, { forward: true })
-  hud.webContents.send('hud:hover', on)
+  if (on !== hovering) {
+    hovering = on
+    hud.webContents.send('hud:hover', on)
+  }
 }
 
 function inside(point: Electron.Point, rect: Electron.Rectangle): boolean {
@@ -200,6 +219,7 @@ function stopHoverWatch(): void {
   hoverTimer = null
   setInteractive(false)
 }
+
 
 /**
  * Dragging, done by following the cursor from here.
@@ -232,11 +252,12 @@ export function startPetDrag(): void {
     const c = screen.getCursorScreenPoint()
     const petX = c.x - dragOffset.dx
     const petY = c.y - dragOffset.dy
+    const stage = stageSize(px())
     hud.setBounds({
-      x: dragSide === 'left' ? petX : petX + PET_SIZE - PET_STAGE.width,
-      y: petY - Math.round((PET_STAGE.height - PET_SIZE) / 2),
-      width: PET_STAGE.width,
-      height: PET_STAGE.height,
+      x: dragSide === 'left' ? petX : petX + px() - stage.width,
+      y: petY - STAGE_OVERHANG,
+      width: stage.width,
+      height: stage.height,
     })
   }, 16)
 }
@@ -249,7 +270,7 @@ export function endPetDrag(): PetPlacement | null {
   dragging = false
 
   const pet = currentPetRect()
-  const next = snap(placementFromPet(pet.x, pet.y, petArea()))
+  const next = snap(placementFromPet(pet.x, pet.y, petArea(), px()))
   placement = next
   placeHud()
   hud?.webContents.send('hud:dragging', false)
@@ -260,16 +281,17 @@ export function endPetDrag(): PetPlacement | null {
 function placeHud(): void {
   if (!hud || hud.isDestroyed()) return
   if (petEnabled) {
-    hud.setBounds(stageBounds(placement, petArea()))
+    hud.setBounds(stageBounds(placement, petArea(), px()))
   } else {
     // Parked: centred along the bottom, the way the overlay behaved before
     // there was a pet to put anywhere.
     const area = petArea()
+    const stage = stageSize(px())
     hud.setBounds({
-      x: Math.round(area.x + (area.width - PET_STAGE.width) / 2),
-      y: Math.round(area.y + area.height - PET_STAGE.height - PARKED_BOTTOM_MARGIN),
-      width: PET_STAGE.width,
-      height: PET_STAGE.height,
+      x: Math.round(area.x + (area.width - stage.width) / 2),
+      y: Math.round(area.y + area.height - stage.height - PARKED_BOTTOM_MARGIN),
+      width: stage.width,
+      height: stage.height,
     })
   }
   hud.webContents.send('hud:placement', { side: petSide(placement), pet: petEnabled })
@@ -278,20 +300,32 @@ function placeHud(): void {
 /**
  * Apply the stored settings.
  *
- * Called on startup and whenever they change, so switching the pet off puts the
- * overlay back to the parked behaviour without a restart.
+ * SWITCHING OFF works immediately. SWITCHING ON DOES NOT: the pet appears but
+ * does not take clicks or drags until the app is restarted, and the cause has
+ * not been found. Two attempts at it - resetting the cached interactivity flag,
+ * then tearing the whole overlay down on every change - both failed, so both
+ * have been removed rather than left in as machinery that fixes nothing. The
+ * settings screen says a restart is needed instead, which is at least true.
  */
-export function applyPetSettings(next: { enabled: boolean; placement: PetPlacement }): void {
+export function applyPetSettings(next: {
+  enabled: boolean
+  placement: PetPlacement
+  size: PetSize
+}): void {
   placement = next.placement
   petEnabled = next.enabled
+  // Changing the size changes the window, because the stage is derived from
+  // the character. `placeHud` below does the resizing.
+  petSize = next.size
   placeHud()
-  if (petEnabled) {
-    showHud()
-    startHoverWatch()
-  } else {
+
+  if (!petEnabled) {
     stopHoverWatch()
     hideHud()
+    return
   }
+  showHud()
+  startHoverWatch()
 }
 
 export function sendToHud(channel: string, ...payload: unknown[]): void {
