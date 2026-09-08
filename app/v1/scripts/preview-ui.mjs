@@ -47,7 +47,7 @@ const STUB = `<script>
     injection: { enabled: true, pasteOverrides: {} },
     audio: { deviceId: null, deviceLabel: '' },
     appearance: { zoom: 1 },
-    pet: { enabled: true, placement: { x: 0.97, y: 0.82 } },
+    pet: { enabled: true, placement: { x: 0.97, y: 0.82 }, character: 'kurisu', size: 'medium' },
   }
   const TEXTS = [
     'I think we should ship the thing and see what happens.',
