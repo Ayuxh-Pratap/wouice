@@ -236,6 +236,71 @@ export class Dictations {
     }
   }
 
+  /**
+   * Remove specific dictations, and say which audio files they were holding.
+   *
+   * RETURNS THE PATHS rather than deleting the files itself. This class owns a
+   * database and nothing else; the WAV files live under the app's userData and
+   * are the recording store's business. Returning them is what lets the caller
+   * clean up without this one growing a dependency on the filesystem.
+   *
+   * The FTS index looks after itself: migration 3 installed an AFTER DELETE
+   * trigger that removes the matching row, so a search cannot go on matching
+   * text that is no longer here.
+   */
+  deleteAt(ats: number[]): { deleted: number; audioPaths: string[] } {
+    if (ats.length === 0) return { deleted: 0, audioPaths: [] }
+
+    // One statement per row inside a transaction, rather than an IN list built
+    // by string concatenation. The values come from the renderer.
+    const find = this.db.raw.prepare('SELECT audio_path FROM dictations WHERE at = ?')
+    const remove = this.db.raw.prepare('DELETE FROM dictations WHERE at = ?')
+    const audioPaths: string[] = []
+    let deleted = 0
+
+    this.db.raw.exec('BEGIN IMMEDIATE')
+    try {
+      for (const at of ats) {
+        const found = row<{ audio_path: string | null }>(find.get(at))
+        if (found?.audio_path) audioPaths.push(found.audio_path)
+        deleted += remove.run(at).changes > 0 ? 1 : 0
+      }
+      this.db.raw.exec('COMMIT')
+    } catch (err) {
+      this.db.raw.exec('ROLLBACK')
+      throw err
+    }
+
+    return { deleted, audioPaths }
+  }
+
+  /**
+   * Remove every dictation. Starting over, deliberately.
+   *
+   * DELETE rather than DROP and recreate, so the FTS triggers fire and the
+   * schema version is untouched: a reset must leave a database the next launch
+   * recognises, not one it tries to migrate again.
+   *
+   * The file does not shrink on its own - SQLite keeps the freed pages for
+   * reuse - so this vacuums afterwards. Someone clearing their history is
+   * usually asking for the disk space back too, and a storage panel still
+   * reporting 1.8 MB after "delete everything" reads as a failure.
+   */
+  deleteAll(): { deleted: number; audioPaths: string[] } {
+    const audioPaths = rows<{ audio_path: string }>(
+      this.db.raw.prepare('SELECT audio_path FROM dictations WHERE audio_path IS NOT NULL').all()
+    ).map((r) => r.audio_path)
+
+    const deleted = this.db.raw.prepare('DELETE FROM dictations').run().changes
+    try {
+      this.db.raw.exec('VACUUM')
+    } catch {
+      // VACUUM cannot run inside a transaction or with an open statement. The
+      // rows are gone either way, which is the part that was asked for.
+    }
+    return { deleted: Number(deleted), audioPaths }
+  }
+
   /** Newest first, for the charts. Bounded: the charts show tens, not thousands. */
   recent(limit = 60): DictationRecord[] {
     return rows<Row>(

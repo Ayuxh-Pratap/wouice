@@ -250,6 +250,63 @@ describe('dictations', () => {
   })
 })
 
+describe('deleting dictations', () => {
+  let db: Db
+  let repo: Dictations
+
+  beforeEach(() => {
+    db = open()
+    repo = new Dictations(db)
+    for (const n of [1, 2, 3, 4]) repo.insert(at(n, { audioPath: n % 2 ? `C:/${n}.wav` : null }))
+  })
+  afterEach(() => db.close())
+
+  it('removes only the ones named', () => {
+    const out = repo.deleteAt([2, 4])
+    expect(out.deleted).toBe(2)
+    expect(repo.count()).toBe(2)
+    expect(repo.recent().map((d) => d.at)).toEqual([3, 1])
+  })
+
+  it('hands back the audio files those rows were holding, and no others', () => {
+    // The caller deletes the WAVs; this class owns a database and nothing else.
+    expect(repo.deleteAt([1, 2]).audioPaths).toEqual(['C:/1.wav'])
+  })
+
+  it('counts what it actually deleted, not what it was asked to', () => {
+    expect(repo.deleteAt([1, 999]).deleted).toBe(1)
+    expect(repo.deleteAt([]).deleted).toBe(0)
+  })
+
+  it('takes the deleted rows out of the search index', () => {
+    // The FTS table is external-content, so a missed trigger leaves a searchable
+    // ghost: a hit whose row no longer exists.
+    expect(repo.page(0, 10, 'hello').total).toBe(4)
+    repo.deleteAt([1, 2, 3])
+    const found = repo.page(0, 10, 'hello')
+    expect(found.total).toBe(1)
+    expect(found.rows).toHaveLength(1)
+  })
+
+  it('empties the table and returns every retained recording', () => {
+    const out = repo.deleteAll()
+    expect(out.deleted).toBe(4)
+    expect([...out.audioPaths].sort()).toEqual(['C:/1.wav', 'C:/3.wav'])
+    expect(repo.count()).toBe(0)
+    expect(repo.page(0, 10, 'hello').total).toBe(0)
+  })
+
+  it('leaves a database the next launch still recognises', () => {
+    // DELETE, not DROP: a reset that changed the schema version would send the
+    // next start into a migration it has already run.
+    const before = db.version
+    repo.deleteAll()
+    expect(db.version).toBe(before)
+    repo.insert(at(9))
+    expect(repo.count()).toBe(1)
+  })
+})
+
 describe('search', () => {
   let db: Db
   let repo: Dictations
