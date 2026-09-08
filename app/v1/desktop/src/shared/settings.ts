@@ -108,6 +108,21 @@ export interface Settings {
   /** Null until the user calibrates; the levels above are then shipped defaults. */
   calibration: CalibrationRecord | null
   injection: InjectionConfig
+  audio: AudioConfig
+}
+
+/**
+ * Which microphone to record from.
+ *
+ * `null` means the Windows default, and is not the same as naming whichever
+ * device happens to be default today: someone who plugs in a headset expects
+ * the app to follow, and someone who picked a device expects it to stay picked.
+ * The label is stored alongside so the settings screen can say what was chosen
+ * even when that device is currently unplugged.
+ */
+export interface AudioConfig {
+  deviceId: string | null
+  deviceLabel: string
 }
 
 /**
@@ -156,4 +171,52 @@ export const DEFAULT_SETTINGS: Settings = {
   retainAudio: true,
   calibration: null,
   injection: { enabled: true, pasteOverrides: {} },
+  audio: { deviceId: null, deviceLabel: '' },
+}
+
+/**
+ * How long a pause has to be before the recording stops.
+ *
+ * Offered as three named choices rather than two millisecond fields. The
+ * underlying pair is adaptive - a short window early, a longer one once you are
+ * clearly mid-thought - and asking someone to set both correctly is asking them
+ * to understand a mechanism they have no reason to care about.
+ *
+ * Derived FROM the config rather than stored beside it. A stored preset and the
+ * numbers it refers to are two copies of one fact, and they drift the moment
+ * anyone edits the file by hand.
+ */
+export type PausePreset = 'quick' | 'normal' | 'relaxed' | 'custom'
+
+export const PAUSE_PRESETS: Record<Exclude<PausePreset, 'custom'>, Pick<SilenceConfig, 'shortWindowMs' | 'longWindowMs'>> = {
+  // Cuts in fast. Good for short commands, impatient if you think mid-sentence.
+  quick: { shortWindowMs: 1_200, longWindowMs: 2_000 },
+  normal: { shortWindowMs: 1_800, longWindowMs: 3_000 },
+  // Waits. For dictating prose where the pauses are part of the thinking.
+  relaxed: { shortWindowMs: 2_600, longWindowMs: 4_200 },
+}
+
+export const PAUSE_LABELS: Record<PausePreset, string> = {
+  quick: 'Quick',
+  normal: 'Normal',
+  relaxed: 'Relaxed',
+  custom: 'Custom',
+}
+
+export function pausePresetOf(silence: SilenceConfig): PausePreset {
+  for (const [name, windows] of Object.entries(PAUSE_PRESETS)) {
+    if (
+      silence.shortWindowMs === windows.shortWindowMs &&
+      silence.longWindowMs === windows.longWindowMs
+    ) {
+      return name as PausePreset
+    }
+  }
+  return 'custom'
+}
+
+/** Apply a preset, leaving every other silence field alone. */
+export function applyPausePreset(silence: SilenceConfig, preset: PausePreset): SilenceConfig {
+  if (preset === 'custom') return silence
+  return { ...silence, ...PAUSE_PRESETS[preset] }
 }
