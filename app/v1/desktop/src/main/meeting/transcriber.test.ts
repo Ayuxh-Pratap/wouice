@@ -39,22 +39,32 @@ function fakeAsr(
   return client as AsrClient & { calls: number }
 }
 
-/** Tokens as whisper emits them: a leading space starts a word. */
-function tokens(text: string, startSec = 0) {
-  return text.split(' ').map((word, i) => ({
-    token: (i === 0 ? '' : ' ') + word,
-    startSec: startSec + i * 0.3,
-    endSec: startSec + i * 0.3 + 0.25,
-    confidence: 0.9,
-  }))
+/**
+ * What whisper returns: its own segment boundaries, plus per-word timings that
+ * are interpolated across them rather than measured.
+ */
+function said(text: string, startSec = 0): Partial<TranscribeResult> {
+  const words = text.split(' ')
+  const endSec = startSec + words.length * 0.3
+  return {
+    text,
+    segments: [{ text, startSec, endSec, noSpeechProb: 0.05, avgLogprob: -0.3 }],
+    tokens: words.map((word, i) => ({
+      token: (i === 0 ? '' : ' ') + word,
+      startSec: startSec + i * 0.3,
+      endSec: startSec + i * 0.3 + 0.25,
+      confidence: 0.9,
+    })),
+  }
 }
 
+/** Audible: below the silence gate a chunk is never sent, by design. */
 const frames = (seconds: number): Float32Array =>
   new Float32Array(Math.round(seconds * MEETING_SAMPLE_RATE)).fill(0.05)
 
 describe('chunking', () => {
   it('sends nothing until a chunk is full', async () => {
-    const asr = fakeAsr(() => ({ tokens: tokens('hello') }))
+    const asr = fakeAsr(() => (said('hello')))
     const transcriber = new MeetingTranscriber({ asr, onSegments: () => {}, chunkSeconds: 25 })
 
     transcriber.push('me', frames(10), 0)
@@ -63,7 +73,7 @@ describe('chunking', () => {
   })
 
   it('sends one request per full chunk, per channel', async () => {
-    const asr = fakeAsr(() => ({ tokens: tokens('hello') }))
+    const asr = fakeAsr(() => (said('hello')))
     const transcriber = new MeetingTranscriber({ asr, onSegments: () => {}, chunkSeconds: 5 })
 
     transcriber.push('me', frames(5), 0)
@@ -74,7 +84,7 @@ describe('chunking', () => {
   it('transcribes the tail when the meeting stops', async () => {
     // The end of a meeting is where the decisions usually are. Dropping a
     // part-full chunk to finish quickly would be the wrong trade.
-    const asr = fakeAsr(() => ({ tokens: tokens('one last thing') }))
+    const asr = fakeAsr(() => (said('one last thing')))
     const closed: Segment[] = []
     const transcriber = new MeetingTranscriber({
       asr,
@@ -92,7 +102,7 @@ describe('chunking', () => {
   it('places a chunk where its audio actually is', async () => {
     // Every chunk starts at zero as far as the model is concerned. Without the
     // running offset the whole meeting piles into the first 25 seconds.
-    const asr = fakeAsr(() => ({ tokens: tokens('later words') }))
+    const asr = fakeAsr(() => (said('later words')))
     const closed: Segment[] = []
     const transcriber = new MeetingTranscriber({
       asr,
@@ -112,7 +122,7 @@ describe('chunking', () => {
   it('honours a channel that started late', async () => {
     // The loopback stream comes up after the microphone, and the merged file
     // pads it. The transcript has to agree with the file.
-    const asr = fakeAsr(() => ({ tokens: tokens('their first words') }))
+    const asr = fakeAsr(() => (said('their first words')))
     const closed: Segment[] = []
     const transcriber = new MeetingTranscriber({
       asr,
@@ -130,7 +140,7 @@ describe('when things go wrong', () => {
   it('loses the slice, not the meeting', async () => {
     const asr = fakeAsr((_pcm, call) => {
       if (call === 0) throw new Error('whisper is restarting')
-      return { tokens: tokens('this one worked') }
+      return said('this one worked')
     })
     const closed: Segment[] = []
     const transcriber = new MeetingTranscriber({
@@ -160,7 +170,7 @@ describe('when things go wrong', () => {
   })
 
   it('ignores audio pushed after the meeting ended', async () => {
-    const asr = fakeAsr(() => ({ tokens: tokens('done') }))
+    const asr = fakeAsr(() => said('done'))
     const transcriber = new MeetingTranscriber({ asr, onSegments: () => {}, chunkSeconds: 5 })
     await transcriber.finish()
     transcriber.push('me', frames(10), 0)
@@ -180,7 +190,7 @@ describe('the queue, which is what B4 watches', () => {
       peak = Math.max(peak, concurrent)
       await new Promise((r) => setTimeout(r, 20))
       concurrent--
-      return { tokens: tokens('word') }
+      return said('word')
     })
     const transcriber = new MeetingTranscriber({ asr, onSegments: () => {}, chunkSeconds: 1 })
 
@@ -193,11 +203,76 @@ describe('the queue, which is what B4 watches', () => {
   })
 
   it('empties by the time the meeting is finished', async () => {
-    const asr = fakeAsr(() => ({ tokens: tokens('word') }))
+    const asr = fakeAsr(() => (said('word')))
     const transcriber = new MeetingTranscriber({ asr, onSegments: () => {}, chunkSeconds: 1 })
     for (let i = 0; i < 4; i++) transcriber.push('me', frames(1), 0)
     await transcriber.finish()
     expect(transcriber.stats().queued).toBe(0)
     expect(transcriber.stats().chunksSent).toBe(4)
+  })
+})
+
+describe('what never reaches the model', () => {
+  it('does not ask about silence', () => {
+    // Whisper does not answer "nothing was said" - it answers "Thank you.",
+    // confidently. One real meeting collected five of those, and the system
+    // channel is a digital tap, so an empty stretch is exactly zero.
+    const asr = fakeAsr(() => said('Thank you.'))
+    const transcriber = new MeetingTranscriber({ asr, onSegments: () => {}, chunkSeconds: 1 })
+    transcriber.push('me', new Float32Array(MEETING_SAMPLE_RATE), 0)
+    expect(asr.calls).toBe(0)
+    expect(transcriber.stats().chunksSkipped).toBe(1)
+  })
+
+  it('still asks about quiet speech', async () => {
+    const asr = fakeAsr(() => said('barely audible'))
+    const transcriber = new MeetingTranscriber({ asr, onSegments: () => {}, chunkSeconds: 1 })
+    // Well under ordinary speech, well over an empty channel.
+    transcriber.push('me', new Float32Array(MEETING_SAMPLE_RATE).fill(0.003), 0)
+    await vi.waitFor(() => expect(transcriber.stats().chunksSent).toBe(1))
+  })
+})
+
+describe('language', () => {
+  it('pins whatever the first chunk detected', async () => {
+    // Detection runs per request. One measured meeting came back as Icelandic,
+    // Japanese, Spanish and English in turn, from one conversation.
+    const asked: (string | undefined)[] = []
+    const asr = fakeAsr(() => ({ ...said('कुछ तो है'), language: 'hindi' }))
+    const original = asr.transcribe.bind(asr)
+    asr.transcribe = (pcm, options) => {
+      asked.push(options?.language)
+      return original(pcm, options)
+    }
+
+    const transcriber = new MeetingTranscriber({ asr, onSegments: () => {}, chunkSeconds: 1 })
+    transcriber.push('me', frames(1), 0)
+    await vi.waitFor(() => expect(transcriber.stats().chunksSent).toBe(1))
+    transcriber.push('me', frames(1), 0)
+    await transcriber.finish()
+
+    expect(asked[0]).toBe('auto')
+    expect(asked.slice(1).every((l) => l === 'hindi')).toBe(true)
+    expect(transcriber.stats().language).toBe('hindi')
+  })
+
+  it('never asks for auto when told the language', async () => {
+    const asked: (string | undefined)[] = []
+    const asr = fakeAsr(() => said('कुछ तो है'))
+    const original = asr.transcribe.bind(asr)
+    asr.transcribe = (pcm, options) => {
+      asked.push(options?.language)
+      return original(pcm, options)
+    }
+
+    const transcriber = new MeetingTranscriber({
+      asr,
+      onSegments: () => {},
+      chunkSeconds: 1,
+      language: 'hi',
+    })
+    transcriber.push('me', frames(1), 0)
+    await transcriber.finish()
+    expect(asked.every((l) => l === 'hi')).toBe(true)
   })
 })

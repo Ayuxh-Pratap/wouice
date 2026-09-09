@@ -1,5 +1,6 @@
-import type { AsrClient } from '@wouice/asr'
+import type { AsrClient, Language } from '@wouice/asr'
 import { Segmenter, type Segment, type SegmenterConfig } from './segmenter.js'
+import { rms } from '../capture/silence-policy.js'
 import { CHANNELS, MEETING_SAMPLE_RATE, type Channel } from './session.js'
 
 /**
@@ -32,6 +33,17 @@ export interface TranscriberOptions {
   chunkSeconds?: number
   segmenter?: SegmenterConfig
   sampleRate?: number
+  /**
+   * The language spoken, or 'auto' to let the model decide once.
+   *
+   * NOT 'auto' PER CHUNK, WHICH IS WHAT THIS USED TO DO. Detection runs per
+   * request, and on a 25 second slice of a real conversation it guesses: one
+   * measured meeting came back as Icelandic, Japanese, Spanish and English in
+   * turn, and the same audio that produced "What are the things that are going
+   * on?" under auto produced the actual sentence under 'hi'. Whatever the first
+   * chunk detects is pinned for the rest of the meeting.
+   */
+  language?: Language
 }
 
 export interface TranscriberStats {
@@ -39,6 +51,10 @@ export interface TranscriberStats {
   queued: number
   chunksSent: number
   chunksFailed: number
+  /** Chunks that were silence and never sent. */
+  chunksSkipped: number
+  /** The language every chunk after the first is being forced to. */
+  language: string
   /** Wall time of the most recent successful request. */
   lastLatencyMs: number
   /** Segments handed out so far. */
@@ -52,6 +68,16 @@ interface Job {
 }
 
 const DEFAULT_CHUNK_SECONDS = 25
+
+/**
+ * Below this a chunk is not worth asking about.
+ *
+ * Sits in the gap between the two measured distributions on this machine: true
+ * silence runs p5 0.00032 / p25 0.00091, speech p50 0.00436 / p90 0.01778. So
+ * this is above almost all silence and four times below ordinary speech - a
+ * murmur still gets transcribed, an empty channel never does.
+ */
+const SILENCE_RMS = 0.001
 
 export class MeetingTranscriber {
   private readonly asr: AsrClient
@@ -71,7 +97,12 @@ export class MeetingTranscriber {
   private draining: Promise<void> | null = null
   private stopped = false
 
+  private readonly requested: Language
+  /** What the first chunk detected. Every later chunk is forced to this. */
+  private pinned: Language | null = null
+
   private chunksSent = 0
+  private chunksSkipped = 0
   private chunksFailed = 0
   private lastLatencyMs = 0
   private segmentCount = 0
@@ -82,6 +113,8 @@ export class MeetingTranscriber {
     this.sampleRate = options.sampleRate ?? MEETING_SAMPLE_RATE
     this.chunkSamples = Math.round((options.chunkSeconds ?? DEFAULT_CHUNK_SECONDS) * this.sampleRate)
     this.segmenter = new Segmenter(options.segmenter)
+    this.requested = options.language ?? 'auto'
+    if (this.requested !== 'auto') this.pinned = this.requested
   }
 
   /**
@@ -124,6 +157,8 @@ export class MeetingTranscriber {
       queued: this.queue.length + (this.draining ? 1 : 0),
       chunksSent: this.chunksSent,
       chunksFailed: this.chunksFailed,
+      chunksSkipped: this.chunksSkipped,
+      language: this.pinned ?? 'auto',
       lastLatencyMs: this.lastLatencyMs,
       segments: this.segmentCount,
     }
@@ -177,22 +212,41 @@ export class MeetingTranscriber {
   }
 
   private async transcribe(job: Job): Promise<void> {
+    // Never ask the model about silence. Whisper does not answer "nothing was
+    // said" - it answers "Thank you.", confidently, and one real meeting
+    // collected five of those. The system channel is a digital tap, so a
+    // stretch where the far side says nothing is EXACTLY zero, and those were
+    // being sent 26 times an hour.
+    if (rms(job.samples) < SILENCE_RMS) {
+      this.chunksSkipped++
+      return
+    }
+
     const started = Date.now()
     try {
       const result = await this.asr.transcribe(job.samples, {
-        language: 'auto',
-        // The segmenter needs per-token times to find sentence boundaries and
-        // to match echo across channels. Without these it has nothing to work
-        // with but the chunk edges.
+        language: this.pinned ?? 'auto',
+        // Word timings for echo matching; whisper's own segment boundaries for
+        // everything else. See `segmenter.ts` for why the two are not the same.
         wantTimings: true,
       })
       this.chunksSent++
       this.lastLatencyMs = Date.now() - started
 
-      const tokens = result.tokens ?? []
-      if (tokens.length === 0) return
+      // Pin whatever the first real chunk detected, so a later one cannot
+      // decide the meeting switched to Icelandic.
+      if (this.pinned === null && result.language && result.language !== 'auto') {
+        this.pinned = result.language as Language
+      }
 
-      const closed = this.segmenter.push(job.channel, tokens, job.offsetMs)
+      const segments = result.segments ?? []
+      if (segments.length === 0) return
+
+      const closed = this.segmenter.push(
+        job.channel,
+        { segments, words: result.tokens ?? [] },
+        job.offsetMs
+      )
       if (closed.length > 0) {
         this.segmentCount += closed.length
         this.onSegments(closed)
