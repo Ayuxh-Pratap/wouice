@@ -186,6 +186,35 @@ export class Meetings {
     }
   }
 
+  /**
+   * Swap in a completely new transcript for one meeting.
+   *
+   * Used by the careful re-transcription pass, and only ever with segments in
+   * hand: the delete and the insert are one transaction, so a failure halfway
+   * leaves the previous transcript rather than an empty meeting.
+   *
+   * The English renderings go with the old rows, because they were renderings
+   * OF those rows. Keeping them would attach an English sentence to a line that
+   * now says something different, which is worse than having none.
+   */
+  replaceSegments(meetingId: number, segments: readonly SegmentInput[]): void {
+    this.db.raw.exec('BEGIN')
+    try {
+      this.db.raw.prepare('DELETE FROM segments WHERE meeting_id = ?').run(meetingId)
+      const insert = this.db.raw.prepare(
+        `INSERT INTO segments (meeting_id, channel, start_ms, end_ms, text, echo)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      for (const s of segments) {
+        insert.run(meetingId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0)
+      }
+      this.db.raw.exec('COMMIT')
+    } catch (err) {
+      this.db.raw.exec('ROLLBACK')
+      throw err
+    }
+  }
+
   setScratch(id: number, markdown: string): void {
     this.db.raw.prepare('UPDATE meetings SET scratch_md = ? WHERE id = ?').run(markdown, id)
   }

@@ -257,6 +257,8 @@ export interface MeetingDiagnostics {
   recoveredWithoutManifest?: boolean
   /** The English rendering pass, when it has run. */
   english?: { at: number; rendered: number; missed: number; failedBatches: number; ms: number }
+  /** The careful re-transcription, when it has been run. */
+  repass?: { at: number; model: string; segments: number; ms: number }
   /** One entry per notes run, newest last. */
   notes?: {
     at: number
