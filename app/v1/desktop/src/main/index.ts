@@ -20,7 +20,7 @@ import {
   showHud,
   startPetDrag,
 } from './windows.js'
-import { IPC, type EnglishOutcome, type NotesOutcome, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type RatingSheet, type SidecarView } from '../shared/ipc.js'
+import { IPC, type EnglishOutcome, type NotesOutcome, type RepassOutcome, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type RatingSheet, type SidecarView } from '../shared/ipc.js'
 import type { SidecarId } from '../shared/models.js'
 import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from './dictation/controller.js'
 import { sampleResources } from './metrics/sample.js'
@@ -34,6 +34,7 @@ import { MeetingController } from './meeting/controller.js'
 import { finishedSessions } from './meeting/merge.js'
 import { MeetingNotesEngine, NotesUnavailable } from './meeting/notes-engine.js'
 import { MicWatcher } from './meeting/mic-watcher.js'
+import { repassMeeting, RepassUnavailable } from './meeting/repass.js'
 import { MeetingEnglishEngine, EnglishUnavailable } from './meeting/english-engine.js'
 import { kindOf } from '../shared/meeting-kind.js'
 import { formatMeeting } from './metrics/diagnostic.js'
@@ -123,6 +124,90 @@ const englishEngine = new MeetingEnglishEngine(
     })
 )
 let englishRunning = 0
+
+/**
+ * Write the summary and the tasks for one meeting.
+ *
+ * At module scope rather than inside the IPC handler because the automatic
+ * pipeline calls it too: stopping a meeting should leave you with a transcript,
+ * an English rendering and a summary without pressing anything, and two copies
+ * of this logic would be two things to keep in step.
+ */
+async function writeNotes(id: number): Promise<NotesOutcome> {
+  const empty = { notesMd: null, tasks: 0, gaps: 0 }
+  if (notesRunning === id) {
+    return { ok: false, message: 'already writing the notes for this meeting', ...empty }
+  }
+  const meeting = store.meetings.byId(id)
+  if (!meeting) return { ok: false, message: 'that meeting is gone', ...empty }
+
+  notesRunning = id
+  try {
+    const run = await notesEngine.generate({
+      // The English rendering when there is one: notes written from
+      // "स्थमाल" and "रंबाली" never had a chance, and a 4B model summarising
+      // raw code-mixed recognition output is the weakest link in the chain.
+      lines: store.meetings.segments(id).map((s) => ({
+        id: s.id,
+        channel: s.channel,
+        startMs: s.startMs,
+        text: s.textEn ?? s.text,
+        echo: s.echo,
+      })),
+      scratch: meeting.scratchMd,
+      startedAt: meeting.startedAt,
+      onProgress: (p) => broadcast(IPC.notesProgress, { meetingId: id, ...p }),
+    })
+
+    store.meetings.setNotes(id, run.notesMd)
+    store.meetings.replaceTasks(id, run.tasks)
+    store.meetings.recordNotesRun(id, {
+      at: Date.now(),
+      ok: true,
+      chunks: run.chunks,
+      gaps: run.failedChunks,
+      tasks: run.tasks.length,
+      ms: run.ms,
+    })
+    console.log(
+      `[meeting] notes for ${id}: ${run.chunks} chunk(s), ${run.tasks.length} task(s)` +
+        `, ${Math.round(run.ms / 1000)}s` +
+        (run.failedChunks ? `, ${run.failedChunks} gap(s)` : '')
+    )
+    return {
+      ok: true,
+      message: '',
+      notesMd: run.notesMd,
+      tasks: run.tasks.length,
+      gaps: run.failedChunks,
+    }
+  } catch (err) {
+    // The transcript is untouched either way, so this is always worth
+    // retrying rather than being a state to recover from.
+    const message =
+      err instanceof NotesUnavailable
+        ? err.message
+        : `the model could not be reached: ${err instanceof Error ? err.message : String(err)}`
+    // Recorded as well as returned: a failure you can still read tomorrow is
+    // the difference between diagnosing this and guessing at it.
+    try {
+      store.meetings.recordNotesRun(id, {
+        at: Date.now(),
+        ok: false,
+        chunks: 0,
+        gaps: 0,
+        tasks: 0,
+        ms: 0,
+        message,
+      })
+    } catch {
+      // Bookkeeping. Never worth turning into a second failure.
+    }
+    return { ok: false, message, ...empty }
+  } finally {
+    notesRunning = 0
+  }
+}
 
 async function renderEnglish(id: number): Promise<EnglishOutcome> {
   const empty = { rendered: 0, missed: 0 }
@@ -360,9 +445,109 @@ meetings.on('finished', (summary: { meetingId: number } & Record<string, unknown
   // Render it without being asked. The alternative is a transcript that sits
   // in Hindi until somebody remembers there is a button, and a person reading
   // their own meeting should not have to know the pipeline has two halves.
-  const meeting = store.meetings.byId(summary.meetingId)
-  if (meeting && kindOf(meeting.kind).translate) void renderEnglish(summary.meetingId)
+  void finishMeeting(summary.meetingId)
 })
+
+/**
+ * What happens after a meeting ends, without anybody pressing anything.
+ *
+ * as spoken -> English -> summary and tasks. In that order, because the
+ * summary is written FROM the English: notes built on raw code-mixed
+ * recognition output never had a chance, and that was the weakest link in the
+ * chain before this ran automatically.
+ *
+ * Each step is allowed to fail without taking the next one with it. A meeting
+ * whose English pass failed still gets a summary from what was actually said,
+ * which is worse than the alternative and much better than nothing.
+ */
+let repassRunning = 0
+
+/**
+ * The careful pass, end to end: re-transcribe, then redo everything built on it.
+ *
+ * Sequential and exclusive. It stops the language model to make room for the
+ * larger speech model, so nothing else that needs either can run while it does
+ * - including dictation. That is the cost the warning in the interface is
+ * about, and it is the reason this is a button rather than something automatic.
+ */
+async function runRepass(meetingId: number): Promise<RepassOutcome> {
+  const empty = { segments: 0, seconds: 0 }
+  if (repassRunning) {
+    return { ok: false, message: 'a careful pass is already running', ...empty }
+  }
+  if (meetings.state().phase !== 'idle') {
+    return { ok: false, message: 'not while a meeting is recording', ...empty }
+  }
+
+  repassRunning = meetingId
+  const started = Date.now()
+  try {
+    const result = await repassMeeting(meetingId, {
+      supervisor,
+      meetings: store.meetings,
+      modelId: 'large-v3',
+      onProgress: (p) => broadcast(IPC.repassProgress, p),
+    })
+
+    // Everything downstream was built from the old transcript, so it all has to
+    // be built again. Leaving yesterday's summary above today's transcript
+    // would be the kind of quiet wrongness nobody checks for.
+    const meeting = store.meetings.byId(meetingId)
+    if (meeting && kindOf(meeting.kind).translate) {
+      broadcast(IPC.repassProgress, {
+        meetingId,
+        stage: 'rendering',
+        doneSec: 0,
+        totalSec: 0,
+      })
+      await renderEnglish(meetingId)
+    }
+    broadcast(IPC.repassProgress, { meetingId, stage: 'summarising', doneSec: 0, totalSec: 0 })
+    await writeNotes(meetingId)
+
+    store.meetings.setDiagnostics(meetingId, {
+      repass: { at: Date.now(), model: 'large-v3', segments: result.segments, ms: Date.now() - started },
+    })
+    notify(
+      'Transcript improved',
+      `${result.segments} lines, ${Math.round((Date.now() - started) / 1000)}s.`
+    )
+    return { ok: true, message: '', segments: result.segments, seconds: result.seconds }
+  } catch (err) {
+    const message =
+      err instanceof RepassUnavailable
+        ? err.message
+        : `the careful pass failed: ${err instanceof Error ? err.message : String(err)}`
+    notify('Could not improve the transcript', message)
+    return { ok: false, message, ...empty }
+  } finally {
+    repassRunning = 0
+    broadcast(IPC.meetingReady2, meetingId)
+  }
+}
+
+/** A toast, when something that took minutes has finished. */
+function notify(title: string, body: string): void {
+  try {
+    if (Notification.isSupported()) new Notification({ title, body, silent: true }).show()
+  } catch {
+    // Notifications off. The interface still updates.
+  }
+}
+
+async function finishMeeting(meetingId: number): Promise<void> {
+  const meeting = store.meetings.byId(meetingId)
+  if (!meeting) return
+  if (store.meetings.segments(meetingId).length === 0) return
+
+  if (kindOf(meeting.kind).translate) {
+    const rendered = await renderEnglish(meetingId)
+    if (!rendered.ok) console.warn(`[meeting] english pass: ${rendered.message}`)
+  }
+  const notes = await writeNotes(meetingId)
+  if (!notes.ok) console.warn(`[meeting] notes: ${notes.message}`)
+  broadcast(IPC.meetingReady2, meetingId)
+}
 
 /**
  * Give every recording on disk a row, and every row its audio.
@@ -758,6 +943,7 @@ function registerIpc(): void {
     store.meetings.setKind(id, kind)
   )
   ipcMain.handle(IPC.renderEnglish, (_e, id: number) => renderEnglish(id))
+  ipcMain.handle(IPC.repassMeeting, (_e, id: number) => runRepass(id))
   ipcMain.handle(IPC.getMeetingOffer, () => pendingOffer)
   ipcMain.handle(IPC.dismissMeetingOffer, () => {
     micWatcher.dismissOffer()
@@ -774,81 +960,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.setTaskState, (_e, taskId: number, state: TaskState) =>
     store.meetings.setTaskState(taskId, state)
   )
-  ipcMain.handle(IPC.generateNotes, async (_e, id: number): Promise<NotesOutcome> => {
-    const empty = { notesMd: null, tasks: 0, gaps: 0 }
-    if (notesRunning === id) {
-      return { ok: false, message: 'already writing the notes for this meeting', ...empty }
-    }
-    const meeting = store.meetings.byId(id)
-    if (!meeting) return { ok: false, message: 'that meeting is gone', ...empty }
-
-    notesRunning = id
-    try {
-      const run = await notesEngine.generate({
-        // The English rendering when there is one: notes written from
-        // "स्थमाल" and "रंबाली" never had a chance, and a 4B model summarising
-        // raw code-mixed recognition output is the weakest link in the chain.
-        lines: store.meetings.segments(id).map((s) => ({
-          id: s.id,
-          channel: s.channel,
-          startMs: s.startMs,
-          text: s.textEn ?? s.text,
-          echo: s.echo,
-        })),
-        scratch: meeting.scratchMd,
-        startedAt: meeting.startedAt,
-        onProgress: (p) => broadcast(IPC.notesProgress, { meetingId: id, ...p }),
-      })
-
-      store.meetings.setNotes(id, run.notesMd)
-      store.meetings.replaceTasks(id, run.tasks)
-      store.meetings.recordNotesRun(id, {
-        at: Date.now(),
-        ok: true,
-        chunks: run.chunks,
-        gaps: run.failedChunks,
-        tasks: run.tasks.length,
-        ms: run.ms,
-      })
-      console.log(
-        `[meeting] notes for ${id}: ${run.chunks} chunk(s), ${run.tasks.length} task(s)` +
-          `, ${Math.round(run.ms / 1000)}s` +
-          (run.failedChunks ? `, ${run.failedChunks} gap(s)` : '')
-      )
-      return {
-        ok: true,
-        message: '',
-        notesMd: run.notesMd,
-        tasks: run.tasks.length,
-        gaps: run.failedChunks,
-      }
-    } catch (err) {
-      // The transcript is untouched either way, so this is always worth
-      // retrying rather than being a state to recover from.
-      const message =
-        err instanceof NotesUnavailable
-          ? err.message
-          : `the model could not be reached: ${err instanceof Error ? err.message : String(err)}`
-      // Recorded as well as returned: a failure you can still read tomorrow is
-      // the difference between diagnosing this and guessing at it.
-      try {
-        store.meetings.recordNotesRun(id, {
-          at: Date.now(),
-          ok: false,
-          chunks: 0,
-          gaps: 0,
-          tasks: 0,
-          ms: 0,
-          message,
-        })
-      } catch {
-        // Bookkeeping. Never worth turning into a second failure.
-      }
-      return { ok: false, message, ...empty }
-    } finally {
-      notesRunning = 0
-    }
-  })
+  ipcMain.handle(IPC.generateNotes, (_e, id: number) => writeNotes(id))
   ipcMain.on(IPC.revealMeeting, (_e, dir: string) => shell.showItemInFolder(path.join(dir, 'audio.wav')))
   ipcMain.on(
     IPC.meetingFrame,

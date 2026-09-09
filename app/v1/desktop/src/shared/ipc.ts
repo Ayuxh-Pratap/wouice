@@ -73,6 +73,7 @@ export const IPC = {
   dismissMeetingOffer: 'meeting:dismissOffer',
   copyMeetingDiagnostic: 'meeting:copyDiagnostic',
   renderEnglish: 'meeting:renderEnglish',
+  repassMeeting: 'meeting:repass',
   setMeetingKind: 'meeting:setKind',
   getMeeting: 'meeting:one',
   meetingFrame: 'meeting:frame',
@@ -102,6 +103,8 @@ export const IPC = {
   meetingSegments: 'meeting:newSegments',
   notesProgress: 'meeting:notesProgress',
   englishProgress: 'meeting:englishProgress',
+  meetingReady2: 'meeting:processed',
+  repassProgress: 'meeting:repassProgress',
   meetingOffer: 'meeting:offered',
 } as const
 
@@ -318,6 +321,20 @@ export interface EnglishOutcome {
   missed: number
 }
 
+export interface RepassProgressView {
+  meetingId: number
+  stage: 'loading' | 'transcribing' | 'restoring' | 'rendering' | 'summarising'
+  doneSec: number
+  totalSec: number
+}
+
+export interface RepassOutcome {
+  ok: boolean
+  message: string
+  segments: number
+  seconds: number
+}
+
 export interface NotesOutcome {
   ok: boolean
   /** Why it could not be done. Empty when it worked. */
@@ -422,6 +439,16 @@ export interface WouiceApi {
   renderEnglish(meetingId: number): Promise<EnglishOutcome>
   setMeetingKind(meetingId: number, kind: string): Promise<void>
   onEnglishProgress(cb: (p: EnglishProgressView) => void): () => void
+  /** Fires when a meeting's automatic pipeline has finished with it. */
+  onMeetingProcessed(cb: (meetingId: number) => void): () => void
+  /**
+   * Transcribe this meeting again with the larger model.
+   *
+   * Takes minutes, stops the language model while it runs, and re-runs the
+   * English pass and the summary afterwards.
+   */
+  repassMeeting(meetingId: number): Promise<RepassOutcome>
+  onRepassProgress(cb: (p: RepassProgressView) => void): () => void
   sendMeetingFrame(sessionId: number, channel: MeetingChannel, frame: Float32Array): void
   meetingReady(sessionId: number): void
   meetingFailed(sessionId: number, channel: MeetingChannel, reason: string): void
