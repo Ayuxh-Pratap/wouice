@@ -10,6 +10,7 @@ export {
 export {
   AsrError,
   type AsrClient,
+  type AsrSegment,
   type AsrErrorKind,
   type AsrHealth,
   type Language,

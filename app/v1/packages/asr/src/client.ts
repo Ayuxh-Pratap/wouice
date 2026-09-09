@@ -1,6 +1,7 @@
 import { encodeWav, durationMs, SAMPLE_RATE } from './wav.js'
 import {
   AsrError,
+  type AsrSegment,
   type AsrClient,
   type AsrHealth,
   type TokenTiming,
@@ -30,6 +31,8 @@ interface WhisperResponse {
     end?: number
     tokens?: unknown
     words?: { word?: string; start?: number; end?: number; probability?: number }[]
+    no_speech_prob?: number
+    avg_logprob?: number
   }[]
 }
 
@@ -90,7 +93,9 @@ export class WhisperCppClient implements AsrClient {
     return {
       text,
       language: body.language ?? options.language ?? 'auto',
-      ...(options.wantTimings ? { tokens: extractTimings(body) } : {}),
+      ...(options.wantTimings
+        ? { tokens: extractTimings(body), segments: extractSegments(body) }
+        : {}),
       audioMs,
       latencyMs,
       model: this.model,
@@ -148,6 +153,29 @@ export class WhisperCppClient implements AsrClient {
  * data. Dictation never asks for timings, so a Phase 2 concern must not be able
  * to break Phase 1's hot path.
  */
+/**
+ * whisper's own utterance boundaries.
+ *
+ * Carries `no_speech_prob` through untouched: it is the model saying "there was
+ * probably nothing here", and it is the cheapest possible guard against the
+ * confident "Thank you." whisper produces over silence.
+ */
+function extractSegments(body: WhisperResponse): AsrSegment[] {
+  const out: AsrSegment[] = []
+  for (const seg of body.segments ?? []) {
+    const text = (seg.text ?? '').trim()
+    if (!text) continue
+    out.push({
+      text,
+      startSec: seg.start ?? 0,
+      endSec: seg.end ?? seg.start ?? 0,
+      noSpeechProb: seg.no_speech_prob ?? 0,
+      avgLogprob: seg.avg_logprob ?? 0,
+    })
+  }
+  return out
+}
+
 function extractTimings(body: WhisperResponse): TokenTiming[] {
   const out: TokenTiming[] = []
   for (const seg of body.segments ?? []) {

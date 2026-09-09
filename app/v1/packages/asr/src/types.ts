@@ -28,6 +28,30 @@ export interface TranscribeOptions {
   signal?: AbortSignal
 }
 
+/**
+ * One utterance, as whisper itself cut it.
+ *
+ * PREFER THESE OVER RECONSTRUCTING FROM WORD TIMINGS. whisper.cpp reports
+ * `t_dtw: -1` on every word when DTW alignment is unavailable, which means the
+ * per-word times are INTERPOLATED across the segment rather than measured -
+ * evenly spaced, and on Devanagari split per glyph rather than per word. Cutting
+ * a transcript on those produces one-word fragments at times nothing actually
+ * happened. The segment boundaries are real; the word boundaries inside them
+ * frequently are not.
+ */
+export interface AsrSegment {
+  text: string
+  startSec: number
+  endSec: number
+  /**
+   * The model's own estimate that this is silence. High values are how a
+   * hallucinated "Thank you." over a quiet stretch announces itself.
+   */
+  noSpeechProb: number
+  /** Mean log probability. Very negative means the model was guessing. */
+  avgLogprob: number
+}
+
 export interface TokenTiming {
   token: string
   startSec: number
@@ -41,6 +65,8 @@ export interface TranscribeResult {
   language: string
   /** Present only when `wantTimings` was requested and the engine supplied them. */
   tokens?: TokenTiming[]
+  /** whisper's own utterance boundaries, which are the trustworthy ones. */
+  segments?: AsrSegment[]
   /** Length of the audio submitted. */
   audioMs: number
   /** Wall time of the call, including transport. */
