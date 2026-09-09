@@ -181,29 +181,91 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
 
   /* ------------------------------------------------------------- finished -- */
 
+  const aura = repass ? '#fb923c' : working ? '#34d399' : null
+
   return (
-    <div className="space-y-4">
-      <header>
-        <a
-          href="#/meetings"
-          className="text-[11.5px] text-neutral-500 transition hover:text-neutral-300"
-        >
-          ← All meetings
-        </a>
-        <h1 className="mt-1 text-[19px] font-semibold tracking-tight text-neutral-50">
-          {meeting.title ?? formatWhen(meeting.startedAt)}
-        </h1>
-        <p className="mt-0.5 text-[12px] text-neutral-500">
-          {formatDuration(meeting.durationMs)} · {meeting.segments} line
-          {meeting.segments === 1 ? '' : 's'} · {kind.label}
-          {meeting.endedAt === null ? ' · never finished' : ''}
-        </p>
+    <div className="relative space-y-4">
+      {/*
+        Something is happening, said with light rather than with a spinner. It
+        sits behind the content it belongs to, so a glance at the page answers
+        "is it still working" without reading anything. Green while it writes,
+        orange while it re-transcribes - the slow one that costs you dictation
+        should not look like the quick one.
+      */}
+      {aura ? (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -top-6 h-48 animate-pulse rounded-[3rem] blur-3xl"
+          style={{ background: `radial-gradient(55% 100% at 50% 0%, ${aura}66 0%, transparent 72%)` }}
+        />
+      ) : null}
+
+      <header className="relative flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <a
+            href="#/meetings"
+            className="text-[11.5px] text-neutral-500 transition hover:text-neutral-300"
+          >
+            ← All meetings
+          </a>
+          <h1 className="mt-1 truncate text-[19px] font-semibold tracking-tight text-neutral-50">
+            {meeting.title ?? formatWhen(meeting.startedAt)}
+          </h1>
+          <p className="mt-0.5 text-[12px] text-neutral-500">
+            {formatDuration(meeting.durationMs)} · {meeting.segments} line
+            {meeting.segments === 1 ? '' : 's'} · {kind.label}
+            {meeting.endedAt === null ? ' · never finished' : ''}
+          </p>
+        </div>
+
+        {/* The two that are decisions; everything else is tidying. */}
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          <button
+            onClick={() => setConfirming(true)}
+            disabled={working || !meeting.audioPath}
+            title="Transcribe again with the larger, slower model."
+            className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[12px] text-neutral-200 ring-1 ring-white/10 transition hover:bg-white/[0.12] disabled:opacity-40"
+          >
+            Improve accuracy
+          </button>
+          {kind.translate ? (
+            <button
+              onClick={() => void redo('english')}
+              disabled={working || segments.length === 0}
+              className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[12px] text-neutral-300 ring-1 ring-white/10 transition hover:bg-white/[0.12] disabled:opacity-40"
+            >
+              Redo English
+            </button>
+          ) : null}
+          <Menu
+            items={[
+              { label: `Your notes${meeting.scratchMd ? ' •' : ''}`, onClick: () => setNotesOpen(true) },
+              {
+                label: 'Redo summary',
+                onClick: () => void redo('notes'),
+                disabled: working || segments.length === 0,
+              },
+              { label: 'Show audio file', onClick: () => window.wouice.revealMeeting(meeting.dir) },
+              {
+                label: copied ? 'Copied' : 'Copy diagnostic',
+                onClick: () => {
+                  void window.wouice.copyMeetingDiagnostic(meetingId)
+                  setCopied(true)
+                  setTimeout(() => setCopied(false), 1500)
+                },
+              },
+            ]}
+          />
+        </div>
       </header>
 
       {working ? (
-        <div className="flex items-center gap-2.5 rounded-xl bg-white/[0.035] px-4 py-2.5 ring-1 ring-white/[0.08]">
-          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-400" />
-          <span className="text-[12.5px] text-neutral-300">
+        <div className="relative flex items-center gap-2.5 rounded-xl bg-white/[0.05] px-4 py-2.5 ring-1 ring-white/[0.10]">
+          <span
+            className="size-1.5 shrink-0 animate-pulse rounded-full"
+            style={{ backgroundColor: aura ?? '#34d399' }}
+          />
+          <span className="text-[12.5px] text-neutral-200">
             {repass
               ? describeRepass(repass)
               : englishProgress
@@ -214,108 +276,59 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
       ) : null}
 
       {problem ? (
-        <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-[12px] text-amber-200">{problem}</p>
+        <p className="relative rounded-lg bg-amber-500/10 px-3 py-2 text-[12px] text-amber-200">
+          {problem}
+        </p>
       ) : null}
 
-      <Notes markdown={meeting.notesMd} tasks={tasks} onTaskState={changeTask} />
+      <div className="relative space-y-4">
+        <Notes markdown={meeting.notesMd} tasks={tasks} onTaskState={changeTask} />
 
-      {!meeting.notesMd && !working && segments.length > 0 ? (
-        <button
-          onClick={() => void redo('notes')}
-          className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[12px] font-medium text-neutral-200 ring-1 ring-white/10 transition hover:bg-white/[0.12]"
-        >
-          Summary and tasks
-        </button>
-      ) : null}
+        {!meeting.notesMd && !working && segments.length > 0 ? (
+          <button
+            onClick={() => void redo('notes')}
+            className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[12px] font-medium text-neutral-200 ring-1 ring-white/10 transition hover:bg-white/[0.12]"
+          >
+            Summary and tasks
+          </button>
+        ) : null}
 
-      <section className="lift flex max-h-[58vh] flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
-        <div className="mb-2.5 flex shrink-0 flex-wrap items-center gap-2">
-          <h2 className="text-[12px] font-medium text-neutral-400">Transcript</h2>
-          {hasEnglish ? (
-            <div className="flex gap-1">
-              {[
-                { on: true, label: 'English' },
-                { on: false, label: 'As spoken' },
-              ].map((choice) => (
-                <button
-                  key={choice.label}
-                  onClick={() => setEnglish(choice.on)}
-                  aria-pressed={english === choice.on}
-                  className={
-                    'rounded-md px-2 py-0.5 text-[11px] ring-1 transition ' +
-                    (english === choice.on
-                      ? 'bg-white/[0.09] text-neutral-200 ring-white/20'
-                      : 'text-neutral-500 ring-white/10 hover:bg-white/5')
-                  }
-                >
-                  {choice.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
-
-          {/* Editing, not the flow. Small, and to one side. */}
-          <div className="ml-auto flex flex-wrap items-center gap-1">
-            <button
-              onClick={() => setNotesOpen(true)}
-              className="rounded-md px-2 py-1 text-[11px] text-neutral-500 ring-1 ring-white/10 transition hover:bg-white/5 hover:text-neutral-300"
-            >
-              Your notes{meeting.scratchMd ? ' •' : ''}
-            </button>
-            <button
-              onClick={() => setConfirming(true)}
-              disabled={working || !meeting.audioPath}
-              title="Transcribe again with the larger, slower model."
-              className="rounded-md px-2 py-1 text-[11px] text-neutral-500 ring-1 ring-white/10 transition hover:bg-white/5 hover:text-neutral-300 disabled:opacity-40"
-            >
-              Improve accuracy
-            </button>
-            {meeting.notesMd ? (
-              <button
-                onClick={() => void redo('notes')}
-                disabled={working}
-                className="rounded-md px-2 py-1 text-[11px] text-neutral-500 ring-1 ring-white/10 transition hover:bg-white/5 hover:text-neutral-300 disabled:opacity-40"
-              >
-                Redo summary
-              </button>
+        <section className="lift flex max-h-[58vh] flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
+          <div className="mb-2.5 flex shrink-0 items-center gap-2">
+            <h2 className="text-[12px] font-medium text-neutral-400">Transcript</h2>
+            {hasEnglish ? (
+              <div className="ml-auto flex gap-1">
+                {[
+                  { on: true, label: 'English' },
+                  { on: false, label: 'As spoken' },
+                ].map((choice) => (
+                  <button
+                    key={choice.label}
+                    onClick={() => setEnglish(choice.on)}
+                    aria-pressed={english === choice.on}
+                    className={
+                      'rounded-md px-2 py-0.5 text-[11px] ring-1 transition ' +
+                      (english === choice.on
+                        ? 'bg-white/[0.09] text-neutral-200 ring-white/20'
+                        : 'text-neutral-500 ring-white/10 hover:bg-white/5')
+                    }
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
             ) : null}
-            {kind.translate ? (
-              <button
-                onClick={() => void redo('english')}
-                disabled={working}
-                className="rounded-md px-2 py-1 text-[11px] text-neutral-500 ring-1 ring-white/10 transition hover:bg-white/5 hover:text-neutral-300 disabled:opacity-40"
-              >
-                Redo English
-              </button>
-            ) : null}
-            <button
-              onClick={() => window.wouice.revealMeeting(meeting.dir)}
-              className="rounded-md px-2 py-1 text-[11px] text-neutral-500 ring-1 ring-white/10 transition hover:bg-white/5 hover:text-neutral-300"
-            >
-              Audio
-            </button>
-            <button
-              onClick={() => {
-                void window.wouice.copyMeetingDiagnostic(meetingId)
-                setCopied(true)
-                setTimeout(() => setCopied(false), 1500)
-              }}
-              title="Which models ran, how many chunks failed, what each channel did."
-              className="rounded-md px-2 py-1 text-[11px] text-neutral-500 ring-1 ring-white/10 transition hover:bg-white/5 hover:text-neutral-300"
-            >
-              {copied ? 'Copied' : 'Diagnostic'}
-            </button>
           </div>
-        </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-          <Transcript
-            segments={segments}
-            english={english && hasEnglish}
-            emptyMessage="No transcript — it was recorded before transcription existed, or the speech model was not running."
-          />
-        </div>
-      </section>
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <Transcript
+              segments={segments}
+              english={english && hasEnglish}
+              emptyMessage="No transcript — it was recorded before transcription existed, or the speech model was not running."
+            />
+          </div>
+        </section>
+      </div>
 
       {confirming ? (
         <ImproveDialog
@@ -343,6 +356,73 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
             load()
           }}
         />
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * The overflow menu.
+ *
+ * What goes in here is everything that is not a decision: looking at the audio,
+ * copying a diagnostic, redoing something that already ran. Six buttons in a row
+ * is a row nobody reads and the first thing to break on a narrow window.
+ */
+function Menu({
+  items,
+}: {
+  items: { label: string; onClick(): void; disabled?: boolean }[]
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    const close = (): void => setOpen(false)
+    // Any click anywhere else, and Escape. A menu that needs its own button
+    // pressed again to close is a menu that gets left open.
+    window.addEventListener('click', close)
+    window.addEventListener('keydown', close)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('keydown', close)
+    }
+  }, [open])
+
+  return (
+    <div className="relative">
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          setOpen((was) => !was)
+        }}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="More"
+        className="rounded-lg px-2.5 py-1.5 text-[13px] leading-none text-neutral-400 ring-1 ring-white/10 transition hover:bg-white/[0.08] hover:text-neutral-200"
+      >
+        ⋯
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          onClick={(e) => e.stopPropagation()}
+          className="lift absolute right-0 z-40 mt-1 w-48 overflow-hidden rounded-lg bg-neutral-900 py-1 ring-1 ring-white/[0.12]"
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              role="menuitem"
+              disabled={item.disabled}
+              onClick={() => {
+                setOpen(false)
+                item.onClick()
+              }}
+              className="block w-full px-3 py-1.5 text-left text-[12px] text-neutral-300 transition hover:bg-white/[0.07] hover:text-neutral-100 disabled:opacity-40"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
       ) : null}
     </div>
   )
