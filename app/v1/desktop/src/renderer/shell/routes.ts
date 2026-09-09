@@ -117,6 +117,15 @@ export interface ParsedRoute {
   id: RouteId
   /** The `q=` term, already decoded. Empty when there is none. */
   query: string
+  /**
+   * The meeting being looked at, when the path names one.
+   *
+   * A meeting gets its own address the moment it starts recording, because
+   * everything about it - transcript, notes, tasks, the audio, what you typed
+   * during it - belongs together and nowhere else. The list outside is
+   * management: which meetings exist and which one to open.
+   */
+  meetingId: number | null
 }
 
 /**
@@ -133,8 +142,14 @@ export interface ParsedRoute {
 export function parseHash(hash: string): ParsedRoute {
   const raw = hash.replace(/^#/, '') || '/'
   const [path = '/', search = ''] = raw.split('?')
+
+  // One meeting, by id. Checked before the fixed list because it is the only
+  // path with a variable in it.
+  const meeting = /^\/meetings\/(\d{1,12})$/.exec(path)
+  if (meeting) return { id: 'meetings', query: '', meetingId: Number(meeting[1]) }
+
   const found = ROUTES.find((r) => r.path === path)
-  if (!found || found.soon) return { id: DEFAULT_ROUTE, query: '' }
+  if (!found || found.soon) return { id: DEFAULT_ROUTE, query: '', meetingId: null }
 
   let query = ''
   try {
@@ -142,7 +157,12 @@ export function parseHash(hash: string): ParsedRoute {
   } catch {
     // A malformed query is not a reason to refuse to navigate.
   }
-  return { id: found.id, query }
+  return { id: found.id, query, meetingId: null }
+}
+
+/** The address of one meeting. */
+export function hashForMeeting(meetingId: number): string {
+  return `#/meetings/${meetingId}`
 }
 
 export function hashFor(id: RouteId, query?: string): string {

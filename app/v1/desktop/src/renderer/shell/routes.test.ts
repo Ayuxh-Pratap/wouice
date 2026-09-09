@@ -4,6 +4,7 @@ import {
   ROUTES,
   groupedRoutes,
   hashFor,
+  hashForMeeting,
   isHudHash,
   parseHash,
   routeById,
@@ -92,7 +93,19 @@ describe('carrying a search term', () => {
   })
 
   it('ignores a query on a route that does not use one', () => {
-    expect(parseHash('#/settings?q=x')).toEqual({ id: 'settings', query: 'x' })
+    expect(parseHash('#/settings?q=x')).toEqual({ id: 'settings', query: 'x', meetingId: null })
+  })
+
+  it('reads one meeting out of its own address', () => {
+    // A meeting gets an address the moment it starts recording: everything
+    // about it belongs together and nowhere else.
+    expect(parseHash('#/meetings/42')).toEqual({ id: 'meetings', query: '', meetingId: 42 })
+    expect(hashForMeeting(42)).toBe('#/meetings/42')
+  })
+
+  it('falls back to the list when the id is not a number', () => {
+    expect(parseHash('#/meetings/abc').id).toBe(DEFAULT_ROUTE)
+    expect(parseHash('#/meetings').meetingId).toBeNull()
   })
 })
 

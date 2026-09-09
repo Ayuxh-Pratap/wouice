@@ -3,6 +3,7 @@ import type { HotkeyReport } from '../shared/ipc.js'
 import type { Settings } from '../shared/settings.js'
 import { DashboardPage } from './pages/DashboardPage.js'
 import { DictationsPage } from './pages/DictationsPage.js'
+import { MeetingPage } from './pages/MeetingPage.js'
 import { MeetingsPage } from './pages/MeetingsPage.js'
 import { QualityPage } from './pages/QualityPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
@@ -60,7 +61,7 @@ function useHashRoute(): ParsedRoute {
 }
 
 export function App(): React.JSX.Element {
-  const { id: route, query } = useHashRoute()
+  const { id: route, query, meetingId } = useHashRoute()
   const [settings, setSettings] = useState<Settings | null>(null)
   const [hotkeyIssue, setHotkeyIssue] = useState<HotkeyReport | null>(null)
   const [collapsed, setCollapsed] = useState(
@@ -151,12 +152,14 @@ export function App(): React.JSX.Element {
           className="lift-panel min-h-0 flex-1 overflow-y-auto rounded-2xl bg-neutral-900 ring-1 ring-white/[0.08]"
         >
           <div className="px-7 py-6">
-            <header className="mb-5">
-              <h1 className="text-[19px] font-semibold tracking-tight text-neutral-50">
-                {def.label}
-              </h1>
-              <p className="mt-0.5 text-[12px] text-neutral-500">{def.blurb}</p>
-            </header>
+            {meetingId === null && (
+              <header className="mb-5">
+                <h1 className="text-[19px] font-semibold tracking-tight text-neutral-50">
+                  {def.label}
+                </h1>
+                <p className="mt-0.5 text-[12px] text-neutral-500">{def.blurb}</p>
+              </header>
+            )}
 
             {/*
               A hotkey that failed to bind is not a page-level problem: the app
@@ -184,7 +187,8 @@ export function App(): React.JSX.Element {
 
             {route === 'dashboard' && <DashboardPage />}
             {route === 'dictations' && <DictationsPage developerMode={dev} query={query} />}
-            {route === 'meetings' && <MeetingsPage />}
+            {route === 'meetings' && meetingId === null && <MeetingsPage />}
+            {route === 'meetings' && meetingId !== null && <MeetingPage meetingId={meetingId} />}
             {route === 'quality' && <QualityPage />}
             {route === 'settings' && <SettingsPage settings={settings} />}
           </div>

@@ -18,10 +18,13 @@ export function Transcript({
   segments,
   emptyMessage = 'Nothing transcribed yet.',
   highlight = '',
+  english = false,
 }: {
   segments: MeetingSegment[]
   emptyMessage?: string
   highlight?: string
+  /** Show the English rendering where there is one. Never instead of it. */
+  english?: boolean
 }): React.JSX.Element {
   if (segments.length === 0) {
     return <p className="px-1 py-6 text-center text-[12px] text-neutral-600">{emptyMessage}</p>
@@ -56,9 +59,19 @@ export function Transcript({
                 'text-[13px] leading-relaxed ' +
                 (segment.echo ? 'text-neutral-600' : 'text-neutral-200')
               }
+              // The line as spoken, always reachable. The rendering is a
+              // model's account of it, and if the two disagree that is the
+              // interesting part.
+              title={english && segment.textEn ? segment.text : undefined}
             >
-              {highlight ? mark(segment.text, highlight) : segment.text}
+              {(() => {
+                const shown = english && segment.textEn ? segment.textEn : segment.text
+                return highlight ? mark(shown, highlight) : shown
+              })()}
             </p>
+            {english && !segment.textEn ? (
+              <span className="text-[10px] text-neutral-600">not rendered</span>
+            ) : null}
           </div>
         </li>
       ))}
