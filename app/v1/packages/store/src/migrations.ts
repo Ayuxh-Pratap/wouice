@@ -309,6 +309,55 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE meetings ADD COLUMN diagnostics TEXT NOT NULL DEFAULT '{}';
     `,
   },
+  {
+    id: 8,
+    name: 'the english rendering alongside what was actually said',
+    sql: `
+      -- BOTH, not one. The raw transcript is what was said and is the thing a
+      -- disagreement about a meeting gets settled against; the English
+      -- rendering is what makes it readable and is what the notes are built
+      -- from. Replacing the first with the second would quietly make the
+      -- record un-checkable, so they live side by side and the reader chooses.
+      ALTER TABLE segments ADD COLUMN text_en TEXT;
+
+      -- Which kind of meeting this was: it decides the recognition language
+      -- and whether an English rendering is wanted at all.
+      ALTER TABLE meetings ADD COLUMN kind TEXT NOT NULL DEFAULT 'mixed';
+
+      -- Search has to cover both columns, or searching in English finds
+      -- nothing in a Hindi meeting and vice versa. FTS5 cannot gain a column,
+      -- so the index is rebuilt; the text itself lives in "segments" and is
+      -- not duplicated here.
+      DROP TRIGGER IF EXISTS segments_ai;
+      DROP TRIGGER IF EXISTS segments_ad;
+      DROP TRIGGER IF EXISTS segments_au;
+      DROP TABLE IF EXISTS segments_fts;
+
+      CREATE VIRTUAL TABLE segments_fts USING fts5 (
+        text, text_en, content='segments', content_rowid='id'
+      );
+
+      INSERT INTO segments_fts (rowid, text, text_en)
+        SELECT id, text, text_en FROM segments;
+
+      CREATE TRIGGER segments_ai AFTER INSERT ON segments BEGIN
+        INSERT INTO segments_fts (rowid, text, text_en)
+        VALUES (new.id, new.text, new.text_en);
+      END;
+
+      CREATE TRIGGER segments_ad AFTER DELETE ON segments BEGIN
+        INSERT INTO segments_fts (segments_fts, rowid, text, text_en)
+        VALUES ('delete', old.id, old.text, old.text_en);
+      END;
+
+      CREATE TRIGGER segments_au AFTER UPDATE ON segments BEGIN
+        INSERT INTO segments_fts (segments_fts, rowid, text, text_en)
+        VALUES ('delete', old.id, old.text, old.text_en);
+        INSERT INTO segments_fts (rowid, text, text_en)
+        VALUES (new.id, new.text, new.text_en);
+      END;
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */

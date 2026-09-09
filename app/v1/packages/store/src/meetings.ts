@@ -38,6 +38,7 @@ interface MeetingRow {
   diarized: number
   named: number
   diagnostics: string
+  kind: string
 }
 
 interface SegmentRow {
@@ -47,6 +48,7 @@ interface SegmentRow {
   start_ms: number
   end_ms: number
   text: string
+  text_en: string | null
   echo: number
 }
 
@@ -69,6 +71,7 @@ function toMeeting(r: MeetingRow, segments = 0): MeetingRecord {
     durationMs: r.duration_ms,
     scratchMd: r.scratch_md,
     notesMd: r.notes_md,
+    kind: r.kind ?? 'mixed',
     diagnostics: readDiagnostics(r.diagnostics),
     segments,
   }
@@ -94,6 +97,7 @@ function toSegment(r: SegmentRow): SegmentRecord {
     startMs: r.start_ms,
     endMs: r.end_ms,
     text: r.text,
+    textEn: r.text_en,
     echo: r.echo === 1,
   }
 }
@@ -139,15 +143,15 @@ export class Meetings {
    * row rather than a duplicate, so a recovery pass cannot create a second
    * meeting for audio that already has one.
    */
-  start(dir: string, startedAt: number): number {
+  start(dir: string, startedAt: number, kind = 'mixed'): number {
     const existing = row<{ id: number }>(
       this.db.raw.prepare('SELECT id FROM meetings WHERE dir = ?').get(dir)
     )
     if (existing) return existing.id
 
     const result = this.db.raw
-      .prepare('INSERT INTO meetings (started_at, dir) VALUES (?, ?)')
-      .run(startedAt, dir)
+      .prepare('INSERT INTO meetings (started_at, dir, kind) VALUES (?, ?, ?)')
+      .run(startedAt, dir, kind)
     return Number(result.lastInsertRowid)
   }
 
@@ -209,6 +213,30 @@ export class Meetings {
   recordNotesRun(id: number, run: NonNullable<MeetingDiagnostics['notes']>[number]): void {
     const previous = this.byId(id)?.diagnostics.notes ?? []
     this.setDiagnostics(id, { notes: [...previous, run].slice(-5) })
+  }
+
+  setKind(id: number, kind: string): void {
+    this.db.raw.prepare('UPDATE meetings SET kind = ? WHERE id = ?').run(kind, id)
+  }
+
+  /**
+   * Attach English renderings to lines already stored.
+   *
+   * Keyed on the segment id, so a rendering can only ever land on the line it
+   * was made from. Anything the renderer could not produce is simply left null
+   * and the raw line stands on its own.
+   */
+  setEnglish(pairs: readonly { id: number; textEn: string }[]): void {
+    if (pairs.length === 0) return
+    const update = this.db.raw.prepare('UPDATE segments SET text_en = ? WHERE id = ?')
+    this.db.raw.exec('BEGIN')
+    try {
+      for (const pair of pairs) update.run(pair.textEn, pair.id)
+      this.db.raw.exec('COMMIT')
+    } catch (err) {
+      this.db.raw.exec('ROLLBACK')
+      throw err
+    }
   }
 
   setTitle(id: number, title: string): void {

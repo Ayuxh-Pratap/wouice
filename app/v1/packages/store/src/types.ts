@@ -172,6 +172,8 @@ export interface MeetingRecord {
   /** What you typed during the call. */
   scratchMd: string
   notesMd: string | null
+  /** Which kind of meeting: see `MeetingKind` in shared. */
+  kind: string
   /** What happened while it was recorded. See `MeetingDiagnostics`. */
   diagnostics: MeetingDiagnostics
   /** How many transcript segments it has. */
@@ -182,6 +184,7 @@ export interface SegmentInput {
   channel: MeetingChannel
   startMs: number
   endMs: number
+  /** What was said, as the recogniser heard it. Never rewritten. */
   text: string
   echo: boolean
 }
@@ -189,6 +192,13 @@ export interface SegmentInput {
 export interface SegmentRecord extends SegmentInput {
   id: number
   meetingId: number
+  /**
+   * The same line rendered into English, or null when it has not been.
+   *
+   * Alongside `text`, never instead of it. The raw line is what settles a
+   * disagreement about what was said; this is what makes it readable.
+   */
+  textEn: string | null
 }
 
 export type TaskState = 'open' | 'done' | 'dropped'
@@ -245,6 +255,8 @@ export interface MeetingDiagnostics {
   driftPpm?: { me: number | null; them: number | null }
   /** True when the merge ran without a manifest, so alignment is approximate. */
   recoveredWithoutManifest?: boolean
+  /** The English rendering pass, when it has run. */
+  english?: { at: number; rendered: number; missed: number; failedBatches: number; ms: number }
   /** One entry per notes run, newest last. */
   notes?: {
     at: number
