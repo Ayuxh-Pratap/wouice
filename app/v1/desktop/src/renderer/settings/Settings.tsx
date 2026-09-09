@@ -13,6 +13,23 @@ import { CHARACTER_LIST, posterStyle } from '../hud/sprite.js'
 import { PET_SIZE_LABELS, type PetSize } from '../../shared/pet.js'
 import { DictionaryEditor } from './DictionaryEditor.js'
 import { ConfirmButton, Choice, Row, Section, Toggle } from './Field.js'
+import { Tabs } from '../shell/Tabs.js'
+
+/**
+ * Settings, grouped by what you came to change.
+ *
+ * One long column meant scrolling past four things you did not want to reach
+ * the one you did. These are the groups people actually arrive with in mind.
+ */
+type SettingsTab = 'appearance' | 'dictation' | 'meetings' | 'storage' | 'advanced'
+
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'dictation', label: 'Dictation' },
+  { id: 'meetings', label: 'Meetings' },
+  { id: 'storage', label: 'Recordings' },
+  { id: 'advanced', label: 'Advanced' },
+]
 import { MEETING_KINDS, type MeetingKind } from '../../shared/meeting-kind.js'
 
 /**
@@ -246,6 +263,8 @@ export function SettingsPanel({
 
   if (!settings) return null
 
+  const [tab, setTab] = useState<SettingsTab>('appearance')
+
   const save = (patch: Partial<SettingsShape>): void => {
     void window.wouice.setSettings(patch)
   }
@@ -254,6 +273,9 @@ export function SettingsPanel({
 
   return (
     <div className="space-y-4">
+      <Tabs<SettingsTab> tabs={SETTINGS_TABS} active={tab} onChange={setTab} />
+
+      {tab === 'appearance' && <div className="space-y-4">
       <Section
         title="Appearance"
         hint="Applies to this window only. The dictation overlay is a fixed size wherever it appears."
@@ -271,7 +293,9 @@ export function SettingsPanel({
           />
         </Row>
       </Section>
+      </div>}
 
+      {tab === 'dictation' && <div className="space-y-4">
       <Section title="Dictation">
         <Row
           label="Microphone"
@@ -353,7 +377,9 @@ export function SettingsPanel({
           />
         </Row>
       </Section>
+      </div>}
 
+      {tab === 'meetings' && <div className="space-y-4">
       <Section
         title="Meetings"
         hint="Two channels, kept apart by where the audio comes from rather than by a model: your microphone is you, and what your computer plays is everyone else."
@@ -382,7 +408,9 @@ export function SettingsPanel({
           />
         </Row>
       </Section>
+      </div>}
 
+      {tab === 'storage' && <div className="space-y-4">
       <Section
         title="Your voice on this disk"
         hint="Recordings never leave the machine. They exist so a bad transcription can be replayed rather than guessed at."
@@ -406,7 +434,9 @@ export function SettingsPanel({
           <DeleteEverything />
         </Row>
       </Section>
+      </div>}
 
+      {tab === 'advanced' && <div className="space-y-4">
       <Section
         title="Advanced"
         hint="Off by default. Turning this on also reveals the models, the charts, and every stage of the text."
@@ -446,6 +476,7 @@ export function SettingsPanel({
           </div>
         </Section>
       )}
+      </div>}
     </div>
   )
 }
