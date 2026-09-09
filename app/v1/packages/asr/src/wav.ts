@@ -16,9 +16,8 @@
  */
 
 export const SAMPLE_RATE = 16_000
-const CHANNELS = 1
 const BITS_PER_SAMPLE = 16
-const HEADER_BYTES = 44
+export const WAV_HEADER_BYTES = 44
 
 /**
  * Float [-1, 1] to signed 16-bit.
@@ -41,13 +40,27 @@ function writeAscii(view: DataView, offset: number, text: string): void {
 // generic over their backing buffer, and a bare `Uint8Array` means
 // `Uint8Array<ArrayBufferLike>`, which BlobPart rejects because it could be a
 // SharedArrayBuffer. We allocate a real ArrayBuffer, so say so.
-export function encodeWav(pcm: Float32Array, sampleRate: number = SAMPLE_RATE): Uint8Array<ArrayBuffer> {
-  const dataBytes = pcm.length * 2
-  const buffer = new ArrayBuffer(HEADER_BYTES + dataBytes)
+/**
+ * Just the 44 header bytes, for a file written in pieces.
+ *
+ * A one hour two-channel meeting is 57.6 million frames per channel. Building
+ * that as one buffer costs the better part of a gigabyte for something that is
+ * about to be handed straight to the filesystem, so the merge writes a header
+ * first and streams blocks after it. The frame count has to be known up front
+ * either way - it is in the header twice - which is why this takes it rather
+ * than counting.
+ */
+export function wavHeader(
+  frames: number,
+  channels: number,
+  sampleRate: number = SAMPLE_RATE
+): Uint8Array<ArrayBuffer> {
+  const dataBytes = frames * channels * (BITS_PER_SAMPLE / 8)
+  const buffer = new ArrayBuffer(WAV_HEADER_BYTES)
   const view = new DataView(buffer)
 
-  const byteRate = (sampleRate * CHANNELS * BITS_PER_SAMPLE) / 8
-  const blockAlign = (CHANNELS * BITS_PER_SAMPLE) / 8
+  const byteRate = (sampleRate * channels * BITS_PER_SAMPLE) / 8
+  const blockAlign = (channels * BITS_PER_SAMPLE) / 8
 
   writeAscii(view, 0, 'RIFF')
   view.setUint32(4, 36 + dataBytes, true) // size of everything after this field
@@ -56,7 +69,7 @@ export function encodeWav(pcm: Float32Array, sampleRate: number = SAMPLE_RATE): 
   writeAscii(view, 12, 'fmt ')
   view.setUint32(16, 16, true) // fmt chunk size, 16 for PCM
   view.setUint16(20, 1, true) // audio format: 1 = uncompressed PCM
-  view.setUint16(22, CHANNELS, true)
+  view.setUint16(22, channels, true)
   view.setUint32(24, sampleRate, true)
   view.setUint32(28, byteRate, true)
   view.setUint16(32, blockAlign, true)
@@ -65,13 +78,49 @@ export function encodeWav(pcm: Float32Array, sampleRate: number = SAMPLE_RATE): 
   writeAscii(view, 36, 'data')
   view.setUint32(40, dataBytes, true)
 
-  let offset = HEADER_BYTES
+  return new Uint8Array(buffer)
+}
+
+/**
+ * Two mono blocks to one interleaved 16-bit stereo block.
+ *
+ * Left is the microphone and right is the system channel, which is what makes
+ * the saved audio readable by ear: your side in one can, theirs in the other.
+ * The blocks must already be the same length - padding and alignment are the
+ * caller's business, and doing it here would hide a mismatch that matters.
+ */
+export function interleaveToPcm16(
+  left: Float32Array,
+  right: Float32Array
+): Uint8Array<ArrayBuffer> {
+  if (left.length !== right.length) {
+    throw new Error(`channel length mismatch: ${left.length} vs ${right.length}`)
+  }
+  const buffer = new ArrayBuffer(left.length * 4)
+  const view = new DataView(buffer)
+  let offset = 0
+  for (let i = 0; i < left.length; i++) {
+    view.setInt16(offset, toInt16(left[i] ?? 0), true)
+    view.setInt16(offset + 2, toInt16(right[i] ?? 0), true)
+    offset += 4
+  }
+  return new Uint8Array(buffer)
+}
+
+export function encodeWav(pcm: Float32Array, sampleRate: number = SAMPLE_RATE): Uint8Array<ArrayBuffer> {
+  const header = wavHeader(pcm.length, 1, sampleRate)
+  const buffer = new ArrayBuffer(WAV_HEADER_BYTES + pcm.length * 2)
+  const bytes = new Uint8Array(buffer)
+  bytes.set(header, 0)
+
+  const view = new DataView(buffer)
+  let offset = WAV_HEADER_BYTES
   for (let i = 0; i < pcm.length; i++) {
     view.setInt16(offset, toInt16(pcm[i] ?? 0), true)
     offset += 2
   }
 
-  return new Uint8Array(buffer)
+  return bytes
 }
 
 /** Duration of a PCM buffer in milliseconds. */

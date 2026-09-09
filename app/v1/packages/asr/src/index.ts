@@ -1,5 +1,12 @@
 export { WhisperCppClient, type WhisperClientConfig } from './client.js'
-export { encodeWav, durationMs, SAMPLE_RATE } from './wav.js'
+export {
+  encodeWav,
+  durationMs,
+  interleaveToPcm16,
+  wavHeader,
+  SAMPLE_RATE,
+  WAV_HEADER_BYTES,
+} from './wav.js'
 export {
   AsrError,
   type AsrClient,
