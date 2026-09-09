@@ -358,6 +358,23 @@ export function SettingsPanel({
         hint="Two channels, kept apart by where the audio comes from rather than by a model: your microphone is you, and what your computer plays is everyone else."
       >
         <Row
+          label="Language spoken"
+          hint="Naming it beats letting the model guess. Detection runs per 25-second slice, and one recorded meeting came back as Icelandic, Japanese, Spanish and English in turn — the same audio that produced nonsense under Detect produced the actual sentence under Hindi. Detect now decides once and sticks to it, which fixes the thrashing but not a wrong first guess."
+        >
+          <Choice
+            value={settings.meetings.language}
+            options={[
+              { value: 'auto', label: 'Detect' },
+              { value: 'hi', label: 'Hindi' },
+              { value: 'en', label: 'English' },
+            ]}
+            onChange={(language) =>
+              save({ meetings: { ...settings.meetings, language: language as 'auto' | 'hi' | 'en' } })
+            }
+          />
+        </Row>
+
+        <Row
           label="Notice when a meeting starts"
           hint="Watches which applications hold the microphone and offers to record when a meeting app takes it. It only ever offers — nothing records itself. Dictation is excluded, so your own hotkey never triggers it."
         >

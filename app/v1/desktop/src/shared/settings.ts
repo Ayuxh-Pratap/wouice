@@ -131,6 +131,21 @@ export interface MeetingConfig {
    * cheap direction costs one dismissed prompt.
    */
   autoDetect: boolean
+  /**
+   * The language spoken in your meetings.
+   *
+   * WHY THIS IS A SETTING AT ALL. Detection runs per 25-second request, and on
+   * real conversation it thrashes: one recorded meeting came back as Icelandic,
+   * Japanese, Spanish and English in turn. The same 25 seconds that produced
+   * "What are the things that are going on?" under auto produced the sentence
+   * that was actually spoken under 'hi'.
+   *
+   * 'auto' now detects ONCE and pins the answer for the rest of the meeting,
+   * which fixes the thrashing but not a wrong first guess. Naming the language
+   * is strictly better when you know it, and on Hindi it is not a small
+   * difference - it is the difference between a transcript and noise.
+   */
+  language: 'auto' | 'hi' | 'en'
 }
 
 /**
@@ -241,7 +256,7 @@ export interface InjectionConfig {
   pasteOverrides: Record<string, string>
 }
 
-export const DEFAULT_MEETINGS: MeetingConfig = { autoDetect: true }
+export const DEFAULT_MEETINGS: MeetingConfig = { autoDetect: true, language: 'auto' }
 
 export const DEFAULT_SETTINGS: Settings = {
   hotkeys: {
