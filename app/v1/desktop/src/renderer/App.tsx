@@ -3,6 +3,8 @@ import type { HotkeyReport } from '../shared/ipc.js'
 import type { Settings } from '../shared/settings.js'
 import { DashboardPage } from './pages/DashboardPage.js'
 import { DictationsPage } from './pages/DictationsPage.js'
+import type { MeetingState } from '../shared/ipc.js'
+import { useMeetingCapture } from './meetings/useMeetingCapture.js'
 import { MeetingPage } from './pages/MeetingPage.js'
 import { MeetingsPage } from './pages/MeetingsPage.js'
 import { QualityPage } from './pages/QualityPage.js'
@@ -60,8 +62,30 @@ function useHashRoute(): ParsedRoute {
   return route
 }
 
+/**
+ * The two audio streams, opened here and nowhere else.
+ *
+ * THEY CANNOT LIVE ON A PAGE. `getUserMedia` and `getDisplayMedia` only exist
+ * in a window, so capture is necessarily in the renderer - but it must not be
+ * inside anything that can unmount. It was on the meetings list, and starting a
+ * meeting navigates into that meeting: the list unmounted, its cleanup stopped
+ * both streams, and the recording sat at "opening the microphone" forever with
+ * neither channel ever going live.
+ *
+ * App is the one component that is always mounted.
+ */
+function useCapture(): void {
+  const [state, setState] = useState<MeetingState | null>(null)
+  useEffect(() => {
+    void window.wouice.getMeetingState().then(setState)
+    return window.wouice.onMeetingState(setState)
+  }, [])
+  useMeetingCapture(state)
+}
+
 export function App(): React.JSX.Element {
   const { id: route, query, meetingId } = useHashRoute()
+  useCapture()
   const [settings, setSettings] = useState<Settings | null>(null)
   const [hotkeyIssue, setHotkeyIssue] = useState<HotkeyReport | null>(null)
   const [collapsed, setCollapsed] = useState(

@@ -5,7 +5,6 @@ import type { Settings } from '../../shared/settings.js'
 import { MEETING_KINDS, type MeetingKind } from '../../shared/meeting-kind.js'
 import { hashForMeeting } from '../shell/routes.js'
 import { Transcript } from '../meetings/Transcript.js'
-import { useMeetingCapture } from '../meetings/useMeetingCapture.js'
 
 /**
  * Meetings: the overview.
@@ -32,8 +31,6 @@ export function MeetingsPage(): React.JSX.Element {
   const [busy, setBusy] = useState(false)
   /** So a meeting that has already sent us to its page cannot do it twice. */
   const sentTo = useRef(0)
-
-  useMeetingCapture(state)
 
   const refresh = useCallback(() => {
     void window.wouice.listMeetings().then(setMeetings)
