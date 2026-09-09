@@ -72,6 +72,9 @@ export const IPC = {
   getMeetingOffer: 'meeting:offer',
   dismissMeetingOffer: 'meeting:dismissOffer',
   copyMeetingDiagnostic: 'meeting:copyDiagnostic',
+  renderEnglish: 'meeting:renderEnglish',
+  setMeetingKind: 'meeting:setKind',
+  getMeeting: 'meeting:one',
   meetingFrame: 'meeting:frame',
   meetingReady: 'meeting:ready',
   meetingFailed: 'meeting:failed',
@@ -98,6 +101,7 @@ export const IPC = {
   meetingState: 'meeting:changed',
   meetingSegments: 'meeting:newSegments',
   notesProgress: 'meeting:notesProgress',
+  englishProgress: 'meeting:englishProgress',
   meetingOffer: 'meeting:offered',
 } as const
 
@@ -300,6 +304,20 @@ export interface NotesProgressView {
   chunks: number
 }
 
+export interface EnglishProgressView {
+  meetingId: number
+  batch: number
+  batches: number
+}
+
+export interface EnglishOutcome {
+  ok: boolean
+  message: string
+  /** Lines rendered, and lines the model did not manage. */
+  rendered: number
+  missed: number
+}
+
 export interface NotesOutcome {
   ok: boolean
   /** Why it could not be done. Empty when it worked. */
@@ -317,7 +335,10 @@ export interface MeetingSegment {
   channel: MeetingChannel
   startMs: number
   endMs: number
+  /** What was said, as heard. */
   text: string
+  /** The same line in English, or null when it has not been rendered. */
+  textEn: string | null
   echo: boolean
 }
 
@@ -395,6 +416,12 @@ export interface WouiceApi {
   /** Everything about one meeting's run, on the clipboard. */
   copyMeetingDiagnostic(meetingId: number): Promise<boolean>
   onMeetingOffer(cb: (app: string | null) => void): () => void
+  /** One meeting, or null if it is gone. */
+  getMeeting(meetingId: number): Promise<MeetingRecord | null>
+  /** Render the transcript into English alongside what was said. */
+  renderEnglish(meetingId: number): Promise<EnglishOutcome>
+  setMeetingKind(meetingId: number, kind: string): Promise<void>
+  onEnglishProgress(cb: (p: EnglishProgressView) => void): () => void
   sendMeetingFrame(sessionId: number, channel: MeetingChannel, frame: Float32Array): void
   meetingReady(sessionId: number): void
   meetingFailed(sessionId: number, channel: MeetingChannel, reason: string): void

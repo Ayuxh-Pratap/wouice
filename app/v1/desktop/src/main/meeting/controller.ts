@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
-import type { AsrClient, Language } from '@wouice/asr'
+import type { AsrClient } from '@wouice/asr'
+import type { KindDefinition } from '../../shared/meeting-kind.js'
 import type { Meetings } from '@wouice/store'
 import { meterLevel, rms } from '../capture/silence-policy.js'
 import { abandonedSessions, mergeSession, type MergeResult } from './merge.js'
@@ -68,7 +69,7 @@ export interface MeetingDeps {
   store?: Meetings
   chunkSeconds?: number
   /** Read at the start of each meeting, so changing it does not need a restart. */
-  language?(): Language
+  kind?(): KindDefinition
 }
 
 /**
@@ -127,12 +128,13 @@ export class MeetingController extends EventEmitter {
 
     try {
       this.recorder = new MeetingRecorder(this.root, at)
-      this.meetingId = this.deps.store?.start(this.recorder.dir, at) ?? null
+      const kind = this.deps.kind?.()
+      this.meetingId = this.deps.store?.start(this.recorder.dir, at, kind?.id ?? 'mixed') ?? null
       this.transcriber = this.deps.asr
         ? new MeetingTranscriber({
             asr: this.deps.asr,
             chunkSeconds: this.deps.chunkSeconds,
-            language: this.deps.language?.(),
+            language: kind?.language,
             onSegments: (segments) => this.record(segments),
           })
         : null

@@ -7,6 +7,7 @@ import {
   type HudState,
   type MeetingChannel,
   type MeetingSegment,
+  type EnglishProgressView,
   type NotesProgressView,
   type MeetingState,
   type MetricsSnapshot,
@@ -87,6 +88,11 @@ const api: WouiceApi = {
   copyMeetingDiagnostic: (meetingId: number) =>
     ipcRenderer.invoke(IPC.copyMeetingDiagnostic, meetingId),
   onMeetingOffer: (cb) => subscribe<string | null>(IPC.meetingOffer, cb),
+  getMeeting: (meetingId: number) => ipcRenderer.invoke(IPC.getMeeting, meetingId),
+  renderEnglish: (meetingId: number) => ipcRenderer.invoke(IPC.renderEnglish, meetingId),
+  setMeetingKind: (meetingId: number, kind: string) =>
+    ipcRenderer.invoke(IPC.setMeetingKind, meetingId, kind),
+  onEnglishProgress: (cb) => subscribe<EnglishProgressView>(IPC.englishProgress, cb),
   revealMeeting: (dir: string) => ipcRenderer.send(IPC.revealMeeting, dir),
   sendMeetingFrame: (sessionId: number, channel: MeetingChannel, frame: Float32Array) =>
     ipcRenderer.send(IPC.meetingFrame, sessionId, channel, frame),

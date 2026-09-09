@@ -20,7 +20,7 @@ import {
   showHud,
   startPetDrag,
 } from './windows.js'
-import { IPC, type NotesOutcome, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type RatingSheet, type SidecarView } from '../shared/ipc.js'
+import { IPC, type EnglishOutcome, type NotesOutcome, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type RatingSheet, type SidecarView } from '../shared/ipc.js'
 import type { SidecarId } from '../shared/models.js'
 import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from './dictation/controller.js'
 import { sampleResources } from './metrics/sample.js'
@@ -34,6 +34,8 @@ import { MeetingController } from './meeting/controller.js'
 import { finishedSessions } from './meeting/merge.js'
 import { MeetingNotesEngine, NotesUnavailable } from './meeting/notes-engine.js'
 import { MicWatcher } from './meeting/mic-watcher.js'
+import { MeetingEnglishEngine, EnglishUnavailable } from './meeting/english-engine.js'
+import { kindOf } from '../shared/meeting-kind.js'
 import { formatMeeting } from './metrics/diagnostic.js'
 import type { Channel as MeetingChannel } from './meeting/session.js'
 import { WhisperCppClient } from '@wouice/asr'
@@ -88,7 +90,7 @@ const meetings = new MeetingController(MEETING_ROOT, {
     health: () => whisperClient().health(),
   },
   store: store.meetings,
-  language: () => settings.get().meetings.language,
+  kind: () => kindOf(settings.get().meetings.defaultKind),
 })
 
 /**
@@ -105,6 +107,69 @@ const notesEngine = new MeetingNotesEngine(
     })
 )
 let notesRunning = 0
+
+/**
+ * The English rendering, which runs after the meeting rather than during it.
+ *
+ * Stored ALONGSIDE what was said, never instead of it: the raw transcript is
+ * what settles a disagreement about a meeting, and this is what makes it
+ * readable. Both live in the row.
+ */
+const englishEngine = new MeetingEnglishEngine(
+  () =>
+    new OpenAiCompatClient({
+      baseUrl: supervisor.baseUrl('llama'),
+      model: supervisor.snapshot('llama').modelId,
+    })
+)
+let englishRunning = 0
+
+async function renderEnglish(id: number): Promise<EnglishOutcome> {
+  const empty = { rendered: 0, missed: 0 }
+  if (englishRunning === id) {
+    return { ok: false, message: 'already rendering this meeting', ...empty }
+  }
+  const meeting = store.meetings.byId(id)
+  if (!meeting) return { ok: false, message: 'that meeting is gone', ...empty }
+  if (!kindOf(meeting.kind).translate) {
+    return { ok: false, message: 'this meeting is already in English', ...empty }
+  }
+
+  englishRunning = id
+  try {
+    const run = await englishEngine.render({
+      // Echo lines are the far side heard twice; rendering them spends the
+      // model on duplicates of lines that are already being rendered.
+      lines: store.meetings
+        .segments(id)
+        .filter((seg) => !seg.echo)
+        .map((seg) => ({ id: seg.id, text: seg.text })),
+      onProgress: (p) => broadcast(IPC.englishProgress, { meetingId: id, ...p }),
+    })
+    store.meetings.setEnglish(run.rendered.map((r) => ({ id: r.id, textEn: r.textEn })))
+    store.meetings.setDiagnostics(id, {
+      english: {
+        at: Date.now(),
+        rendered: run.rendered.length,
+        missed: run.missed,
+        failedBatches: run.failedBatches,
+        ms: run.ms,
+      },
+    })
+    console.log(
+      `[meeting] english for ${id}: ${run.rendered.length} line(s), ${run.missed} missed, ${Math.round(run.ms / 1000)}s`
+    )
+    return { ok: true, message: '', rendered: run.rendered.length, missed: run.missed }
+  } catch (err) {
+    const message =
+      err instanceof EnglishUnavailable
+        ? err.message
+        : `the model could not be reached: ${err instanceof Error ? err.message : String(err)}`
+    return { ok: false, message, ...empty }
+  } finally {
+    englishRunning = 0
+  }
+}
 
 /**
  * Automatic detection: notice a meeting application taking the microphone and
@@ -291,6 +356,12 @@ meetings.on('finished', (summary: { meetingId: number } & Record<string, unknown
   // A finished meeting resets the offer: whatever the call was, it is over.
   pendingOffer = null
   broadcast(IPC.meetingOffer, null)
+
+  // Render it without being asked. The alternative is a transcript that sits
+  // in Hindi until somebody remembers there is a button, and a person reading
+  // their own meeting should not have to know the pipeline has two halves.
+  const meeting = store.meetings.byId(summary.meetingId)
+  if (meeting && kindOf(meeting.kind).translate) void renderEnglish(summary.meetingId)
 })
 
 /**
@@ -682,6 +753,11 @@ function registerIpc(): void {
     store.meetings.setScratch(id, markdown)
   )
   ipcMain.handle(IPC.getMeetingTasks, (_e, id: number) => store.meetings.tasksFor(id))
+  ipcMain.handle(IPC.getMeeting, (_e, id: number) => store.meetings.byId(id))
+  ipcMain.handle(IPC.setMeetingKind, (_e, id: number, kind: string) =>
+    store.meetings.setKind(id, kind)
+  )
+  ipcMain.handle(IPC.renderEnglish, (_e, id: number) => renderEnglish(id))
   ipcMain.handle(IPC.getMeetingOffer, () => pendingOffer)
   ipcMain.handle(IPC.dismissMeetingOffer, () => {
     micWatcher.dismissOffer()
@@ -709,11 +785,14 @@ function registerIpc(): void {
     notesRunning = id
     try {
       const run = await notesEngine.generate({
+        // The English rendering when there is one: notes written from
+        // "स्थमाल" and "रंबाली" never had a chance, and a 4B model summarising
+        // raw code-mixed recognition output is the weakest link in the chain.
         lines: store.meetings.segments(id).map((s) => ({
           id: s.id,
           channel: s.channel,
           startMs: s.startMs,
-          text: s.text,
+          text: s.textEn ?? s.text,
           echo: s.echo,
         })),
         scratch: meeting.scratchMd,
