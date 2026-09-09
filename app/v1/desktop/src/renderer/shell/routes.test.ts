@@ -47,9 +47,18 @@ describe('reading a hash', () => {
 
   it('refuses a route that is not built yet', () => {
     // Listed in the sidebar so the shape of the app is visible, but typing the
-    // path should not strand someone on a page that does not exist.
-    expect(parseHash('#/meetings').id).toBe(DEFAULT_ROUTE)
-    expect(parseHash('#/companion').id).toBe(DEFAULT_ROUTE)
+    // path should not strand someone on a page that does not exist. Meetings
+    // was one of these until Stage 1 shipped, which is why the check is driven
+    // by the flag rather than by a list that has to be remembered.
+    const unbuilt = ROUTES.filter((r) => r.soon)
+    expect(unbuilt.length).toBeGreaterThan(0)
+    for (const route of unbuilt) {
+      expect(parseHash(`#${route.path}`).id).toBe(DEFAULT_ROUTE)
+    }
+  })
+
+  it('lets you reach meetings', () => {
+    expect(parseHash('#/meetings').id).toBe('meetings')
   })
 
   it('round-trips every reachable route', () => {

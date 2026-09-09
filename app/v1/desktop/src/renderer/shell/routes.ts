@@ -68,7 +68,6 @@ export const ROUTES: RouteDef[] = [
     group: 'Surfaces',
     icon: 'meeting',
     blurb: 'Two-channel capture with Me and Them kept apart.',
-    soon: true,
   },
   {
     id: 'companion',
