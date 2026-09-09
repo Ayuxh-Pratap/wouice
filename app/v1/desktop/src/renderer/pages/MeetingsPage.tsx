@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MeetingChannelView, MeetingSegment, MeetingState } from '../../shared/ipc.js'
 import type { MeetingRecord } from '@wouice/store'
+import type { Settings } from '../../shared/settings.js'
+import { MEETING_KINDS, type MeetingKind } from '../../shared/meeting-kind.js'
 import { hashForMeeting } from '../shell/routes.js'
 import { Notes } from '../meetings/Notes.js'
 import { Transcript } from '../meetings/Transcript.js'
@@ -34,6 +36,7 @@ export function MeetingsPage(): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<MeetingSegment[] | null>(null)
   const [busy, setBusy] = useState(false)
+  const [settings, setSettings] = useState<Settings | null>(null)
   const [offer, setOffer] = useState<string | null>(null)
 
   useMeetingCapture(state)
@@ -43,6 +46,8 @@ export function MeetingsPage(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
+    void window.wouice.getSettings().then(setSettings)
+    const offSettings = window.wouice.onSettingsChanged(setSettings)
     void window.wouice.getMeetingState().then(setState)
     refresh()
     const offState = window.wouice.onMeetingState((next) => {
@@ -64,6 +69,7 @@ export function MeetingsPage(): React.JSX.Element {
       offState()
       offSegments()
       offOffer()
+      offSettings()
     }
   }, [refresh])
 
@@ -150,6 +156,39 @@ export function MeetingsPage(): React.JSX.Element {
         ) : null}
 
         <span className="shrink-0 text-[11.5px] text-neutral-500">{describePhase(phase)}</span>
+
+        {/*
+          Chosen BEFORE the button, not after the meeting. The recognition
+          language is fixed the moment the first chunk is sent, so a picker that
+          only appeared afterwards would be offering a choice that had already
+          been made - and auto-detect starts a meeting from a notification,
+          where there is no other chance to say.
+        */}
+        <select
+          value={settings?.meetings.defaultKind ?? 'mixed'}
+          disabled={active || !settings}
+          title={
+            active
+              ? 'Fixed once a meeting starts. Change it on the meeting page afterwards to re-render the English.'
+              : 'What this meeting will be recorded as.'
+          }
+          onChange={(e) => {
+            const defaultKind = e.target.value as MeetingKind
+            setSettings((current) =>
+              current ? { ...current, meetings: { ...current.meetings, defaultKind } } : current
+            )
+            void window.wouice.setSettings({
+              meetings: { ...settings!.meetings, defaultKind },
+            })
+          }}
+          className="shrink-0 rounded-md bg-neutral-950 px-2 py-0.5 text-[11.5px] text-neutral-300 ring-1 ring-white/10 outline-none focus:ring-white/25 disabled:opacity-50"
+        >
+          {MEETING_KINDS.map((k) => (
+            <option key={k.id} value={k.id}>
+              {k.label}
+            </option>
+          ))}
+        </select>
 
         {state?.transcript.queued ? (
           <span className="shrink-0 text-[11px] text-neutral-600">

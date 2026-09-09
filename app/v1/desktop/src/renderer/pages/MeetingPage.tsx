@@ -187,8 +187,13 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
 
       <ScratchPad meetingId={meetingId} initial={meeting.scratchMd} />
 
-      <section className="lift rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
-        <div className="mb-2.5 flex items-center gap-2">
+      {/*
+        Scrolls inside itself. An hour of conversation is several hundred lines,
+        and letting it set the page height puts the notes and the task list an
+        unreasonable distance above the thing you scrolled down to read.
+      */}
+      <section className="lift flex max-h-[62vh] flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
+        <div className="mb-2.5 flex shrink-0 items-center gap-2">
           <h2 className="text-[12px] font-medium text-neutral-400">Transcript</h2>
           {hasEnglish ? (
             <div className="ml-auto flex gap-1">
@@ -213,11 +218,13 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
             </div>
           ) : null}
         </div>
-        <Transcript
-          segments={segments}
-          english={english && hasEnglish}
-          emptyMessage="No transcript — it was recorded before transcription existed, or the speech model was not running."
-        />
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          <Transcript
+            segments={segments}
+            english={english && hasEnglish}
+            emptyMessage="No transcript — it was recorded before transcription existed, or the speech model was not running."
+          />
+        </div>
       </section>
     </div>
   )
