@@ -1,52 +1,17 @@
+import { tapFrames, TARGET_SAMPLE_RATE, type FrameTap } from './frames.js'
+
 /**
  * Microphone capture, delivering exactly the format the pipeline expects.
  *
- * ONE INTERNAL FORMAT: 16 kHz mono Float32, everywhere. Rather than capture at
- * the device rate and resample by hand, the AudioContext is CONSTRUCTED at
- * 16 kHz and Chromium resamples in native code on the audio thread. That is
- * both better quality and less of our code, and it means the frames leaving
- * this module are already what whisper-server wants.
- *
- * The worklet is built from a Blob URL rather than a separate file so it needs
- * no build configuration and cannot break through a bundler path change.
+ * The framing itself - a 16 kHz AudioContext and a worklet that emits 20 ms
+ * blocks - lives in `frames.ts`, shared with the system-audio channel. What is
+ * specific to a microphone is here: which constraints to ask for, and which
+ * device.
  */
 
-export const TARGET_SAMPLE_RATE = 16_000
-/** 320 samples at 16 kHz = 20 ms, which is the policy's frame granularity. */
-const FRAME_SAMPLES = 320
+export { TARGET_SAMPLE_RATE }
 
-const WORKLET_SOURCE = `
-class CaptureProcessor extends AudioWorkletProcessor {
-  constructor() {
-    super()
-    this._buf = new Float32Array(${FRAME_SAMPLES})
-    this._n = 0
-  }
-  process(inputs) {
-    const input = inputs[0]
-    // No input yet, or the track ended. Keep the node alive either way:
-    // returning false would tear the graph down permanently.
-    if (!input || !input[0]) return true
-    const ch = input[0]
-    for (let i = 0; i < ch.length; i++) {
-      this._buf[this._n++] = ch[i]
-      if (this._n === ${FRAME_SAMPLES}) {
-        // Transfer a copy: the worklet reuses its buffer every render quantum,
-        // so posting the same one would deliver overwritten samples.
-        const out = this._buf.slice()
-        this.port.postMessage(out, [out.buffer])
-        this._n = 0
-      }
-    }
-    return true
-  }
-}
-registerProcessor('wouice-capture', CaptureProcessor)
-`
-
-export interface MicSession {
-  stop(): Promise<void>
-  readonly sampleRate: number
+export interface MicSession extends FrameTap {
   readonly deviceLabel: string
 }
 
@@ -77,44 +42,9 @@ export async function startMic(options: MicOptions): Promise<MicSession> {
     video: false,
   })
 
-  // Chromium resamples to this rate in native code on the audio thread.
-  const ctx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE, latencyHint: 'interactive' })
-
-  const blob = new Blob([WORKLET_SOURCE], { type: 'application/javascript' })
-  const url = URL.createObjectURL(blob)
-  try {
-    await ctx.audioWorklet.addModule(url)
-  } finally {
-    URL.revokeObjectURL(url)
-  }
-
-  const source = ctx.createMediaStreamSource(stream)
-  const node = new AudioWorkletNode(ctx, 'wouice-capture', {
-    numberOfInputs: 1,
-    numberOfOutputs: 0,
-    channelCount: 1,
-  })
-
-  node.port.onmessage = (e: MessageEvent<Float32Array>) => options.onFrame(e.data)
-  source.connect(node)
-
   const deviceLabel = stream.getAudioTracks()[0]?.label ?? 'unknown'
-
-  return {
-    sampleRate: ctx.sampleRate,
-    deviceLabel,
-    async stop() {
-      node.port.onmessage = null
-      try {
-        source.disconnect()
-        node.disconnect()
-      } catch {
-        // Already torn down.
-      }
-      for (const track of stream.getTracks()) track.stop()
-      await ctx.close()
-    },
-  }
+  const tap = await tapFrames(stream, options.onFrame)
+  return { ...tap, deviceLabel }
 }
 
 /** Input devices, for the settings picker. Labels need permission first. */
