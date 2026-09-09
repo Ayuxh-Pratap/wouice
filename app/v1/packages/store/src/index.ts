@@ -23,12 +23,16 @@ export type {
   DictionaryRecord,
   Page,
   MeetingChannel,
+  MeetingDiagnostics,
   MeetingRecord,
   RatingProgress,
   RatingRecord,
   ResourceRecord,
   SegmentInput,
   SegmentRecord,
+  TaskInput,
+  TaskRecord,
+  TaskState,
 } from './types.js'
 
 /**

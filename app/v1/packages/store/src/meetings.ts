@@ -1,5 +1,13 @@
 import { rows, row, type Db } from './db.js'
-import type { MeetingRecord, SegmentInput, SegmentRecord } from './types.js'
+import type {
+  MeetingDiagnostics,
+  MeetingRecord,
+  SegmentInput,
+  SegmentRecord,
+  TaskInput,
+  TaskRecord,
+  TaskState,
+} from './types.js'
 
 /**
  * Reading and writing meetings and their transcripts.
@@ -29,6 +37,7 @@ interface MeetingRow {
   notes_md: string | null
   diarized: number
   named: number
+  diagnostics: string
 }
 
 interface SegmentRow {
@@ -60,7 +69,20 @@ function toMeeting(r: MeetingRow, segments = 0): MeetingRecord {
     durationMs: r.duration_ms,
     scratchMd: r.scratch_md,
     notesMd: r.notes_md,
+    diagnostics: readDiagnostics(r.diagnostics),
     segments,
+  }
+}
+
+function readDiagnostics(raw: string | null): MeetingDiagnostics {
+  if (!raw) return {}
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as MeetingDiagnostics)
+      : {}
+  } catch {
+    return {}
   }
 }
 
@@ -73,6 +95,36 @@ function toSegment(r: SegmentRow): SegmentRecord {
     endMs: r.end_ms,
     text: r.text,
     echo: r.echo === 1,
+  }
+}
+
+interface TaskRow {
+  id: number
+  meeting_id: number
+  text: string
+  owner: string | null
+  due: string | null
+  segment_id: number | null
+  state: string
+  created_at: number
+  quote: string | null
+  quote_at: number | null
+}
+
+function toTask(r: TaskRow): TaskRecord {
+  const state: TaskState =
+    r.state === 'done' ? 'done' : r.state === 'dropped' ? 'dropped' : 'open'
+  return {
+    id: r.id,
+    meetingId: r.meeting_id,
+    text: r.text,
+    owner: r.owner,
+    due: r.due,
+    segmentId: r.segment_id ?? 0,
+    state,
+    createdAt: r.created_at,
+    quote: r.quote,
+    quoteAtMs: r.quote_at,
   }
 }
 
@@ -136,6 +188,27 @@ export class Meetings {
 
   setNotes(id: number, markdown: string): void {
     this.db.raw.prepare('UPDATE meetings SET notes_md = ? WHERE id = ?').run(markdown, id)
+  }
+
+  /**
+   * Merge into this meeting's diagnostics.
+   *
+   * Merged rather than replaced, because the facts arrive at different times:
+   * the channels and the drift when recording stops, the notes run whenever
+   * somebody asks for it, possibly days later.
+   */
+  setDiagnostics(id: number, patch: MeetingDiagnostics): void {
+    const current = this.byId(id)?.diagnostics ?? {}
+    const merged = { ...current, ...patch }
+    this.db.raw
+      .prepare('UPDATE meetings SET diagnostics = ? WHERE id = ?')
+      .run(JSON.stringify(merged), id)
+  }
+
+  /** Append one notes run to the record, keeping the last few. */
+  recordNotesRun(id: number, run: NonNullable<MeetingDiagnostics['notes']>[number]): void {
+    const previous = this.byId(id)?.diagnostics.notes ?? []
+    this.setDiagnostics(id, { notes: [...previous, run].slice(-5) })
   }
 
   setTitle(id: number, title: string): void {
@@ -209,8 +282,87 @@ export class Meetings {
     }
   }
 
+  /* ------------------------------------------------------------ tasks ---- */
+
+  /**
+   * Replace this meeting's tasks.
+   *
+   * Replace rather than append, because the only thing that writes them is a
+   * notes run, and running it twice should not double the list. Tasks you have
+   * already marked done survive: their state is matched back by text, so a
+   * regenerate does not silently reopen work you finished.
+   */
+  replaceTasks(meetingId: number, tasks: readonly TaskInput[], at = Date.now()): void {
+    const previous = new Map(
+      this.tasksFor(meetingId).map((t) => [t.text.toLowerCase(), t.state] as const)
+    )
+
+    this.db.raw.exec('BEGIN')
+    try {
+      this.db.raw.prepare('DELETE FROM tasks WHERE meeting_id = ?').run(meetingId)
+      const insert = this.db.raw.prepare(
+        `INSERT INTO tasks (meeting_id, text, owner, due, segment_id, state, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      for (const task of tasks) {
+        insert.run(
+          meetingId,
+          task.text,
+          task.owner,
+          task.due,
+          task.segmentId,
+          previous.get(task.text.toLowerCase()) ?? 'open',
+          at
+        )
+      }
+      this.db.raw.exec('COMMIT')
+    } catch (err) {
+      this.db.raw.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  /**
+   * One meeting's tasks, each carrying the line it came from.
+   *
+   * The quote is joined here rather than looked up on demand, because a task
+   * shown without its evidence is a task you cannot check - and one nobody
+   * checks is one nobody trusts.
+   */
+  tasksFor(meetingId: number): TaskRecord[] {
+    return rows<TaskRow>(
+      this.db.raw
+        .prepare(
+          `SELECT t.*, s.text AS quote, s.start_ms AS quote_at
+           FROM tasks t LEFT JOIN segments s ON s.id = t.segment_id
+           WHERE t.meeting_id = ? ORDER BY t.id`
+        )
+        .all(meetingId)
+    ).map(toTask)
+  }
+
+  /** Everything still open, newest meeting first. */
+  openTasks(limit = 200): TaskRecord[] {
+    return rows<TaskRow>(
+      this.db.raw
+        .prepare(
+          `SELECT t.*, s.text AS quote, s.start_ms AS quote_at
+           FROM tasks t
+           LEFT JOIN segments s ON s.id = t.segment_id
+           JOIN meetings m ON m.id = t.meeting_id
+           WHERE t.state = 'open' ORDER BY m.started_at DESC, t.id LIMIT ?`
+        )
+        .all(limit)
+    ).map(toTask)
+  }
+
+  setTaskState(id: number, state: TaskState): void {
+    this.db.raw.prepare('UPDATE tasks SET state = ? WHERE id = ?').run(state, id)
+  }
+
   /** Removes the row and its segments. The audio on disk is the caller's. */
   remove(id: number): void {
+    this.db.raw.prepare('DELETE FROM tasks WHERE meeting_id = ?').run(id)
     this.db.raw.prepare('DELETE FROM segments WHERE meeting_id = ?').run(id)
     this.db.raw.prepare('DELETE FROM meetings WHERE id = ?').run(id)
   }

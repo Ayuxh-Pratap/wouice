@@ -151,3 +151,75 @@ describe('search', () => {
     expect(meetings.byId(id)).toBeNull()
   })
 })
+
+describe('tasks', () => {
+  it('carries the line each one came from', () => {
+    // A task shown without its evidence is a task nobody can check, and one
+    // nobody checks is one nobody trusts.
+    const id = meetings.start('/sessions/a', 1_000)
+    meetings.addSegments(id, [said('me', 0, 'I will send the SSO timeline on Monday')])
+    const segment = meetings.segments(id)[0]!
+
+    meetings.replaceTasks(id, [
+      { text: 'send the SSO timeline', owner: 'You', due: '2026-09-14', segmentId: segment.id },
+    ])
+
+    const [task] = meetings.tasksFor(id)
+    expect(task!.quote).toBe('I will send the SSO timeline on Monday')
+    expect(task!.quoteAtMs).toBe(0)
+    expect(task!.state).toBe('open')
+  })
+
+  it('replaces rather than appends, so regenerating does not double the list', () => {
+    const id = meetings.start('/sessions/a', 1_000)
+    meetings.addSegments(id, [said('me', 0, 'a commitment')])
+    const segment = meetings.segments(id)[0]!
+
+    const task = { text: 'do the thing', owner: null, due: null, segmentId: segment.id }
+    meetings.replaceTasks(id, [task])
+    meetings.replaceTasks(id, [task])
+    expect(meetings.tasksFor(id)).toHaveLength(1)
+  })
+
+  it('does not reopen work you already finished', () => {
+    // Regenerating notes is a routine thing to do. Silently un-ticking a task
+    // you completed would make the list untrustworthy.
+    const id = meetings.start('/sessions/a', 1_000)
+    meetings.addSegments(id, [said('me', 0, 'a commitment')])
+    const segment = meetings.segments(id)[0]!
+    const task = { text: 'do the thing', owner: null, due: null, segmentId: segment.id }
+
+    meetings.replaceTasks(id, [task])
+    meetings.setTaskState(meetings.tasksFor(id)[0]!.id, 'done')
+    meetings.replaceTasks(id, [task])
+
+    expect(meetings.tasksFor(id)[0]!.state).toBe('done')
+  })
+
+  it('lists what is still open across meetings, newest first', () => {
+    const older = meetings.start('/sessions/older', 1_000)
+    const newer = meetings.start('/sessions/newer', 9_000)
+    for (const id of [older, newer]) {
+      meetings.addSegments(id, [said('me', 0, 'a commitment')])
+      const segment = meetings.segments(id)[0]!
+      meetings.replaceTasks(id, [
+        { text: `task for ${id}`, owner: null, due: null, segmentId: segment.id },
+      ])
+    }
+    expect(meetings.openTasks().map((t) => t.meetingId)).toEqual([newer, older])
+
+    meetings.setTaskState(meetings.tasksFor(newer)[0]!.id, 'done')
+    expect(meetings.openTasks().map((t) => t.meetingId)).toEqual([older])
+  })
+
+  it('goes when its meeting goes', () => {
+    const id = meetings.start('/sessions/a', 1_000)
+    meetings.addSegments(id, [said('me', 0, 'a commitment')])
+    const segment = meetings.segments(id)[0]!
+    meetings.replaceTasks(id, [
+      { text: 'do the thing', owner: null, due: null, segmentId: segment.id },
+    ])
+    meetings.remove(id)
+    expect(meetings.openTasks()).toEqual([])
+  })
+})

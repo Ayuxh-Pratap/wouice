@@ -172,6 +172,8 @@ export interface MeetingRecord {
   /** What you typed during the call. */
   scratchMd: string
   notesMd: string | null
+  /** What happened while it was recorded. See `MeetingDiagnostics`. */
+  diagnostics: MeetingDiagnostics
   /** How many transcript segments it has. */
   segments: number
 }
@@ -187,4 +189,67 @@ export interface SegmentInput {
 export interface SegmentRecord extends SegmentInput {
   id: number
   meetingId: number
+}
+
+export type TaskState = 'open' | 'done' | 'dropped'
+
+export interface TaskInput {
+  text: string
+  owner: string | null
+  /** ISO date, or null when none was said. Never guessed. */
+  due: string | null
+  /**
+   * The segment this was taken from.
+   *
+   * Not optional by accident. A task you cannot trace back to the moment it was
+   * said is one you have to take on faith, and the first wrong one teaches you
+   * to distrust every other.
+   */
+  segmentId: number
+}
+
+export interface TaskRecord extends TaskInput {
+  id: number
+  meetingId: number
+  state: TaskState
+  createdAt: number
+  /** What was actually said. Joined from the segment it cites. */
+  quote: string | null
+  quoteAtMs: number | null
+}
+
+/**
+ * What happened while a meeting was recorded, kept per meeting.
+ *
+ * WHY IT IS STORED. A meeting is an hour long and happens once. When the
+ * transcript comes out wrong the question is always "which step failed", and a
+ * console line that scrolled past during the call cannot answer it.
+ *
+ * Every field is optional and unknown keys are preserved, so a new one can be
+ * recorded without a migration.
+ */
+export interface MeetingDiagnostics {
+  asrModel?: string
+  llmModel?: string
+  /** Transcription chunks sent to the speech model, and how many failed. */
+  chunksSent?: number
+  chunksFailed?: number
+  segments?: number
+  channels?: { channel: MeetingChannel; samples: number; problem: string | null }[]
+  /** How far the two channels' clocks drifted apart, in milliseconds. */
+  skewMs?: number | null
+  driftPpm?: { me: number | null; them: number | null }
+  /** True when the merge ran without a manifest, so alignment is approximate. */
+  recoveredWithoutManifest?: boolean
+  /** One entry per notes run, newest last. */
+  notes?: {
+    at: number
+    ok: boolean
+    chunks: number
+    gaps: number
+    tasks: number
+    ms: number
+    message?: string
+  }[]
+  [key: string]: unknown
 }

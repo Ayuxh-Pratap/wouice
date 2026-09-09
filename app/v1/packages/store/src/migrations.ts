@@ -294,6 +294,21 @@ export const MIGRATIONS: Migration[] = [
       END;
     `,
   },
+  {
+    id: 7,
+    name: 'what happened while a meeting was recorded',
+    sql: `
+      -- One JSON blob per meeting: which models ran, how many transcription
+      -- chunks were sent and how many failed, what each channel did, how far
+      -- the two clocks drifted apart, and what the notes run made of it.
+      --
+      -- WHY THIS IS STORED RATHER THAN LOGGED. A meeting is an hour long and
+      -- happens once. When the transcript comes out wrong the question is
+      -- always "which step failed", and a console line that scrolled past
+      -- during the call cannot answer it. This still can, a week later.
+      ALTER TABLE meetings ADD COLUMN diagnostics TEXT NOT NULL DEFAULT '{}';
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */
