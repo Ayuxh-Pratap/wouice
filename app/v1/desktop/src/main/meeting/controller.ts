@@ -1,7 +1,11 @@
 import { EventEmitter } from 'node:events'
+import type { AsrClient } from '@wouice/asr'
+import type { Meetings } from '@wouice/store'
 import { meterLevel, rms } from '../capture/silence-policy.js'
 import { abandonedSessions, mergeSession, type MergeResult } from './merge.js'
 import { MeetingRecorder } from './recorder.js'
+import { MeetingTranscriber } from './transcriber.js'
+import type { Segment } from './segmenter.js'
 import { CHANNELS, type Channel } from './session.js'
 
 /**
@@ -50,8 +54,19 @@ export interface MeetingState {
   startedAt: number | null
   elapsedMs: number
   channels: ChannelView[]
+  /** The database row, once there is one. Null when nothing is recording. */
+  meetingId: number | null
+  /** Transcript progress, so a queue that is growing is visible. */
+  transcript: { segments: number; queued: number; failed: number; live: boolean }
   /** Plain-language detail for the UI. Empty when there is nothing to say. */
   message: string
+}
+
+export interface MeetingDeps {
+  /** Absent means record without transcribing, which still produces audio. */
+  asr?: AsrClient
+  store?: Meetings
+  chunkSeconds?: number
 }
 
 /**
@@ -79,7 +94,13 @@ export class MeetingController extends EventEmitter {
   private readonly lastFrameAt: Record<Channel, number> = { me: 0, them: 0 }
   private readonly problems: Record<Channel, string | null> = { me: null, them: null }
 
-  constructor(private readonly root: string) {
+  private transcriber: MeetingTranscriber | null = null
+  private meetingId: number | null = null
+
+  constructor(
+    private readonly root: string,
+    private readonly deps: MeetingDeps = {}
+  ) {
     super()
   }
 
@@ -104,6 +125,14 @@ export class MeetingController extends EventEmitter {
 
     try {
       this.recorder = new MeetingRecorder(this.root, at)
+      this.meetingId = this.deps.store?.start(this.recorder.dir, at) ?? null
+      this.transcriber = this.deps.asr
+        ? new MeetingTranscriber({
+            asr: this.deps.asr,
+            chunkSeconds: this.deps.chunkSeconds,
+            onSegments: (segments) => this.record(segments),
+          })
+        : null
     } catch (err) {
       this.startedAt = null
       this.message = `could not open a session directory: ${describe(err)}`
@@ -147,6 +176,11 @@ export class MeetingController extends EventEmitter {
     if (this.phase !== 'recording' && this.phase !== 'starting') return
 
     this.recorder.write(channel, samples, at)
+    // Where this channel begins in the merged file. The merge pads the later
+    // channel by exactly this, so a segment's timestamp and the sound it came
+    // from stay the same moment.
+    const base = Math.max(0, at - (this.startedAt ?? at))
+    this.transcriber?.push(channel, samples, base)
     this.levels[channel] = meterLevel(rms(samples))
     this.lastFrameAt[channel] = at
   }
@@ -181,13 +215,38 @@ export class MeetingController extends EventEmitter {
     }
 
     this.recorder = null
+    const transcriber = this.transcriber
+    this.transcriber = null
+    const meetingId = this.meetingId
+    this.meetingId = null
     this.setPhase('merging')
 
+    // Both at once. The merge is disk-bound and the transcript tail is waiting
+    // on a model, so running them in sequence would add one to the other for no
+    // reason - and the tail of a meeting is where the decisions usually are.
+    const [merged, transcribed] = await Promise.allSettled([
+      recorder.stop(at),
+      transcriber?.finish() ?? Promise.resolve(),
+    ])
+
     let result: MergeResult | null = null
-    try {
-      result = await recorder.stop(at)
-    } catch (err) {
-      this.message = `the recording could not be merged: ${describe(err)}`
+    if (merged.status === 'fulfilled') result = merged.value
+    else this.message = `the recording could not be merged: ${describe(merged.reason)}`
+    if (transcribed.status === 'rejected') {
+      // The audio is safe either way, and it can be transcribed again later.
+      console.warn('[meeting] the transcript tail failed:', transcribed.reason)
+    }
+
+    if (meetingId !== null && this.deps.store) {
+      try {
+        this.deps.store.finish(meetingId, {
+          endedAt: at,
+          audioPath: result?.path ?? null,
+          durationMs: result?.durationMs ?? 0,
+        })
+      } catch (err) {
+        console.warn('[meeting] could not close the meeting row:', err)
+      }
     }
 
     this.startedAt = null
@@ -198,11 +257,19 @@ export class MeetingController extends EventEmitter {
 
   state(now: number = Date.now()): MeetingState {
     const snapshot = this.recorder?.snapshot() ?? []
+    const stats = this.transcriber?.stats()
     return {
       phase: this.phase,
       sessionId: this.session,
       startedAt: this.startedAt,
       elapsedMs: this.startedAt ? Math.max(0, now - this.startedAt) : 0,
+      meetingId: this.meetingId,
+      transcript: {
+        segments: stats?.segments ?? 0,
+        queued: stats?.queued ?? 0,
+        failed: stats?.chunksFailed ?? 0,
+        live: this.transcriber !== null,
+      },
       channels: CHANNELS.map((channel) => {
         const fresh = now - this.lastFrameAt[channel] < STALE_MS
         return {
@@ -248,6 +315,26 @@ export class MeetingController extends EventEmitter {
       }
     }
     return recovered
+  }
+
+  /**
+   * Segments, as they close.
+   *
+   * Written during the meeting rather than batched at the end, so a crash costs
+   * the tail rather than the whole transcript - the same trade the audio
+   * checkpoints make.
+   */
+  private record(segments: Segment[]): void {
+    if (segments.length === 0) return
+    if (this.meetingId !== null && this.deps.store) {
+      try {
+        this.deps.store.addSegments(this.meetingId, segments)
+      } catch (err) {
+        console.warn('[meeting] could not save segments:', err)
+      }
+    }
+    this.emit('segments', segments)
+    this.emitState()
   }
 
   private setPhase(phase: MeetingPhase): void {

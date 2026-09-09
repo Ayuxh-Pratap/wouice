@@ -74,7 +74,23 @@ const recordings = new RecordingStore(app.getPath('userData'))
 
 /** Meetings live beside the database, one directory per session. */
 const MEETING_ROOT = path.join(app.getPath('userData'), 'meetings')
-const meetings = new MeetingController(MEETING_ROOT)
+const meetings = new MeetingController(MEETING_ROOT, {
+  // Built per request, like dictation does, because the sidecar can restart on
+  // a different model and a client captured once would keep talking to the old
+  // one.
+  asr: {
+    transcribe: (pcm, options) => whisperClient().transcribe(pcm, options),
+    health: () => whisperClient().health(),
+  },
+  store: store.meetings,
+})
+
+function whisperClient(): WhisperCppClient {
+  return new WhisperCppClient({
+    baseUrl: supervisor.baseUrl('whisper'),
+    model: supervisor.snapshot('whisper').modelId,
+  })
+}
 
 /**
  * Text injection. Falls back to clipboard-only if the native layer is missing,
@@ -168,6 +184,34 @@ meetings.on('state', (state: { phase: string }) => {
     meetingTicker = null
   }
 })
+
+meetings.on('segments', (segments: unknown) => broadcast(IPC.meetingSegments, segments))
+
+/**
+ * Give every recording on disk a row, and every row its audio.
+ *
+ * The filesystem is the source of truth for audio - a directory with an
+ * `audio.wav` is a meeting that happened, whether or not anything wrote it
+ * down. Recordings made before the table existed, or recovered from a crash
+ * that took the database write with it, would otherwise be invisible in an app
+ * that is holding them.
+ */
+function reconcileMeetings(): void {
+  try {
+    for (const session of finishedSessions(MEETING_ROOT)) {
+      if (store.meetings.byDir(session.dir)) continue
+      const id = store.meetings.start(session.dir, session.startedAt)
+      store.meetings.finish(id, {
+        endedAt: session.startedAt + session.durationMs,
+        audioPath: session.path,
+        durationMs: session.durationMs,
+      })
+      console.log(`[meeting] adopted ${session.dir}`)
+    }
+  } catch (err) {
+    console.warn('[meeting] could not reconcile recordings with the database:', err)
+  }
+}
 
 dictation.on('phase', ({ phase, message }: { phase: string; message: string | null }) => {
   setEscapeCancel(phase !== 'idle')
@@ -518,7 +562,18 @@ function registerIpc(): void {
     meetings.requestStop()
   })
   ipcMain.handle(IPC.getMeetingState, () => meetings.state())
-  ipcMain.handle(IPC.listMeetings, () => finishedSessions(MEETING_ROOT))
+  ipcMain.handle(IPC.listMeetings, () => store.meetings.list())
+  ipcMain.handle(IPC.getMeetingSegments, (_e, id: number) => store.meetings.segments(id))
+  ipcMain.handle(IPC.searchMeetings, (_e, query: string) => store.meetings.search(query))
+  ipcMain.handle(IPC.deleteMeeting, (_e, id: number) => {
+    // The row goes; the audio stays. Deleting a recording of other people is a
+    // separate decision from tidying a list, and the file is reachable from
+    // "Show file" until it is made deliberately.
+    store.meetings.remove(id)
+  })
+  ipcMain.handle(IPC.setMeetingScratch, (_e, id: number, markdown: string) =>
+    store.meetings.setScratch(id, markdown)
+  )
   ipcMain.on(IPC.revealMeeting, (_e, dir: string) => shell.showItemInFolder(path.join(dir, 'audio.wav')))
   ipcMain.on(
     IPC.meetingFrame,
@@ -748,7 +803,7 @@ if (!app.requestSingleInstanceLock()) {
     // Anything a previous run left in checkpoints, before a new meeting can
     // start on top of it. The audio is already on disk; this is what turns it
     // into a file.
-    void meetings.recoverAbandoned()
+    void meetings.recoverAbandoned().then(() => reconcileMeetings())
 
     registerIpc()
     createHud()

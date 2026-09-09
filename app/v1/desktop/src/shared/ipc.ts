@@ -2,6 +2,7 @@ import type { SidecarId } from './models.js'
 import type { Settings } from './settings.js'
 import type {
   DictationRecord,
+  MeetingRecord,
   DictionaryRecord,
   Page,
   RatingProgress,
@@ -58,6 +59,10 @@ export const IPC = {
   getMeetingState: 'meeting:state',
   listMeetings: 'meeting:list',
   revealMeeting: 'meeting:reveal',
+  getMeetingSegments: 'meeting:segments',
+  searchMeetings: 'meeting:search',
+  deleteMeeting: 'meeting:delete',
+  setMeetingScratch: 'meeting:scratch',
   meetingFrame: 'meeting:frame',
   meetingReady: 'meeting:ready',
   meetingFailed: 'meeting:failed',
@@ -82,6 +87,7 @@ export const IPC = {
   hudDragging: 'hud:dragging',
   hudPlacement: 'hud:placement',
   meetingState: 'meeting:changed',
+  meetingSegments: 'meeting:newSegments',
 } as const
 
 /** Which way the capsule opens, and whether there is a pet to open it from. */
@@ -271,16 +277,20 @@ export interface MeetingState {
   startedAt: number | null
   elapsedMs: number
   channels: MeetingChannelView[]
+  meetingId: number | null
+  transcript: { segments: number; queued: number; failed: number; live: boolean }
   message: string
 }
 
-/** A meeting whose audio is on disk. No transcript yet: that is Stage 2. */
-export interface RecordedMeeting {
-  dir: string
-  path: string
-  startedAt: number
-  durationMs: number
-  bytes: number
+/** One line of the transcript. Echo is flagged, never removed. */
+export interface MeetingSegment {
+  id: number
+  meetingId: number
+  channel: MeetingChannel
+  startMs: number
+  endMs: number
+  text: string
+  echo: boolean
 }
 
 export interface WouiceApi {
@@ -333,8 +343,15 @@ export interface WouiceApi {
   startMeeting(): Promise<number | null>
   stopMeeting(): Promise<void>
   getMeetingState(): Promise<MeetingState>
-  listMeetings(): Promise<RecordedMeeting[]>
+  listMeetings(): Promise<MeetingRecord[]>
+  getMeetingSegments(meetingId: number): Promise<MeetingSegment[]>
+  /** Full-text across every meeting. Empty query is no results, not an error. */
+  searchMeetings(query: string): Promise<MeetingSegment[]>
+  deleteMeeting(meetingId: number): Promise<void>
+  /** What you type during the call, saved as you type it. */
+  setMeetingScratch(meetingId: number, markdown: string): Promise<void>
   revealMeeting(dir: string): void
+  onMeetingSegments(cb: (segments: MeetingSegment[]) => void): () => void
   sendMeetingFrame(sessionId: number, channel: MeetingChannel, frame: Float32Array): void
   meetingReady(sessionId: number): void
   meetingFailed(sessionId: number, channel: MeetingChannel, reason: string): void

@@ -6,6 +6,7 @@ import {
   type HotkeyReport,
   type HudState,
   type MeetingChannel,
+  type MeetingSegment,
   type MeetingState,
   type MetricsSnapshot,
   type SidecarView,
@@ -66,6 +67,13 @@ const api: WouiceApi = {
   stopMeeting: () => ipcRenderer.invoke(IPC.stopMeeting),
   getMeetingState: () => ipcRenderer.invoke(IPC.getMeetingState),
   listMeetings: () => ipcRenderer.invoke(IPC.listMeetings),
+  getMeetingSegments: (meetingId: number) =>
+    ipcRenderer.invoke(IPC.getMeetingSegments, meetingId),
+  searchMeetings: (query: string) => ipcRenderer.invoke(IPC.searchMeetings, query),
+  deleteMeeting: (meetingId: number) => ipcRenderer.invoke(IPC.deleteMeeting, meetingId),
+  setMeetingScratch: (meetingId: number, markdown: string) =>
+    ipcRenderer.invoke(IPC.setMeetingScratch, meetingId, markdown),
+  onMeetingSegments: (cb) => subscribe<MeetingSegment[]>(IPC.meetingSegments, cb),
   revealMeeting: (dir: string) => ipcRenderer.send(IPC.revealMeeting, dir),
   sendMeetingFrame: (sessionId: number, channel: MeetingChannel, frame: Float32Array) =>
     ipcRenderer.send(IPC.meetingFrame, sessionId, channel, frame),
