@@ -192,6 +192,108 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: 6,
+    name: 'meetings, their transcript, and the tasks that came out of them',
+    sql: `
+      -- Phase 2. The speaker columns are here from the start and stay null
+      -- until diarization exists, per spec 7.5: designing the schema now and
+      -- building the feature later costs nothing, and the reverse costs a
+      -- migration.
+      CREATE TABLE meetings (
+        id          INTEGER PRIMARY KEY,
+        started_at  INTEGER NOT NULL,
+        ended_at    INTEGER,
+        title       TEXT,
+        -- JSON array of names, typed at the start. Feeds both the cluster-count
+        -- prior for diarization and the naming prompt.
+        attendees   TEXT    NOT NULL DEFAULT '[]',
+        -- <session>/audio.wav. The directory is the source of truth for the
+        -- audio; this is the pointer to it.
+        dir         TEXT    NOT NULL UNIQUE,
+        audio_path  TEXT,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        -- What you typed DURING the call. Folded into the notes prompt after
+        -- it, because it is the one signal telling the model what you thought
+        -- mattered - which no summariser can infer from a transcript.
+        scratch_md  TEXT    NOT NULL DEFAULT '',
+        notes_md    TEXT,
+        diarized    INTEGER NOT NULL DEFAULT 0,
+        named       INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE segments (
+        id           INTEGER PRIMARY KEY,
+        meeting_id   INTEGER NOT NULL REFERENCES meetings (id) ON DELETE CASCADE,
+        -- 'me' is the microphone, 'them' the system channel. Separation comes
+        -- from capture topology, not from a model, so this cannot mislabel.
+        channel      TEXT    NOT NULL CHECK (channel IN ('me','them')),
+        -- Milliseconds from the start of audio.wav, so a segment and the sound
+        -- it came from are the same moment.
+        start_ms     INTEGER NOT NULL,
+        end_ms       INTEGER NOT NULL,
+        text         TEXT    NOT NULL,
+        -- The far side arriving back through your microphone. Flagged, never
+        -- deleted: a wrongly dropped line cannot be recovered.
+        echo         INTEGER NOT NULL DEFAULT 0,
+        cluster_id   TEXT,
+        speaker_id   INTEGER REFERENCES speakers (id),
+        speaker_conf REAL
+      );
+
+      CREATE INDEX segments_by_meeting ON segments (meeting_id, start_ms);
+
+      CREATE TABLE speakers (
+        id           INTEGER PRIMARY KEY,
+        name         TEXT    NOT NULL UNIQUE,
+        embedding    BLOB,
+        sample_count INTEGER NOT NULL DEFAULT 0,
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      );
+
+      CREATE TABLE tasks (
+        id         INTEGER PRIMARY KEY,
+        meeting_id INTEGER NOT NULL REFERENCES meetings (id) ON DELETE CASCADE,
+        text       TEXT    NOT NULL,
+        -- Null when nobody was named. A guessed owner is worse than none: the
+        -- wrong name quietly moves work to somebody who never agreed to it.
+        owner      TEXT,
+        due        TEXT,
+        -- What was actually said to produce this. The column easiest to leave
+        -- out and the one that decides whether tasks are usable at all: a task
+        -- you cannot trace back is one you have to take on faith, and the first
+        -- wrong one teaches you to distrust every other.
+        segment_id INTEGER REFERENCES segments (id) ON DELETE SET NULL,
+        state      TEXT    NOT NULL DEFAULT 'open'
+                   CHECK (state IN ('open','done','dropped')),
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX tasks_by_meeting ON tasks (meeting_id, state);
+
+      -- External content, as with dictations: the text lives in "segments" and
+      -- is not duplicated here.
+      CREATE VIRTUAL TABLE segments_fts USING fts5 (
+        text, content='segments', content_rowid='id'
+      );
+
+      CREATE TRIGGER segments_ai AFTER INSERT ON segments BEGIN
+        INSERT INTO segments_fts (rowid, text) VALUES (new.id, new.text);
+      END;
+
+      CREATE TRIGGER segments_ad AFTER DELETE ON segments BEGIN
+        INSERT INTO segments_fts (segments_fts, rowid, text)
+        VALUES ('delete', old.id, old.text);
+      END;
+
+      CREATE TRIGGER segments_au AFTER UPDATE ON segments BEGIN
+        INSERT INTO segments_fts (segments_fts, rowid, text)
+        VALUES ('delete', old.id, old.text);
+        INSERT INTO segments_fts (rowid, text) VALUES (new.id, new.text);
+      END;
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */

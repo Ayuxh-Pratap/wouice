@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { openDb, migrate, type Db } from './db.js'
+import { openDb, migrate, rows, type Db } from './db.js'
 import { openStore, stats } from './index.js'
 import { Dictations, toMatchQuery } from './dictations.js'
 import { Calibrations, Resources } from './resources.js'
@@ -103,10 +103,34 @@ describe('migrations', () => {
       first.raw.exec('ALTER TABLE dictations DROP COLUMN delivery')
       first.raw.exec('ALTER TABLE dictations DROP COLUMN target_exe')
       first.raw.exec('ALTER TABLE dictations DROP COLUMN delivery_note')
-      first.raw.exec('DROP TABLE dictionary')
       // Every table added after version 2 has to go, or the migration that
-      // creates it runs against one that is already there and throws.
-      first.raw.exec('DROP TABLE ratings')
+      // creates it runs against one that is already there and throws. Listing
+      // them by hand meant this test broke on every new migration and failed
+      // as an EPERM on cleanup, which says nothing about the cause - so it is
+      // derived instead: keep version 2's tables, drop whatever else exists.
+      //
+      // Two traps: an FTS shadow table cannot be dropped directly - dropping
+      // the virtual table takes its shadows with it - and version 2's own FTS
+      // triggers must survive, so the rule keeps everything named after
+      // `dictations` rather than listing four objects that are really seven.
+      const keep = (name: string): boolean =>
+        name.startsWith('dictations') || name === 'resource_samples' || name === 'calibrations'
+      const isShadow = (name: string): boolean =>
+        /_fts_(data|idx|docsize|config|content)$/.test(name)
+      const later = rows<{ name: string; type: string }>(
+        first.raw
+          .prepare(
+            `SELECT name, type FROM sqlite_master
+             WHERE type IN ('table','trigger') AND name NOT LIKE 'sqlite_%'`
+          )
+          .all()
+      ).filter((t) => !keep(t.name) && !isShadow(t.name))
+      for (const t of later.filter((x) => x.type === 'trigger')) {
+        first.raw.exec(`DROP TRIGGER IF EXISTS ${t.name}`)
+      }
+      for (const t of later.filter((x) => x.type === 'table')) {
+        first.raw.exec(`DROP TABLE IF EXISTS ${t.name}`)
+      }
       first.raw
         .prepare(
           `INSERT INTO dictations (at, audio_ms, asr_ms, llm_ms, total_ms, chunks,
@@ -125,7 +149,9 @@ describe('migrations', () => {
       expect(row?.delivery).toBe('copy')
       second.close()
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      // maxRetries, because an EPERM here replaces whatever actually went
+      // wrong inside the try and the failure then says nothing about its cause.
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 })
     }
   })
 
@@ -591,8 +617,12 @@ describe('stats', () => {
       'calibrations',
       'dictations',
       'dictionary',
+      'meetings',
       'ratings',
       'resource_samples',
+      'segments',
+      'speakers',
+      'tasks',
     ])
     db.close()
   })

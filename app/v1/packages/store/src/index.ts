@@ -5,12 +5,14 @@ import { Dictations } from './dictations.js'
 import { Calibrations, Resources } from './resources.js'
 import { Dictionary } from './dictionary.js'
 import { Ratings } from './ratings.js'
+import { Meetings } from './meetings.js'
 
 export { openDb, migrate, type Db } from './db.js'
 export { Dictations, toMatchQuery } from './dictations.js'
 export { Calibrations, Resources } from './resources.js'
 export { Dictionary, validateEntry, type EntryCheck } from './dictionary.js'
 export { Ratings, A4_SAMPLE_TARGET, A4_SHIP_TARGET } from './ratings.js'
+export { Meetings } from './meetings.js'
 export { importJsonl, type ImportResult } from './import.js'
 export { MIGRATIONS, LATEST_VERSION, type Migration } from './migrations.js'
 export type {
@@ -20,9 +22,13 @@ export type {
   DictationRecord,
   DictionaryRecord,
   Page,
+  MeetingChannel,
+  MeetingRecord,
   RatingProgress,
   RatingRecord,
   ResourceRecord,
+  SegmentInput,
+  SegmentRecord,
 } from './types.js'
 
 /**
@@ -40,6 +46,7 @@ export interface Store {
   readonly calibrations: Calibrations
   readonly dictionary: Dictionary
   readonly ratings: Ratings
+  readonly meetings: Meetings
   readonly file: string
   /** What is actually in the database right now. */
   stats(): StoreStats
@@ -88,6 +95,7 @@ export function openStore(options: OpenStoreOptions): Store {
     calibrations: new Calibrations(db),
     dictionary: new Dictionary(db),
     ratings: new Ratings(db),
+    meetings: new Meetings(db),
     stats: () => stats(db, file),
     close: () => {
       // Fold the WAL back into the main file on the way out, so a database that

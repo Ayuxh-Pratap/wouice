@@ -152,3 +152,39 @@ export interface RatingProgress {
   shipTarget: number
   met: boolean
 }
+
+/* ---------------------------------------------------------- meetings ---- */
+
+/** Which side of the call. Decided by capture topology, never by a model. */
+export type MeetingChannel = 'me' | 'them'
+
+export interface MeetingRecord {
+  id: number
+  startedAt: number
+  /** Null means it never reached a clean stop. */
+  endedAt: number | null
+  title: string | null
+  attendees: string[]
+  /** The session directory. Unique, and the audio's home. */
+  dir: string
+  audioPath: string | null
+  durationMs: number
+  /** What you typed during the call. */
+  scratchMd: string
+  notesMd: string | null
+  /** How many transcript segments it has. */
+  segments: number
+}
+
+export interface SegmentInput {
+  channel: MeetingChannel
+  startMs: number
+  endMs: number
+  text: string
+  echo: boolean
+}
+
+export interface SegmentRecord extends SegmentInput {
+  id: number
+  meetingId: number
+}
