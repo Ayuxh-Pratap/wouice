@@ -111,6 +111,18 @@ export async function repassMeeting(meetingId: number, deps: RepassDeps): Promis
       // take most of a minute on a 25 second chunk.
       timeoutMs: 180_000,
     })
+
+    // WAIT FOR IT TO BE LISTENING, not merely spawned.
+    //
+    // `switchModel` returns once the process exists; the large model then
+    // spends about twenty seconds reading 1.6 GB off disk and onto the card.
+    // The first run of this raced it and every single chunk came back
+    // ECONNREFUSED - a completely failed pass that looked like a transcription
+    // problem. Asking the server directly is the only thing that actually
+    // answers "can I use it yet".
+    if (!(await waitUntilListening(client))) {
+      throw new RepassUnavailable('the larger model did not finish loading')
+    }
     const segmenter = new Segmenter()
     const chunk = CHUNK_SECONDS * MEETING_SAMPLE_RATE
     let done = 0
@@ -169,4 +181,21 @@ export async function repassMeeting(meetingId: number, deps: RepassDeps): Promis
   deps.meetings.replaceSegments(meetingId, segments)
 
   return { segments: segments.length, seconds: Math.round((Date.now() - started) / 1000) }
+}
+
+/**
+ * Poll until whisper answers, or give up.
+ *
+ * `health()` counts any HTTP response, including a 404: a running server that
+ * does not serve the path we probed is still running. Only a refused connection
+ * means it is not up yet.
+ */
+async function waitUntilListening(client: WhisperCppClient, timeoutMs = 120_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const health = await client.health()
+    if (health.ok) return true
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
+  }
+  return false
 }
