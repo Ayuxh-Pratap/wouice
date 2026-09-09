@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { MARK_BARS, MARK_STROKE, MARK_VIEWBOX } from '../../shared/mark.js'
 import { zoomLabel } from '../../shared/settings.js'
 import { Icon } from './Icon.js'
 import { groupedRoutes, hashFor, type RouteDef, type RouteId } from './routes.js'
@@ -42,13 +43,22 @@ import { groupedRoutes, hashFor, type RouteDef, type RouteId } from './routes.js
  * one more thing to keep in step with the theme every time the greys move.
  */
 function Mark(): React.JSX.Element {
+  const mid = MARK_VIEWBOX / 2
   return (
     <span className="grid size-[22px] shrink-0 place-items-center rounded-[6px] bg-gradient-to-b from-neutral-500 to-neutral-800 text-neutral-50 ring-1 ring-white/15">
-      <svg viewBox="0 0 24 24" className="size-3.5" fill="none" aria-hidden="true">
+      <svg
+        viewBox={`0 0 ${MARK_VIEWBOX} ${MARK_VIEWBOX}`}
+        className="size-3.5"
+        fill="none"
+        aria-hidden="true"
+      >
+        {/* Built from the shared geometry rather than a literal path, so this
+            and the tray and taskbar icons drawn in main are one logo and not
+            two that happen to look alike today. */}
         <path
-          d="M12 4v16M7.5 8.5v7M16.5 8.5v7M3.5 11v2M20.5 11v2"
+          d={MARK_BARS.map((b) => `M${b.x} ${mid - b.half}v${b.half * 2}`).join('')}
           stroke="currentColor"
-          strokeWidth="2.4"
+          strokeWidth={MARK_STROKE}
           strokeLinecap="round"
         />
       </svg>
