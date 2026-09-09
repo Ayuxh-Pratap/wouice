@@ -1,4 +1,4 @@
-import { app, clipboard, dialog, globalShortcut, ipcMain, shell } from 'electron'
+import { app, clipboard, dialog, globalShortcut, ipcMain, Notification, shell } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SidecarSupervisor, type SidecarSnapshot } from './sidecars/supervisor.js'
@@ -14,16 +14,17 @@ import {
   createHud,
   createMainWindow,
   endPetDrag,
+  getMainWindow,
   restHud,
   sendToHud,
   showHud,
   startPetDrag,
 } from './windows.js'
-import { IPC, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type RatingSheet, type SidecarView } from '../shared/ipc.js'
+import { IPC, type NotesOutcome, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type RatingSheet, type SidecarView } from '../shared/ipc.js'
 import type { SidecarId } from '../shared/models.js'
 import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from './dictation/controller.js'
 import { sampleResources } from './metrics/sample.js'
-import { importJsonl, openStore, validateEntry, type DictationRecord } from '@wouice/store'
+import { importJsonl, openStore, validateEntry, type DictationRecord, type TaskState } from '@wouice/store'
 import { RecordingStore } from './metrics/recordings.js'
 import { Injector, type InjectionResult } from './injection/injector.js'
 import { injectionAvailable, injectionUnavailableReason } from './injection/win32.js'
@@ -31,8 +32,12 @@ import { analyseCalibration, applyCalibration, describeLanguages, frameLevels } 
 import { enableSystemAudioCapture } from './meeting/display-media.js'
 import { MeetingController } from './meeting/controller.js'
 import { finishedSessions } from './meeting/merge.js'
+import { MeetingNotesEngine, NotesUnavailable } from './meeting/notes-engine.js'
+import { MicWatcher } from './meeting/mic-watcher.js'
+import { formatMeeting } from './metrics/diagnostic.js'
 import type { Channel as MeetingChannel } from './meeting/session.js'
 import { WhisperCppClient } from '@wouice/asr'
+import { OpenAiCompatClient } from '@wouice/llm'
 import { describeCalibration, formatDiagnostic, formatSession } from './metrics/diagnostic.js'
 import { writeFileSync, mkdirSync, copyFileSync } from 'node:fs'
 
@@ -84,6 +89,76 @@ const meetings = new MeetingController(MEETING_ROOT, {
   },
   store: store.meetings,
 })
+
+/**
+ * Notes and tasks, after the meeting.
+ *
+ * One at a time: the model has a single slot on a 6 GB card, and two runs at
+ * once would queue anyway while making the progress reporting meaningless.
+ */
+const notesEngine = new MeetingNotesEngine(
+  () =>
+    new OpenAiCompatClient({
+      baseUrl: supervisor.baseUrl('llama'),
+      model: supervisor.snapshot('llama').modelId,
+    })
+)
+let notesRunning = 0
+
+/**
+ * Automatic detection: notice a meeting application taking the microphone and
+ * offer to record.
+ *
+ * OFFERS, NEVER STARTS. Being wrong in this direction costs a dismissed
+ * prompt; being wrong the other way records a conversation nobody agreed to.
+ */
+const micWatcher = new MicWatcher({
+  isRecording: () => meetings.state().phase !== 'idle',
+})
+
+/** The app we have offered to record, or null. Pushed to the window. */
+let pendingOffer: string | null = null
+
+micWatcher.on('offer', (app_: string) => {
+  pendingOffer = app_
+  broadcast(IPC.meetingOffer, pendingOffer)
+
+  // A toast as well as the in-app banner, because the window is usually not the
+  // thing you are looking at when a call starts.
+  try {
+    if (Notification.isSupported()) {
+      const toast = new Notification({
+        title: 'Record this meeting?',
+        body: `${app_} is using your microphone.`,
+        silent: true,
+      })
+      toast.on('click', () => {
+        pendingOffer = null
+        broadcast(IPC.meetingOffer, null)
+        meetings.start()
+        const main = getMainWindow()
+        if (main) {
+          if (main.isMinimized()) main.restore()
+          main.show()
+          main.focus()
+        }
+      })
+      toast.on('close', () => micWatcher.dismissOffer())
+      toast.show()
+    }
+  } catch {
+    // Notifications are disabled or unavailable. The banner still shows.
+  }
+})
+
+function applyAutoDetect(on: boolean): void {
+  if (on && !micWatcher.running) micWatcher.start()
+  else if (!on && micWatcher.running) {
+    micWatcher.stop()
+    pendingOffer = null
+    broadcast(IPC.meetingOffer, null)
+  }
+}
 
 function whisperClient(): WhisperCppClient {
   return new WhisperCppClient({
@@ -186,6 +261,34 @@ meetings.on('state', (state: { phase: string }) => {
 })
 
 meetings.on('segments', (segments: unknown) => broadcast(IPC.meetingSegments, segments))
+
+/**
+ * Write down what happened, at the one moment all of it is still known.
+ *
+ * A meeting is an hour long and happens once. "Which step failed" is the only
+ * question worth asking when a transcript is wrong, and it cannot be answered
+ * from a console line that scrolled past during the call.
+ */
+meetings.on('finished', (summary: { meetingId: number } & Record<string, unknown>) => {
+  try {
+    store.meetings.setDiagnostics(summary.meetingId, {
+      asrModel: supervisor.snapshot('whisper').modelId,
+      llmModel: supervisor.snapshot('llama').modelId,
+      chunksSent: summary.chunksSent as number,
+      chunksFailed: summary.chunksFailed as number,
+      segments: summary.segments as number,
+      channels: summary.channels as never,
+      skewMs: summary.skewMs as number | null,
+      driftPpm: summary.driftPpm as never,
+      recoveredWithoutManifest: summary.recoveredWithoutManifest as boolean,
+    })
+  } catch (err) {
+    console.warn('[meeting] could not record diagnostics:', err)
+  }
+  // A finished meeting resets the offer: whatever the call was, it is over.
+  pendingOffer = null
+  broadcast(IPC.meetingOffer, null)
+})
 
 /**
  * Give every recording on disk a row, and every row its audio.
@@ -430,6 +533,7 @@ function registerIpc(): void {
     // lives on the WebContents, above the document.
     applyZoom(next.appearance.zoom)
     applyPetSettings(next.pet)
+    applyAutoDetect(next.meetings.autoDetect)
     broadcast(IPC.settingsChanged, next)
     return next
   })
@@ -574,6 +678,95 @@ function registerIpc(): void {
   ipcMain.handle(IPC.setMeetingScratch, (_e, id: number, markdown: string) =>
     store.meetings.setScratch(id, markdown)
   )
+  ipcMain.handle(IPC.getMeetingTasks, (_e, id: number) => store.meetings.tasksFor(id))
+  ipcMain.handle(IPC.getMeetingOffer, () => pendingOffer)
+  ipcMain.handle(IPC.dismissMeetingOffer, () => {
+    micWatcher.dismissOffer()
+    pendingOffer = null
+    broadcast(IPC.meetingOffer, null)
+  })
+  ipcMain.handle(IPC.copyMeetingDiagnostic, async (_e, id: number) => {
+    const meeting = store.meetings.byId(id)
+    if (!meeting) return false
+    await clipboard.writeText(formatMeeting(meeting, store.meetings.tasksFor(id).length))
+    return true
+  })
+  ipcMain.handle(IPC.getOpenTasks, () => store.meetings.openTasks())
+  ipcMain.handle(IPC.setTaskState, (_e, taskId: number, state: TaskState) =>
+    store.meetings.setTaskState(taskId, state)
+  )
+  ipcMain.handle(IPC.generateNotes, async (_e, id: number): Promise<NotesOutcome> => {
+    const empty = { notesMd: null, tasks: 0, gaps: 0 }
+    if (notesRunning === id) {
+      return { ok: false, message: 'already writing the notes for this meeting', ...empty }
+    }
+    const meeting = store.meetings.byId(id)
+    if (!meeting) return { ok: false, message: 'that meeting is gone', ...empty }
+
+    notesRunning = id
+    try {
+      const run = await notesEngine.generate({
+        lines: store.meetings.segments(id).map((s) => ({
+          id: s.id,
+          channel: s.channel,
+          startMs: s.startMs,
+          text: s.text,
+          echo: s.echo,
+        })),
+        scratch: meeting.scratchMd,
+        startedAt: meeting.startedAt,
+        onProgress: (p) => broadcast(IPC.notesProgress, { meetingId: id, ...p }),
+      })
+
+      store.meetings.setNotes(id, run.notesMd)
+      store.meetings.replaceTasks(id, run.tasks)
+      store.meetings.recordNotesRun(id, {
+        at: Date.now(),
+        ok: true,
+        chunks: run.chunks,
+        gaps: run.failedChunks,
+        tasks: run.tasks.length,
+        ms: run.ms,
+      })
+      console.log(
+        `[meeting] notes for ${id}: ${run.chunks} chunk(s), ${run.tasks.length} task(s)` +
+          `, ${Math.round(run.ms / 1000)}s` +
+          (run.failedChunks ? `, ${run.failedChunks} gap(s)` : '')
+      )
+      return {
+        ok: true,
+        message: '',
+        notesMd: run.notesMd,
+        tasks: run.tasks.length,
+        gaps: run.failedChunks,
+      }
+    } catch (err) {
+      // The transcript is untouched either way, so this is always worth
+      // retrying rather than being a state to recover from.
+      const message =
+        err instanceof NotesUnavailable
+          ? err.message
+          : `the model could not be reached: ${err instanceof Error ? err.message : String(err)}`
+      // Recorded as well as returned: a failure you can still read tomorrow is
+      // the difference between diagnosing this and guessing at it.
+      try {
+        store.meetings.recordNotesRun(id, {
+          at: Date.now(),
+          ok: false,
+          chunks: 0,
+          gaps: 0,
+          tasks: 0,
+          ms: 0,
+          message,
+        })
+      } catch {
+        // Bookkeeping. Never worth turning into a second failure.
+      }
+      return { ok: false, message, ...empty }
+    } finally {
+      notesRunning = 0
+    }
+  })
   ipcMain.on(IPC.revealMeeting, (_e, dir: string) => shell.showItemInFolder(path.join(dir, 'audio.wav')))
   ipcMain.on(
     IPC.meetingFrame,
@@ -804,6 +997,7 @@ if (!app.requestSingleInstanceLock()) {
     // start on top of it. The audio is already on disk; this is what turns it
     // into a file.
     void meetings.recoverAbandoned().then(() => reconcileMeetings())
+    applyAutoDetect(settings.get().meetings.autoDetect)
 
     registerIpc()
     createHud()

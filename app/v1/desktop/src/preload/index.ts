@@ -7,6 +7,7 @@ import {
   type HudState,
   type MeetingChannel,
   type MeetingSegment,
+  type NotesProgressView,
   type MeetingState,
   type MetricsSnapshot,
   type SidecarView,
@@ -14,6 +15,7 @@ import {
 } from '../shared/ipc.js'
 import type { Settings } from '../shared/settings.js'
 import type { SidecarId } from '../shared/models.js'
+import type { TaskState } from '@wouice/store'
 
 /**
  * The only bridge between renderer and main.
@@ -74,6 +76,17 @@ const api: WouiceApi = {
   setMeetingScratch: (meetingId: number, markdown: string) =>
     ipcRenderer.invoke(IPC.setMeetingScratch, meetingId, markdown),
   onMeetingSegments: (cb) => subscribe<MeetingSegment[]>(IPC.meetingSegments, cb),
+  generateNotes: (meetingId: number) => ipcRenderer.invoke(IPC.generateNotes, meetingId),
+  getMeetingTasks: (meetingId: number) => ipcRenderer.invoke(IPC.getMeetingTasks, meetingId),
+  setTaskState: (taskId: number, state: TaskState) =>
+    ipcRenderer.invoke(IPC.setTaskState, taskId, state),
+  getOpenTasks: () => ipcRenderer.invoke(IPC.getOpenTasks),
+  onNotesProgress: (cb) => subscribe<NotesProgressView>(IPC.notesProgress, cb),
+  getMeetingOffer: () => ipcRenderer.invoke(IPC.getMeetingOffer),
+  dismissMeetingOffer: () => ipcRenderer.invoke(IPC.dismissMeetingOffer),
+  copyMeetingDiagnostic: (meetingId: number) =>
+    ipcRenderer.invoke(IPC.copyMeetingDiagnostic, meetingId),
+  onMeetingOffer: (cb) => subscribe<string | null>(IPC.meetingOffer, cb),
   revealMeeting: (dir: string) => ipcRenderer.send(IPC.revealMeeting, dir),
   sendMeetingFrame: (sessionId: number, channel: MeetingChannel, frame: Float32Array) =>
     ipcRenderer.send(IPC.meetingFrame, sessionId, channel, frame),

@@ -1,4 +1,4 @@
-import type { DictationRecord } from '@wouice/store'
+import type { DictationRecord, MeetingRecord } from '@wouice/store'
 import type { Settings } from '../../shared/settings.js'
 
 /**
@@ -150,4 +150,77 @@ export function formatSession(dictations: DictationRecord[], meta: Record<string
       .map((d, i) => formatDiagnostic(d, dictations.length - i, meta.levels))
       .join('\n\n---\n\n')
   )
+}
+
+/**
+ * One meeting, as a block of text you can paste into a message.
+ *
+ * WHAT THIS IS FOR. A meeting happens once and runs for an hour. When the
+ * transcript is wrong the useful question is never "is it wrong" - you can see
+ * that - it is WHICH STEP produced it: the microphone that was never opened,
+ * the forty chunks the speech model refused, the notes run that timed out, the
+ * two clocks that drifted a second apart. Each of those looks identical from
+ * the outside and needs a different fix.
+ *
+ * Ordered by how often it is the answer.
+ */
+export function formatMeeting(meeting: MeetingRecord, tasks: number): string {
+  const d = meeting.diagnostics
+  const lines: string[] = []
+  const when = new Date(meeting.startedAt).toLocaleString()
+
+  lines.push(`meeting ${meeting.id} - ${when}`)
+  lines.push(`  duration      ${Math.round(meeting.durationMs / 1000)}s`)
+  lines.push(`  finished      ${meeting.endedAt === null ? 'NO - never reached a clean stop' : 'yes'}`)
+  lines.push(`  directory     ${meeting.dir}`)
+  lines.push('')
+
+  lines.push('capture')
+  for (const channel of d.channels ?? []) {
+    const seconds = Math.round(channel.samples / 16_000)
+    const label = channel.channel === 'me' ? 'you (mic)   ' : 'them (system)'
+    lines.push(
+      `  ${label} ${String(seconds).padStart(5)}s` +
+        (channel.problem ? `  PROBLEM: ${channel.problem}` : '')
+    )
+  }
+  if ((d.channels ?? []).length === 0) lines.push('  (nothing recorded)')
+  if (d.recoveredWithoutManifest) {
+    lines.push('  recovered without a manifest: channel alignment is approximate')
+  }
+  if (d.skewMs !== undefined && d.skewMs !== null) {
+    lines.push(`  clock skew    ${d.skewMs.toFixed(0)} ms between the two channels`)
+  }
+  if (d.driftPpm) {
+    const fmt = (v: number | null): string => (v === null ? 'n/a' : `${v.toFixed(0)} ppm`)
+    lines.push(`  drift         you ${fmt(d.driftPpm.me)}, them ${fmt(d.driftPpm.them)}`)
+  }
+  lines.push('')
+
+  lines.push('transcription')
+  lines.push(`  model         ${d.asrModel ?? 'unknown'}`)
+  lines.push(`  chunks sent   ${d.chunksSent ?? 0}`)
+  lines.push(
+    `  chunks failed ${d.chunksFailed ?? 0}` +
+      ((d.chunksFailed ?? 0) > 0 ? '  <- lost audio, one slice each' : '')
+  )
+  lines.push(`  segments      ${meeting.segments}`)
+  lines.push('')
+
+  lines.push('notes')
+  lines.push(`  model         ${d.llmModel ?? 'unknown'}`)
+  lines.push(`  written       ${meeting.notesMd ? `yes, ${meeting.notesMd.length} chars` : 'no'}`)
+  lines.push(`  tasks         ${tasks}`)
+  lines.push(`  your notes    ${meeting.scratchMd ? `${meeting.scratchMd.length} chars` : 'none'}`)
+  for (const run of d.notes ?? []) {
+    lines.push(
+      `  run ${new Date(run.at).toLocaleTimeString()}  ` +
+        (run.ok
+          ? `ok - ${run.chunks} chunk(s), ${run.gaps} gap(s), ${run.tasks} task(s), ${Math.round(run.ms / 1000)}s`
+          : `FAILED - ${run.message ?? 'no reason recorded'}`)
+    )
+  }
+  if ((d.notes ?? []).length === 0) lines.push('  (never run)')
+
+  return lines.join('\n')
 }

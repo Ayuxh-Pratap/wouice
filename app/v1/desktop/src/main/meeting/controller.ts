@@ -219,6 +219,13 @@ export class MeetingController extends EventEmitter {
     this.transcriber = null
     const meetingId = this.meetingId
     this.meetingId = null
+    // Captured before the state is cleared: this is what the diagnostics are
+    // built from, and after `setPhase('idle')` there is nothing left to read.
+    const channels = this.state().channels.map((c) => ({
+      channel: c.channel,
+      samples: c.samples,
+      problem: c.problem,
+    }))
     this.setPhase('merging')
 
     // Both at once. The merge is disk-bound and the transcript tail is waiting
@@ -251,6 +258,25 @@ export class MeetingController extends EventEmitter {
 
     this.startedAt = null
     this.setPhase('idle')
+
+    // Everything a later "why was this transcript bad" question needs, in one
+    // event, at the one moment all of it is still known.
+    if (meetingId !== null) {
+      const stats = transcriber?.stats()
+      this.emit('finished', {
+        meetingId,
+        channels,
+        chunksSent: stats?.chunksSent ?? 0,
+        chunksFailed: stats?.chunksFailed ?? 0,
+        segments: stats?.segments ?? 0,
+        skewMs: result?.skewMs ?? null,
+        driftPpm: {
+          me: result?.drift.me?.ppm ?? null,
+          them: result?.drift.them?.ppm ?? null,
+        },
+        recoveredWithoutManifest: result?.recoveredWithoutManifest ?? false,
+      })
+    }
     if (result) this.emit('recorded', result)
     return result
   }

@@ -3,6 +3,8 @@ import type { Settings } from './settings.js'
 import type {
   DictationRecord,
   MeetingRecord,
+  TaskRecord,
+  TaskState,
   DictionaryRecord,
   Page,
   RatingProgress,
@@ -63,6 +65,13 @@ export const IPC = {
   searchMeetings: 'meeting:search',
   deleteMeeting: 'meeting:delete',
   setMeetingScratch: 'meeting:scratch',
+  generateNotes: 'meeting:writeNotes',
+  getMeetingTasks: 'meeting:tasks',
+  setTaskState: 'meeting:taskState',
+  getOpenTasks: 'meeting:openTasks',
+  getMeetingOffer: 'meeting:offer',
+  dismissMeetingOffer: 'meeting:dismissOffer',
+  copyMeetingDiagnostic: 'meeting:copyDiagnostic',
   meetingFrame: 'meeting:frame',
   meetingReady: 'meeting:ready',
   meetingFailed: 'meeting:failed',
@@ -88,6 +97,8 @@ export const IPC = {
   hudPlacement: 'hud:placement',
   meetingState: 'meeting:changed',
   meetingSegments: 'meeting:newSegments',
+  notesProgress: 'meeting:notesProgress',
+  meetingOffer: 'meeting:offered',
 } as const
 
 /** Which way the capsule opens, and whether there is a pet to open it from. */
@@ -282,6 +293,23 @@ export interface MeetingState {
   message: string
 }
 
+export interface NotesProgressView {
+  meetingId: number
+  stage: 'condensing' | 'extracting' | 'writing'
+  chunk: number
+  chunks: number
+}
+
+export interface NotesOutcome {
+  ok: boolean
+  /** Why it could not be done. Empty when it worked. */
+  message: string
+  notesMd: string | null
+  tasks: number
+  /** Stretches the model could not summarise. Marked in the notes themselves. */
+  gaps: number
+}
+
 /** One line of the transcript. Echo is flagged, never removed. */
 export interface MeetingSegment {
   id: number
@@ -352,6 +380,21 @@ export interface WouiceApi {
   setMeetingScratch(meetingId: number, markdown: string): Promise<void>
   revealMeeting(dir: string): void
   onMeetingSegments(cb: (segments: MeetingSegment[]) => void): () => void
+  /**
+   * Write the notes and extract the tasks. Runs after the meeting, so it takes
+   * tens of seconds; progress arrives on `onNotesProgress`.
+   */
+  generateNotes(meetingId: number): Promise<NotesOutcome>
+  getMeetingTasks(meetingId: number): Promise<TaskRecord[]>
+  setTaskState(taskId: number, state: TaskState): Promise<void>
+  getOpenTasks(): Promise<TaskRecord[]>
+  onNotesProgress(cb: (p: NotesProgressView) => void): () => void
+  /** The app we noticed taking the microphone, or null. */
+  getMeetingOffer(): Promise<string | null>
+  dismissMeetingOffer(): Promise<void>
+  /** Everything about one meeting's run, on the clipboard. */
+  copyMeetingDiagnostic(meetingId: number): Promise<boolean>
+  onMeetingOffer(cb: (app: string | null) => void): () => void
   sendMeetingFrame(sessionId: number, channel: MeetingChannel, frame: Float32Array): void
   meetingReady(sessionId: number): void
   meetingFailed(sessionId: number, channel: MeetingChannel, reason: string): void
