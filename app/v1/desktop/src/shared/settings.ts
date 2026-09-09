@@ -119,6 +119,18 @@ export interface Settings {
   audio: AudioConfig
   appearance: AppearanceConfig
   pet: PetConfig
+  meetings: MeetingConfig
+}
+
+export interface MeetingConfig {
+  /**
+   * Notice when a meeting application takes the microphone, and offer to record.
+   *
+   * It OFFERS. Starting a recording on the app's own judgement has to be right
+   * every single time on a machine that records calls, and being wrong in the
+   * cheap direction costs one dismissed prompt.
+   */
+  autoDetect: boolean
 }
 
 /**
@@ -229,6 +241,8 @@ export interface InjectionConfig {
   pasteOverrides: Record<string, string>
 }
 
+export const DEFAULT_MEETINGS: MeetingConfig = { autoDetect: true }
+
 export const DEFAULT_SETTINGS: Settings = {
   hotkeys: {
     // W for Wouice, and the Ctrl+Alt namespace keeps the three surfaces a family.
@@ -266,6 +280,7 @@ export const DEFAULT_SETTINGS: Settings = {
     character: DEFAULT_CHARACTER,
     size: DEFAULT_PET_SIZE,
   },
+  meetings: DEFAULT_MEETINGS,
 }
 
 /**

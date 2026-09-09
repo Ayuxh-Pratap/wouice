@@ -354,6 +354,22 @@ export function SettingsPanel({
       </Section>
 
       <Section
+        title="Meetings"
+        hint="Two channels, kept apart by where the audio comes from rather than by a model: your microphone is you, and what your computer plays is everyone else."
+      >
+        <Row
+          label="Notice when a meeting starts"
+          hint="Watches which applications hold the microphone and offers to record when a meeting app takes it. It only ever offers — nothing records itself. Dictation is excluded, so your own hotkey never triggers it."
+        >
+          <Toggle
+            label="Notice when a meeting starts"
+            on={settings.meetings.autoDetect}
+            onChange={(autoDetect) => save({ meetings: { ...settings.meetings, autoDetect } })}
+          />
+        </Row>
+      </Section>
+
+      <Section
         title="Your voice on this disk"
         hint="Recordings never leave the machine. They exist so a bad transcription can be replayed rather than guessed at."
       >
