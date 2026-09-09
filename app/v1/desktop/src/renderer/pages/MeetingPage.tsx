@@ -144,7 +144,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
             a glance and says WHOSE audio is arriving, which is the one thing
             that is invisible until you play the file back an hour later.
           */}
-          <span className="ml-auto flex items-center gap-2.5">
+          <span className="ml-auto flex items-center gap-1.5">
             {(state?.channels ?? []).map((c) => (
               <SpeakingAvatar key={c.channel} view={c} />
             ))}
@@ -713,11 +713,15 @@ function Empty({
 }
 
 /**
- * One channel, as a face whose ring lights when that person speaks.
+ * One channel, as a small avatar whose ring lights when that person speaks.
+ *
+ * INITIALS, NOT WORDS. Two words next to a Stop button is a row of labels; two
+ * 26px circles is a glance. The name is on hover, and the colours do the
+ * teaching - green is you and blue is them, the same two the transcript uses,
+ * so the mapping is learned once and reused.
  *
  * The level is the same meter the dictation overlay uses, so "lit" means the
- * same thing here as it does there. Green is you, blue is them - the same two
- * colours the transcript labels use, so the mapping is learned once.
+ * same thing here as it does there.
  */
 function SpeakingAvatar({
   view,
@@ -730,26 +734,23 @@ function SpeakingAvatar({
 
   return (
     <span
-      // A pill, not a circle: "Them" does not fit in 28 pixels, and initials
-      // would need learning. Same rounded shape, enough room for the word.
-      className="grid h-7 min-w-[2.75rem] place-items-center rounded-full bg-white/[0.06] px-2 text-[10.5px] font-semibold transition-all duration-150"
+      className="grid size-[26px] shrink-0 place-items-center rounded-full text-[10.5px] font-semibold transition-all duration-150"
       title={
         view.problem
           ? `${mine ? 'You' : 'Them'}: ${view.problem}`
-          : view.live
-            ? `${mine ? 'You' : 'Them'} — being heard`
-            : `${mine ? 'You' : 'Them'} — not open yet`
+          : `${mine ? 'You' : 'Them'} — ${view.live ? 'being heard' : 'not open yet'}`
       }
       style={{
-        color: speaking ? colour : view.live ? '#d4d4d4' : '#737373',
+        // The ring carries the state and the fill stays quiet, so two of these
+        // sitting next to a red Stop button do not compete with it.
+        backgroundColor: speaking ? `${colour}1f` : 'rgba(255,255,255,0.04)',
+        color: speaking ? colour : view.live ? '#a3a3a3' : '#6b6b6b',
         boxShadow: speaking
-          ? `0 0 0 2px ${colour}, 0 0 12px ${colour}80`
-          : view.live
-            ? `0 0 0 1.5px ${colour}59`
-            : '0 0 0 1.5px #ffffff1a',
+          ? `0 0 0 1.5px ${colour}, 0 0 10px ${colour}66`
+          : `0 0 0 1.5px ${view.live ? `${colour}4d` : 'rgba(255,255,255,0.10)'}`,
       }}
     >
-      {mine ? 'You' : 'Them'}
+      {mine ? 'Y' : 'T'}
     </span>
   )
 }
