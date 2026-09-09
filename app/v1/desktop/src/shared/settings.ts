@@ -1,4 +1,5 @@
 import type { SidecarId } from './models.js'
+import { DEFAULT_MEETING_KIND, type MeetingKind } from './meeting-kind.js'
 import {
   DEFAULT_CHARACTER,
   DEFAULT_PET_SIZE,
@@ -132,20 +133,13 @@ export interface MeetingConfig {
    */
   autoDetect: boolean
   /**
-   * The language spoken in your meetings.
+   * What most of your meetings are, used for the next one you start.
    *
-   * WHY THIS IS A SETTING AT ALL. Detection runs per 25-second request, and on
-   * real conversation it thrashes: one recorded meeting came back as Icelandic,
-   * Japanese, Spanish and English in turn. The same 25 seconds that produced
-   * "What are the things that are going on?" under auto produced the sentence
-   * that was actually spoken under 'hi'.
-   *
-   * 'auto' now detects ONCE and pins the answer for the rest of the meeting,
-   * which fixes the thrashing but not a wrong first guess. Naming the language
-   * is strictly better when you know it, and on Hindi it is not a small
-   * difference - it is the difference between a transcript and noise.
+   * A STARTING POINT, NOT A RULE. Every meeting carries its own kind and it can
+   * be changed on the meeting's own page, because client calls in English and
+   * the team standup in Hindi are both normal weeks. See `MeetingKind`.
    */
-  language: 'auto' | 'hi' | 'en'
+  defaultKind: MeetingKind
 }
 
 /**
@@ -256,7 +250,10 @@ export interface InjectionConfig {
   pasteOverrides: Record<string, string>
 }
 
-export const DEFAULT_MEETINGS: MeetingConfig = { autoDetect: true, language: 'auto' }
+export const DEFAULT_MEETINGS: MeetingConfig = {
+  autoDetect: true,
+  defaultKind: DEFAULT_MEETING_KIND,
+}
 
 export const DEFAULT_SETTINGS: Settings = {
   hotkeys: {

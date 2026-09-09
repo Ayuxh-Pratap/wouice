@@ -13,6 +13,7 @@ import { CHARACTER_LIST, posterStyle } from '../hud/sprite.js'
 import { PET_SIZE_LABELS, type PetSize } from '../../shared/pet.js'
 import { DictionaryEditor } from './DictionaryEditor.js'
 import { ConfirmButton, Choice, Row, Section, Toggle } from './Field.js'
+import { MEETING_KINDS, type MeetingKind } from '../../shared/meeting-kind.js'
 
 /**
  * Everything a person can change, and nothing they cannot act on.
@@ -358,18 +359,14 @@ export function SettingsPanel({
         hint="Two channels, kept apart by where the audio comes from rather than by a model: your microphone is you, and what your computer plays is everyone else."
       >
         <Row
-          label="Language spoken"
-          hint="Naming it beats letting the model guess. Detection runs per 25-second slice, and one recorded meeting came back as Icelandic, Japanese, Spanish and English in turn — the same audio that produced nonsense under Detect produced the actual sentence under Hindi. Detect now decides once and sticks to it, which fixes the thrashing but not a wrong first guess."
+          label="Usually"
+          hint="What the next meeting starts as. Each meeting keeps its own kind and can be changed on its own page — client calls in English and the team standup in Hindi are both a normal week. Naming the language matters more than any other setting here: one recorded meeting left to detect came back as Icelandic, Japanese, Spanish and English in turn."
         >
           <Choice
-            value={settings.meetings.language}
-            options={[
-              { value: 'auto', label: 'Detect' },
-              { value: 'hi', label: 'Hindi' },
-              { value: 'en', label: 'English' },
-            ]}
-            onChange={(language) =>
-              save({ meetings: { ...settings.meetings, language: language as 'auto' | 'hi' | 'en' } })
+            value={settings.meetings.defaultKind}
+            options={MEETING_KINDS.map((k) => ({ value: k.id, label: k.label }))}
+            onChange={(kind) =>
+              save({ meetings: { ...settings.meetings, defaultKind: kind as MeetingKind } })
             }
           />
         </Row>
