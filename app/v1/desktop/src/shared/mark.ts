@@ -38,6 +38,21 @@ export const MARK_STROKE = 2.4
 export const MARK_VIEWBOX = 24
 
 /**
+ * How much of the plate the bars are allowed to occupy, in the rasterised icon.
+ *
+ * The bars and the plate are both described on the 24-unit grid, so drawing
+ * them literally puts the centre bar across three quarters of the plate's
+ * height and leaves the artwork almost touching the rounded edge. The sidebar
+ * never had that problem because it nests a 14px SVG inside a 22px plate, which
+ * is where this number comes from: 16 of the 24 units the bars span, held to
+ * the same fraction of the plate that 14-in-22 produces.
+ *
+ * Applied only here. The DOM mark gets the same proportion from its own two
+ * sizes, so it neither needs nor wants this factor.
+ */
+export const MARK_ART_SCALE = 0.566
+
+/**
  * The mark's colours, written out for the rasteriser.
  *
  * The sidebar gets these from Tailwind (`from-neutral-500 to-neutral-800` on
@@ -69,8 +84,14 @@ function distanceToBar(px: number, py: number, x: number, top: number, bottom: n
 function insideBars(px: number, py: number): boolean {
   const radius = MARK_STROKE / 2
   const mid = MARK_VIEWBOX / 2
+  // Sample in the bars' own space rather than scaling every coordinate: one
+  // division here shrinks the whole drawing about its centre, stroke width and
+  // cap radius included, which is what keeps the shape identical rather than
+  // merely shorter.
+  const bx = mid + (px - mid) / MARK_ART_SCALE
+  const by = mid + (py - mid) / MARK_ART_SCALE
   for (const bar of MARK_BARS) {
-    if (distanceToBar(px, py, bar.x, mid - bar.half, mid + bar.half) <= radius) return true
+    if (distanceToBar(bx, by, bar.x, mid - bar.half, mid + bar.half) <= radius) return true
   }
   return false
 }

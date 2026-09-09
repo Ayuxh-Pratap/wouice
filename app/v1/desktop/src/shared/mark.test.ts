@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MARK_BARS, MARK_VIEWBOX, drawMark } from './mark.js'
+import { MARK_ART_SCALE, MARK_BARS, MARK_VIEWBOX, drawMark } from './mark.js'
 
 /** Alpha of one pixel, 0-255. */
 function alphaAt(pixels: Uint8Array, size: number, x: number, y: number): number {
@@ -32,8 +32,12 @@ describe('the app mark', () => {
     const centreX = Math.round((MARK_BARS[2]?.x ?? 12) * scale)
     const outerX = Math.round((MARK_BARS[0]?.x ?? 3.5) * scale)
 
-    // A row near the top of the centre bar but outside the short outer ones.
-    const y = Math.round((MARK_VIEWBOX / 2 - 6) * scale)
+    // A row inside the tall centre bar but clear of the short outer ones.
+    // Derived from the art scale rather than a fixed offset: the bars are drawn
+    // smaller than the grid so they sit inside the plate's padding, and a
+    // hardcoded row silently walks off the top of the bar when that changes.
+    const centreHalf = (MARK_BARS[2]?.half ?? 8) * MARK_ART_SCALE
+    const y = Math.round((MARK_VIEWBOX / 2 - centreHalf * 0.6) * scale)
     expect(brightness(pixels, size, centreX, y)).toBeGreaterThan(200)
     expect(brightness(pixels, size, outerX, y)).toBeLessThan(150)
   })
