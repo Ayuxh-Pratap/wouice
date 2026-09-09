@@ -139,23 +139,19 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
           </span>
 
           {/*
-            Two lights that answer one question: is each half being heard RIGHT
-            NOW. Bright while somebody is speaking, dim while the channel is
-            open and quiet, amber before it opens, red when it failed. Watching
-            your own light come up as you talk is the fastest possible proof
-            that the recording is real.
+            Who is being heard, next to the control that ends it. Two faces
+            rather than two dots: a ring that lights as somebody speaks reads at
+            a glance and says WHOSE audio is arriving, which is the one thing
+            that is invisible until you play the file back an hour later.
           */}
-          <span className="flex items-center gap-3">
+          <span className="ml-auto flex items-center gap-2.5">
             {(state?.channels ?? []).map((c) => (
-              <SpeakingLight key={c.channel} view={c} />
+              <SpeakingAvatar key={c.channel} view={c} />
             ))}
-          </span>
-
-          <span className="ml-auto flex items-center gap-2">
             <button
               onClick={() => void window.wouice.stopMeeting()}
               disabled={state?.phase === 'merging'}
-              className="rounded-lg bg-red-500/15 px-4 py-1.5 text-[12.5px] font-medium text-red-300 ring-1 ring-red-500/30 transition hover:bg-red-500/25 disabled:opacity-40"
+              className="ml-1 rounded-lg bg-red-500/15 px-4 py-1.5 text-[12.5px] font-medium text-red-300 ring-1 ring-red-500/30 transition hover:bg-red-500/25 disabled:opacity-40"
             >
               Stop
             </button>
@@ -169,23 +165,22 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
           </p>
         ) : null}
 
-        <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[1.7fr_1fr]">
-          <section className="lift flex min-h-0 flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
-            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-              <Transcript
-                segments={segments}
-                emptyMessage="Lines appear about half a minute behind the conversation."
-              />
-            </div>
-          </section>
+        {/*
+          NOTES ABOVE THE TRANSCRIPT. The transcript grows without bound over an
+          hour; the notes box does not. Putting the fixed thing on top means it
+          stays where you left it, and the part that grows takes whatever is
+          left rather than pushing anything around.
+        */}
+        <LiveNotes meetingId={meetingId} initial={meeting.scratchMd} />
 
-          {/*
-            An input, not a button that opens one. During a call you are typing
-            in fragments between sentences; a dialog to open first is a dialog
-            you do not open, and the note never gets written.
-          */}
-          <LiveNotes meetingId={meetingId} initial={meeting.scratchMd} />
-        </div>
+        <section className="lift flex min-h-0 flex-1 flex-col rounded-xl bg-white/[0.035] px-4 py-3 ring-1 ring-white/[0.08]">
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <Transcript
+              segments={segments}
+              emptyMessage="Lines appear about half a minute behind the conversation."
+            />
+          </div>
+        </section>
       </div>
     )
   }
@@ -718,45 +713,53 @@ function Empty({
 }
 
 /**
- * One channel, as a light that reacts to speech.
+ * One channel, as a face whose ring lights when that person speaks.
  *
- * The level is the same meter the dictation overlay uses, so "bright" means the
- * same thing here as it does there.
+ * The level is the same meter the dictation overlay uses, so "lit" means the
+ * same thing here as it does there. Green is you, blue is them - the same two
+ * colours the transcript labels use, so the mapping is learned once.
  */
-function SpeakingLight({
+function SpeakingAvatar({
   view,
 }: {
   view: { channel: string; live: boolean; level: number; problem: string | null }
 }): React.JSX.Element {
+  const mine = view.channel === 'me'
   const speaking = view.live && view.level > 0.08
-  const colour = view.problem ? '#f87171' : view.live ? '#34d399' : '#fbbf24'
+  const colour = view.problem ? '#f87171' : mine ? '#34d399' : '#60a5fa'
 
   return (
     <span
-      className="flex items-center gap-1.5"
-      title={view.problem ?? (view.live ? 'being heard' : 'not open yet')}
+      // A pill, not a circle: "Them" does not fit in 28 pixels, and initials
+      // would need learning. Same rounded shape, enough room for the word.
+      className="grid h-7 min-w-[2.75rem] place-items-center rounded-full bg-white/[0.06] px-2 text-[10.5px] font-semibold transition-all duration-150"
+      title={
+        view.problem
+          ? `${mine ? 'You' : 'Them'}: ${view.problem}`
+          : view.live
+            ? `${mine ? 'You' : 'Them'} — being heard`
+            : `${mine ? 'You' : 'Them'} — not open yet`
+      }
+      style={{
+        color: speaking ? colour : view.live ? '#d4d4d4' : '#737373',
+        boxShadow: speaking
+          ? `0 0 0 2px ${colour}, 0 0 12px ${colour}80`
+          : view.live
+            ? `0 0 0 1.5px ${colour}59`
+            : '0 0 0 1.5px #ffffff1a',
+      }}
     >
-      <span
-        className="rounded-full transition-all duration-150"
-        style={{
-          backgroundColor: colour,
-          width: speaking ? 9 : 6,
-          height: speaking ? 9 : 6,
-          opacity: speaking ? 1 : view.live ? 0.45 : 0.8,
-          boxShadow: speaking ? `0 0 8px ${colour}` : 'none',
-        }}
-      />
-      <span
-        className="text-[11.5px] transition-colors"
-        style={{ color: speaking ? colour : '#a3a3a3' }}
-      >
-        {view.channel === 'me' ? 'You' : 'Them'}
-      </span>
+      {mine ? 'You' : 'Them'}
     </span>
   )
 }
 
-/** The scratch pad, inline, for the length of the call. */
+/**
+ * The scratch pad, inline, for the length of the call.
+ *
+ * Fixed height on purpose: it is the thing that does NOT grow, so it can sit
+ * above the transcript without moving as lines arrive.
+ */
 function LiveNotes({
   meetingId,
   initial,
@@ -784,17 +787,21 @@ function LiveNotes({
   }, [meetingId])
 
   return (
-    <section className="lift flex min-h-0 flex-col rounded-xl bg-white/[0.035] px-3.5 py-3 ring-1 ring-white/[0.08]">
-      <h2 className="mb-2 shrink-0 text-[11.5px] font-medium text-neutral-400">Your notes</h2>
+    <section className="lift shrink-0 rounded-xl bg-white/[0.035] px-3.5 py-2.5 ring-1 ring-white/[0.08]">
+      <div className="mb-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+        <h2 className="text-[11.5px] font-medium text-neutral-400">Your notes</h2>
+        {/* The explanation, out of the way. It was under the box, where it read
+            as more important than the box. */}
+        <p className="ml-auto text-[10.5px] text-neutral-600">
+          Rough is fine — used for the summary, and to spell names right.
+        </p>
+      </div>
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder={'pricing?? john wants Q3\nthey need SSO before rollout'}
-        className="min-h-0 flex-1 resize-none rounded-md bg-black/25 px-3 py-2 text-[12.5px] leading-relaxed text-neutral-200 ring-1 ring-white/[0.06] outline-none placeholder:text-neutral-700 focus:ring-white/20"
+        placeholder={'pricing?? john wants Q3 · they need SSO before rollout'}
+        className="h-[72px] w-full resize-none rounded-md bg-black/25 px-3 py-2 text-[12.5px] leading-relaxed text-neutral-200 ring-1 ring-white/[0.06] outline-none placeholder:text-[11px] placeholder:text-neutral-700 focus:ring-white/20"
       />
-      <p className="mt-2 shrink-0 text-[10.5px] leading-snug text-neutral-600">
-        Rough is fine. Used for the summary, and to spell names right.
-      </p>
     </section>
   )
 }
