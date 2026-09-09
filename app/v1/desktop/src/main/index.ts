@@ -229,6 +229,9 @@ async function renderEnglish(id: number): Promise<EnglishOutcome> {
         .segments(id)
         .filter((seg) => !seg.echo)
         .map((seg) => ({ id: seg.id, text: seg.text })),
+      // Read fresh on every call, so notes added AFTER the meeting are used by
+      // the next render - which is the point of being able to add them later.
+      context: meeting.scratchMd,
       onProgress: (p) => broadcast(IPC.englishProgress, { meetingId: id, ...p }),
     })
     store.meetings.setEnglish(run.rendered.map((r) => ({ id: r.id, textEn: r.textEn })))

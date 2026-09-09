@@ -42,6 +42,15 @@ export interface EnglishRun {
 
 export interface EnglishInput {
   lines: readonly Line[]
+  /**
+   * The person's own notes, used only as a spelling reference.
+   *
+   * A scribbled "priya = decision maker" or "Runbali" is the difference between
+   * a name rendered correctly and one rendered phonetically. Handed over as
+   * reference, never as content: the prompt says so, and the parser only ever
+   * accepts lines numbered from the transcript.
+   */
+  context?: string
   onProgress?(progress: EnglishProgress): void
   signal?: AbortSignal
 }
@@ -67,7 +76,10 @@ export class MeetingEnglishEngine {
       input.signal?.throwIfAborted()
       input.onProgress?.({ batch: index + 1, batches: batches.length, lines: rendered.length })
 
-      const answer = await this.tryComplete(renderBatch(batch), input.signal)
+      const answer = await this.tryComplete(
+        withContext(renderBatch(batch), input.context),
+        input.signal
+      )
       if (answer === null) {
         failedBatches++
         continue
@@ -121,4 +133,20 @@ export class MeetingEnglishEngine {
       return null
     }
   }
+}
+
+/** Cap on the reference text, so a long scratch pad cannot crowd out the batch. */
+const MAX_CONTEXT_CHARS = 400
+
+function withContext(batch: string, context?: string): string {
+  const notes = (context ?? '').trim().slice(0, MAX_CONTEXT_CHARS)
+  if (!notes) return batch
+  return [
+    "Reference only - the person's own notes, for spelling names and terms.",
+    'Do not render these lines.',
+    notes,
+    '',
+    'Transcript:',
+    batch,
+  ].join('\n')
 }
