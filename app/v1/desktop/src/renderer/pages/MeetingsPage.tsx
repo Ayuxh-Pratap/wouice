@@ -1,30 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MeetingChannelView, MeetingSegment, MeetingState } from '../../shared/ipc.js'
+import type { MeetingSegment, MeetingState } from '../../shared/ipc.js'
 import type { MeetingRecord } from '@wouice/store'
 import type { Settings } from '../../shared/settings.js'
 import { MEETING_KINDS, type MeetingKind } from '../../shared/meeting-kind.js'
 import { hashForMeeting } from '../shell/routes.js'
-import { Notes } from '../meetings/Notes.js'
 import { Transcript } from '../meetings/Transcript.js'
 import { useMeetingCapture } from '../meetings/useMeetingCapture.js'
 
 /**
- * Meetings.
+ * Meetings: the overview.
  *
- * THE SHAPE IS THE FINISHED SHAPE. One card for what is happening now, one list
- * of what has happened, and a transcript inside a row of that list. Notes and
- * tasks land in the same row, so nothing here has to be rearranged to make room
- * for them.
+ * MANAGEMENT ONLY. Start one, find one, open one, remove one. Everything about
+ * a particular meeting - its transcript, its summary, its tasks, what you typed
+ * during it - lives on that meeting's own page, and starting a recording takes
+ * you straight there.
  *
- * TWO METERS, NOT ONE. Which half is being heard is the single most useful
- * thing to show while recording: a meeting where the far side was never
- * captured looks and sounds exactly like a good one until you play it back an
- * hour later.
- *
- * THE SCRATCH PAD IS AN INPUT, NOT A CONVENIENCE. What you jot during a call is
- * the one signal saying which parts mattered to you, and no summariser can
- * infer it from a transcript. It is saved as you type, because a meeting that
- * ends unexpectedly should not take your notes with it.
+ * NO METERS HERE. They belonged to a screen you sat and watched, and this is not
+ * one. The two channel lights follow you into the meeting, which is where
+ * knowing the far side is being captured is still worth something.
  */
 
 const RECORDING_PHASES = new Set(['starting', 'recording', 'stopping', 'merging'])
@@ -32,12 +25,13 @@ const RECORDING_PHASES = new Set(['starting', 'recording', 'stopping', 'merging'
 export function MeetingsPage(): React.JSX.Element {
   const [state, setState] = useState<MeetingState | null>(null)
   const [meetings, setMeetings] = useState<MeetingRecord[]>([])
-  const [live, setLive] = useState<MeetingSegment[]>([])
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [offer, setOffer] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<MeetingSegment[] | null>(null)
   const [busy, setBusy] = useState(false)
-  const [settings, setSettings] = useState<Settings | null>(null)
-  const [offer, setOffer] = useState<string | null>(null)
+  /** So a meeting that has already sent us to its page cannot do it twice. */
+  const sentTo = useRef(0)
 
   useMeetingCapture(state)
 
@@ -47,34 +41,37 @@ export function MeetingsPage(): React.JSX.Element {
 
   useEffect(() => {
     void window.wouice.getSettings().then(setSettings)
-    const offSettings = window.wouice.onSettingsChanged(setSettings)
     void window.wouice.getMeetingState().then(setState)
-    refresh()
-    const offState = window.wouice.onMeetingState((next) => {
-      setState((previous) => {
-        if (previous && previous.phase !== 'idle' && next.phase === 'idle') {
-          refresh()
-          setLive([])
-        }
-        if (previous && previous.phase === 'idle' && next.phase === 'starting') setLive([])
-        return next
-      })
-    })
-    const offSegments = window.wouice.onMeetingSegments((segments) =>
-      setLive((current) => [...current, ...segments])
-    )
     void window.wouice.getMeetingOffer().then(setOffer)
+    refresh()
+
+    const offSettings = window.wouice.onSettingsChanged(setSettings)
     const offOffer = window.wouice.onMeetingOffer(setOffer)
+    const offState = window.wouice.onMeetingState((next) => {
+      setState(next)
+      // Into the meeting, the moment there is one. Whether it was started here
+      // or offered by the watcher, the recording is what you want in front of
+      // you - not the list of every other meeting.
+      if (
+        next.meetingId !== null &&
+        sentTo.current !== next.meetingId &&
+        RECORDING_PHASES.has(next.phase)
+      ) {
+        sentTo.current = next.meetingId
+        window.location.hash = hashForMeeting(next.meetingId)
+      }
+      if (next.phase === 'idle') refresh()
+    })
+    const offProcessed = window.wouice.onMeetingProcessed(() => refresh())
+
     return () => {
-      offState()
-      offSegments()
-      offOffer()
       offSettings()
+      offOffer()
+      offState()
+      offProcessed()
     }
   }, [refresh])
 
-  // Search runs against the database, so it covers meetings whose transcript is
-  // not currently open. A blank box is not a search.
   useEffect(() => {
     const term = query.trim()
     if (!term) {
@@ -87,22 +84,20 @@ export function MeetingsPage(): React.JSX.Element {
     return () => clearTimeout(timer)
   }, [query])
 
-  const remove = async (meeting: MeetingRecord): Promise<void> => {
-    await window.wouice.deleteMeeting(meeting.id)
-    refresh()
-  }
+  const active = RECORDING_PHASES.has(state?.phase ?? 'idle')
 
-  const phase = state?.phase ?? 'idle'
-  const active = RECORDING_PHASES.has(phase)
-
-  const toggle = async (): Promise<void> => {
+  const start = async (): Promise<void> => {
     setBusy(true)
     try {
-      if (active) await window.wouice.stopMeeting()
-      else await window.wouice.startMeeting()
+      await window.wouice.startMeeting()
     } finally {
       setBusy(false)
     }
+  }
+
+  const remove = async (meeting: MeetingRecord): Promise<void> => {
+    await window.wouice.deleteMeeting(meeting.id)
+    refresh()
   }
 
   return (
@@ -114,7 +109,7 @@ export function MeetingsPage(): React.JSX.Element {
             meeting?
           </span>
           <button
-            onClick={() => void window.wouice.startMeeting()}
+            onClick={() => void start()}
             className="shrink-0 rounded-md bg-emerald-500/20 px-2.5 py-1 text-[12px] font-medium text-emerald-200 ring-1 ring-emerald-400/30 transition hover:bg-emerald-500/30"
           >
             Record
@@ -128,97 +123,42 @@ export function MeetingsPage(): React.JSX.Element {
         </div>
       ) : null}
 
-      {/*
-        One row, not a panel. Recording is a thing you start and then stop
-        thinking about, so it earns a button and a clock and no more; what is
-        worth the screen space is the meetings themselves. The two meters stay
-        because which half is being heard is the one thing that is invisible
-        until you play the file back an hour later.
-      */}
-      <section className="lift flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl bg-white/[0.035] px-3 py-2 ring-1 ring-white/[0.08]">
+      <section className="lift flex flex-wrap items-center gap-3 rounded-xl bg-white/[0.035] px-3 py-2.5 ring-1 ring-white/[0.08]">
         <button
-          onClick={() => void toggle()}
-          disabled={busy || phase === 'merging'}
-          className={
-            'shrink-0 rounded-lg px-3 py-1.5 text-[12.5px] font-medium transition disabled:opacity-40 ' +
-            (active
-              ? 'bg-red-500/15 text-red-300 ring-1 ring-red-500/30 hover:bg-red-500/25'
-              : 'bg-white/[0.06] text-neutral-200 ring-1 ring-white/10 hover:bg-white/[0.12]')
-          }
+          onClick={() => void start()}
+          disabled={busy || active}
+          className="shrink-0 rounded-lg bg-white/[0.06] px-3.5 py-1.5 text-[12.5px] font-medium text-neutral-200 ring-1 ring-white/10 transition hover:bg-white/[0.12] disabled:opacity-40"
         >
-          {active ? 'Stop' : 'Start recording'}
+          {active ? 'Recording…' : 'Start recording'}
         </button>
 
-        {active ? (
-          <span className="shrink-0 text-[13px] font-medium tabular-nums text-neutral-100">
-            {formatElapsed(state?.elapsedMs ?? 0)}
-          </span>
-        ) : null}
-
-        <span className="shrink-0 text-[11.5px] text-neutral-500">{describePhase(phase)}</span>
-
         {/*
-          Chosen BEFORE the button, not after the meeting. The recognition
-          language is fixed the moment the first chunk is sent, so a picker that
-          only appeared afterwards would be offering a choice that had already
-          been made - and auto-detect starts a meeting from a notification,
-          where there is no other chance to say.
+          Chosen BEFORE the button. The recognition language is fixed the moment
+          the first chunk is sent, and automatic detection starts a meeting from
+          a notification, where there is no other chance to say.
         */}
-        <select
-          value={settings?.meetings.defaultKind ?? 'mixed'}
-          disabled={active || !settings}
-          title={
-            active
-              ? 'Fixed once a meeting starts. Change it on the meeting page afterwards to re-render the English.'
-              : 'What this meeting will be recorded as.'
-          }
-          onChange={(e) => {
-            const defaultKind = e.target.value as MeetingKind
-            setSettings((current) =>
-              current ? { ...current, meetings: { ...current.meetings, defaultKind } } : current
-            )
-            void window.wouice.setSettings({
-              meetings: { ...settings!.meetings, defaultKind },
-            })
-          }}
-          className="shrink-0 rounded-md bg-neutral-950 px-2 py-0.5 text-[11.5px] text-neutral-300 ring-1 ring-white/10 outline-none focus:ring-white/25 disabled:opacity-50"
-        >
-          {MEETING_KINDS.map((k) => (
-            <option key={k.id} value={k.id}>
-              {k.label}
-            </option>
-          ))}
-        </select>
-
-        {state?.transcript.queued ? (
-          <span className="shrink-0 text-[11px] text-neutral-600">
-            {state.transcript.queued} waiting
-          </span>
-        ) : null}
-
-        <div className="ml-auto flex shrink-0 items-center gap-3">
-          {(state?.channels ?? defaultChannels()).map((channel) => (
-            <ChannelMeter key={channel.channel} view={channel} active={active} />
-          ))}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <span className="text-[11.5px] text-neutral-500">Spoken in</span>
+          <select
+            value={settings?.meetings.defaultKind ?? 'mixed'}
+            disabled={active || !settings}
+            onChange={(e) => {
+              const defaultKind = e.target.value as MeetingKind
+              setSettings((current) =>
+                current ? { ...current, meetings: { ...current.meetings, defaultKind } } : current
+              )
+              void window.wouice.setSettings({ meetings: { ...settings!.meetings, defaultKind } })
+            }}
+            className="rounded-md bg-neutral-950 px-2 py-1 text-[12px] text-neutral-200 ring-1 ring-white/10 outline-none focus:ring-white/25 disabled:opacity-50"
+          >
+            {MEETING_KINDS.map((k) => (
+              <option key={k.id} value={k.id}>
+                {k.label}
+              </option>
+            ))}
+          </select>
         </div>
-
-        {state?.message ? (
-          <p className="w-full text-[11.5px] text-amber-300">{state.message}</p>
-        ) : null}
       </section>
-
-      {active && (
-        <div className="grid gap-3 lg:grid-cols-[1.6fr_1fr]">
-          <section className="lift max-h-[420px] overflow-y-auto rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
-            <h2 className="mb-2.5 text-[12px] font-medium text-neutral-400">Live transcript</h2>
-            <Transcript
-              segments={live}
-              emptyMessage="Lines appear about half a minute behind the conversation."
-            />
-          </section>
-          <ScratchPad meetingId={state?.meetingId ?? null} />
-        </div>
-      )}
 
       <section>
         <div className="mb-2 flex items-center gap-3 px-0.5">
@@ -270,8 +210,7 @@ export function MeetingsPage(): React.JSX.Element {
                       ) : null}
                       {formatDuration(meeting.durationMs)} · {meeting.segments} line
                       {meeting.segments === 1 ? '' : 's'}
-                      {meeting.notesMd ? ' · notes written' : ''}
-                      {meeting.scratchMd ? ' · has your notes' : ''}
+                      {meeting.notesMd ? ' · summarised' : ''}
                       {problemOf(meeting) ? (
                         <span className="text-amber-400"> · {problemOf(meeting)}</span>
                       ) : null}
@@ -289,7 +228,6 @@ export function MeetingsPage(): React.JSX.Element {
                   </button>
                   <span className="shrink-0 text-[13px] text-neutral-600">›</span>
                 </a>
-
               </li>
             ))}
           </ul>
@@ -300,110 +238,10 @@ export function MeetingsPage(): React.JSX.Element {
 }
 
 /**
- * Notes you type during the call.
- *
- * Debounced rather than saved on every keystroke, and saved on unmount, so
- * ending a meeting cannot take the last sentence with it.
- */
-function ScratchPad({ meetingId }: { meetingId: number | null }): React.JSX.Element {
-  const [text, setText] = useState('')
-  const latest = useRef('')
-  latest.current = text
-
-  useEffect(() => {
-    setText('')
-  }, [meetingId])
-
-  useEffect(() => {
-    if (meetingId === null) return
-    const timer = setTimeout(() => {
-      void window.wouice.setMeetingScratch(meetingId, latest.current)
-    }, 600)
-    return () => clearTimeout(timer)
-  }, [text, meetingId])
-
-  useEffect(() => {
-    if (meetingId === null) return
-    return () => {
-      void window.wouice.setMeetingScratch(meetingId, latest.current)
-    }
-  }, [meetingId])
-
-  return (
-    <section className="lift flex flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
-      <h2 className="mb-2 text-[12px] font-medium text-neutral-400">Your notes</h2>
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        disabled={meetingId === null}
-        placeholder={
-          'pricing?? john wants Q3\ndemo went well — latency q\nthey need SSO before rollout'
-        }
-        className="min-h-[200px] flex-1 resize-none rounded-md bg-black/25 px-3 py-2 text-[12.5px] leading-relaxed text-neutral-200 ring-1 ring-white/[0.06] outline-none placeholder:text-neutral-700 focus:ring-white/20 disabled:opacity-50"
-      />
-      <p className="mt-2 text-[11px] leading-snug text-neutral-600">
-        Rough is fine. These get folded into the notes afterwards — they are what tells the
-        summary which parts mattered to you.
-      </p>
-    </section>
-  )
-}
-
-function ChannelMeter({
-  view,
-  active,
-}: {
-  view: MeetingChannelView
-  active: boolean
-}): React.JSX.Element {
-  const label = view.channel === 'me' ? 'You' : 'Them'
-  return (
-    <div
-      className="flex items-center gap-1.5"
-      title={view.problem ?? `${label}: ${view.channel === 'me' ? 'microphone' : 'system audio'}`}
-    >
-      <span
-        className="size-1.5 shrink-0 rounded-full"
-        // Inline rather than a class: the state colour is data, and a class
-        // that changes with it has been observed not to repaint here.
-        style={{
-          backgroundColor: view.problem
-            ? '#f87171'
-            : view.live
-              ? '#34d399'
-              : active
-                ? '#fbbf24'
-                : '#525252',
-        }}
-      />
-      <span className="text-[11.5px] text-neutral-400">{label}</span>
-      <div className="h-1 w-14 overflow-hidden rounded-full bg-white/[0.06]">
-        <div
-          className="h-full rounded-full transition-[width] duration-150"
-          style={{
-            width: `${Math.round(Math.min(1, view.level) * 100)}%`,
-            backgroundColor: view.channel === 'me' ? '#34d399' : '#60a5fa',
-          }}
-        />
-      </div>
-    </div>
-  )
-}
-
-function defaultChannels(): MeetingChannelView[] {
-  return [
-    { channel: 'me', live: false, samples: 0, level: 0, problem: null },
-    { channel: 'them', live: false, samples: 0, level: 0, problem: null },
-  ]
-}
-
-/**
  * The one thing that went wrong, said in the list rather than buried.
  *
- * A meeting that recorded only one channel, or lost a fifth of its audio to a
- * failing speech model, looks exactly like a good one from the outside - and
- * you find out an hour later, reading a transcript with half a conversation in
- * it. Saying it on the row is what turns that into a question you ask now.
+ * A meeting that recorded only one channel looks exactly like a good one from
+ * the outside, and you find out an hour later reading half a conversation.
  */
 function problemOf(meeting: MeetingRecord): string | null {
   const d = meeting.diagnostics
@@ -414,35 +252,9 @@ function problemOf(meeting: MeetingRecord): string | null {
   const failed = d.chunksFailed ?? 0
   const sent = d.chunksSent ?? 0
   if (failed > 0 && failed >= (sent + failed) * 0.1) return `${failed} chunks failed to transcribe`
-  if (meeting.endedAt === null) return 'never finished'
   const lastRun = (d.notes ?? []).at(-1)
-  if (lastRun && !lastRun.ok) return 'notes failed'
+  if (lastRun && !lastRun.ok) return 'summary failed'
   return null
-}
-
-function describePhase(phase: string): string {
-  switch (phase) {
-    case 'starting':
-      return 'opening the microphone and system audio'
-    case 'recording':
-      return 'recording'
-    case 'stopping':
-      return 'closing the streams'
-    case 'merging':
-      return 'writing the audio and finishing the transcript'
-    default:
-      return 'not recording'
-  }
-}
-
-/** `mm:ss`, or `h:mm:ss` once there is an hour of it. */
-function formatElapsed(ms: number): string {
-  const total = Math.floor(ms / 1000)
-  const seconds = String(total % 60).padStart(2, '0')
-  const minutes = Math.floor(total / 60) % 60
-  const hours = Math.floor(total / 3600)
-  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${seconds}`
-  return `${String(minutes).padStart(2, '0')}:${seconds}`
 }
 
 function formatDuration(ms: number): string {
