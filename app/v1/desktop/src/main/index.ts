@@ -28,6 +28,10 @@ import { RecordingStore } from './metrics/recordings.js'
 import { Injector, type InjectionResult } from './injection/injector.js'
 import { injectionAvailable, injectionUnavailableReason } from './injection/win32.js'
 import { analyseCalibration, applyCalibration, describeLanguages, frameLevels } from './capture/calibrate.js'
+import { enableSystemAudioCapture } from './meeting/display-media.js'
+import { MeetingController } from './meeting/controller.js'
+import { finishedSessions } from './meeting/merge.js'
+import type { Channel as MeetingChannel } from './meeting/session.js'
 import { WhisperCppClient } from '@wouice/asr'
 import { describeCalibration, formatDiagnostic, formatSession } from './metrics/diagnostic.js'
 import { writeFileSync, mkdirSync, copyFileSync } from 'node:fs'
@@ -67,6 +71,10 @@ const store = openStore({
   onMigrate: (id, name) => console.log(`[store] migration ${id}: ${name}`),
 })
 const recordings = new RecordingStore(app.getPath('userData'))
+
+/** Meetings live beside the database, one directory per session. */
+const MEETING_ROOT = path.join(app.getPath('userData'), 'meetings')
+const meetings = new MeetingController(MEETING_ROOT)
 
 /**
  * Text injection. Falls back to clipboard-only if the native layer is missing,
@@ -139,6 +147,27 @@ function setEscapeCancel(on: boolean): void {
     escapeBound = false
   }
 }
+
+/**
+ * The meeting's state, pushed rather than polled.
+ *
+ * A ticker runs only while something is recording. The level meter and the
+ * elapsed clock both need to move without anything happening - no frame
+ * arriving is exactly the condition the UI most needs to show - and a renderer
+ * polling four times a second for the twenty-three hours a day when nothing is
+ * recording is the wrong shape.
+ */
+let meetingTicker: NodeJS.Timeout | null = null
+meetings.on('state', (state: { phase: string }) => {
+  broadcast(IPC.meetingState, meetings.state())
+  const busy = state.phase !== 'idle'
+  if (busy && !meetingTicker) {
+    meetingTicker = setInterval(() => broadcast(IPC.meetingState, meetings.state()), 250)
+  } else if (!busy && meetingTicker) {
+    clearInterval(meetingTicker)
+    meetingTicker = null
+  }
+})
 
 dictation.on('phase', ({ phase, message }: { phase: string; message: string | null }) => {
   setEscapeCancel(phase !== 'idle')
@@ -482,6 +511,28 @@ function registerIpc(): void {
     recordings.remove(file)
   })
   ipcMain.handle(IPC.clearRecordings, () => recordings.clear())
+  ipcMain.handle(IPC.startMeeting, () => meetings.start())
+  ipcMain.handle(IPC.stopMeeting, () => {
+    // Asks; the merge runs once the window says its streams are shut, or after
+    // the grace period if it never does.
+    meetings.requestStop()
+  })
+  ipcMain.handle(IPC.getMeetingState, () => meetings.state())
+  ipcMain.handle(IPC.listMeetings, () => finishedSessions(MEETING_ROOT))
+  ipcMain.on(IPC.revealMeeting, (_e, dir: string) => shell.showItemInFolder(path.join(dir, 'audio.wav')))
+  ipcMain.on(
+    IPC.meetingFrame,
+    (_e, sessionId: number, channel: MeetingChannel, frame: Float32Array) =>
+      meetings.frame(sessionId, channel, frame)
+  )
+  ipcMain.on(IPC.meetingReady, (_e, sessionId: number) => meetings.captureReady(sessionId))
+  ipcMain.on(
+    IPC.meetingFailed,
+    (_e, sessionId: number, channel: MeetingChannel, reason: string) =>
+      meetings.captureFailed(sessionId, channel, reason)
+  )
+  ipcMain.on(IPC.meetingClosed, (_e, sessionId: number) => meetings.captureClosed(sessionId))
+
   ipcMain.on(IPC.audioFrame, (_e, sessionId: number, frame: Float32Array) =>
     dictation.pushFrame(sessionId, frame)
   )
@@ -689,6 +740,15 @@ if (!app.requestSingleInstanceLock()) {
     const { models } = settings.get()
     supervisor.register('whisper', models.whisper)
     supervisor.register('llama', models.llama)
+
+    // Must be installed before any renderer asks for system audio, and it costs
+    // nothing when no meeting is ever started.
+    enableSystemAudioCapture()
+
+    // Anything a previous run left in checkpoints, before a new meeting can
+    // start on top of it. The audio is already on disk; this is what turns it
+    // into a file.
+    void meetings.recoverAbandoned()
 
     registerIpc()
     createHud()

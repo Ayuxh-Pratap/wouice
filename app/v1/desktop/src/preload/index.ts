@@ -5,6 +5,8 @@ import {
   type DictationOutcome,
   type HotkeyReport,
   type HudState,
+  type MeetingChannel,
+  type MeetingState,
   type MetricsSnapshot,
   type SidecarView,
   type WouiceApi,
@@ -60,6 +62,18 @@ const api: WouiceApi = {
   // Float32Array crosses the bridge as a structured clone. At 16 kHz that is
   // ~64 KB/s, which is nothing, and it keeps ALL decision logic in main where
   // the state machine lives rather than splitting it across the bridge.
+  startMeeting: () => ipcRenderer.invoke(IPC.startMeeting),
+  stopMeeting: () => ipcRenderer.invoke(IPC.stopMeeting),
+  getMeetingState: () => ipcRenderer.invoke(IPC.getMeetingState),
+  listMeetings: () => ipcRenderer.invoke(IPC.listMeetings),
+  revealMeeting: (dir: string) => ipcRenderer.send(IPC.revealMeeting, dir),
+  sendMeetingFrame: (sessionId: number, channel: MeetingChannel, frame: Float32Array) =>
+    ipcRenderer.send(IPC.meetingFrame, sessionId, channel, frame),
+  meetingReady: (sessionId: number) => ipcRenderer.send(IPC.meetingReady, sessionId),
+  meetingFailed: (sessionId: number, channel: MeetingChannel, reason: string) =>
+    ipcRenderer.send(IPC.meetingFailed, sessionId, channel, reason),
+  meetingClosed: (sessionId: number) => ipcRenderer.send(IPC.meetingClosed, sessionId),
+  onMeetingState: (cb) => subscribe<MeetingState>(IPC.meetingState, cb),
   sendAudioFrame: (sessionId: number, frame: Float32Array) =>
     ipcRenderer.send(IPC.audioFrame, sessionId, frame),
   captureReady: (sessionId: number) => ipcRenderer.send(IPC.captureReady, sessionId),

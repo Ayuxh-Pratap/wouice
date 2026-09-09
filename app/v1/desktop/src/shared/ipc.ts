@@ -51,6 +51,17 @@ export const IPC = {
   captureReady: 'capture:ready',
   captureFailed: 'capture:failed',
   cancelDictation: 'dictation:cancel',
+  // Meetings. Main owns the decision to record; the window owns the two web
+  // APIs that can actually open audio, so the two talk in both directions.
+  startMeeting: 'meeting:start',
+  stopMeeting: 'meeting:stop',
+  getMeetingState: 'meeting:state',
+  listMeetings: 'meeting:list',
+  revealMeeting: 'meeting:reveal',
+  meetingFrame: 'meeting:frame',
+  meetingReady: 'meeting:ready',
+  meetingFailed: 'meeting:failed',
+  meetingClosed: 'meeting:closed',
   // The pet reports gestures; main does the moving. The renderer never knows
   // where on the desktop it is.
   petClick: 'pet:click',
@@ -70,6 +81,7 @@ export const IPC = {
   hudHover: 'hud:hover',
   hudDragging: 'hud:dragging',
   hudPlacement: 'hud:placement',
+  meetingState: 'meeting:changed',
 } as const
 
 /** Which way the capsule opens, and whether there is a pet to open it from. */
@@ -241,6 +253,36 @@ export interface Diagnostics {
 }
 
 /** Shape exposed on `window.wouice` by the preload bridge. */
+/** Mirrors the main-process controller. Kept here so the window cannot drift. */
+export type MeetingChannel = 'me' | 'them'
+export type MeetingPhase = 'idle' | 'starting' | 'recording' | 'stopping' | 'merging'
+
+export interface MeetingChannelView {
+  channel: MeetingChannel
+  live: boolean
+  samples: number
+  level: number
+  problem: string | null
+}
+
+export interface MeetingState {
+  phase: MeetingPhase
+  sessionId: number
+  startedAt: number | null
+  elapsedMs: number
+  channels: MeetingChannelView[]
+  message: string
+}
+
+/** A meeting whose audio is on disk. No transcript yet: that is Stage 2. */
+export interface RecordedMeeting {
+  dir: string
+  path: string
+  startedAt: number
+  durationMs: number
+  bytes: number
+}
+
 export interface WouiceApi {
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Settings>): Promise<Settings>
@@ -284,6 +326,20 @@ export interface WouiceApi {
   calibrate(samples: CalibrationInput[], device: string): Promise<CalibrationReport>
   /** Commit a calibration to settings. */
   calibrateApply(report: CalibrationReport): Promise<void>
+  /**
+   * Ask for a meeting. Returns the session id to stamp frames with, or null
+   * when one is already running.
+   */
+  startMeeting(): Promise<number | null>
+  stopMeeting(): Promise<void>
+  getMeetingState(): Promise<MeetingState>
+  listMeetings(): Promise<RecordedMeeting[]>
+  revealMeeting(dir: string): void
+  sendMeetingFrame(sessionId: number, channel: MeetingChannel, frame: Float32Array): void
+  meetingReady(sessionId: number): void
+  meetingFailed(sessionId: number, channel: MeetingChannel, reason: string): void
+  meetingClosed(sessionId: number): void
+  onMeetingState(cb: (s: MeetingState) => void): () => void
   sendAudioFrame(sessionId: number, frame: Float32Array): void
   captureReady(sessionId: number): void
   captureFailed(sessionId: number, reason: string): void
