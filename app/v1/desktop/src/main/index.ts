@@ -88,6 +88,7 @@ const meetings = new MeetingController(MEETING_ROOT, {
     health: () => whisperClient().health(),
   },
   store: store.meetings,
+  language: () => settings.get().meetings.language,
 })
 
 /**
@@ -276,6 +277,8 @@ meetings.on('finished', (summary: { meetingId: number } & Record<string, unknown
       llmModel: supervisor.snapshot('llama').modelId,
       chunksSent: summary.chunksSent as number,
       chunksFailed: summary.chunksFailed as number,
+      chunksSkipped: summary.chunksSkipped as number,
+      language: summary.language as string,
       segments: summary.segments as number,
       channels: summary.channels as never,
       skewMs: summary.skewMs as number | null,

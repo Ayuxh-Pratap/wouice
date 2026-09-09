@@ -199,7 +199,9 @@ export function formatMeeting(meeting: MeetingRecord, tasks: number): string {
 
   lines.push('transcription')
   lines.push(`  model         ${d.asrModel ?? 'unknown'}`)
+  lines.push(`  language      ${d.language ?? 'unknown'}`)
   lines.push(`  chunks sent   ${d.chunksSent ?? 0}`)
+  lines.push(`  chunks silent ${d.chunksSkipped ?? 0}  (never sent, so never hallucinated over)`)
   lines.push(
     `  chunks failed ${d.chunksFailed ?? 0}` +
       ((d.chunksFailed ?? 0) > 0 ? '  <- lost audio, one slice each' : '')

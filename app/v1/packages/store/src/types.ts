@@ -234,6 +234,10 @@ export interface MeetingDiagnostics {
   /** Transcription chunks sent to the speech model, and how many failed. */
   chunksSent?: number
   chunksFailed?: number
+  /** Chunks that were silence and were never sent to the model. */
+  chunksSkipped?: number
+  /** The language every chunk after the first was forced to. */
+  language?: string
   segments?: number
   channels?: { channel: MeetingChannel; samples: number; problem: string | null }[]
   /** How far the two channels' clocks drifted apart, in milliseconds. */

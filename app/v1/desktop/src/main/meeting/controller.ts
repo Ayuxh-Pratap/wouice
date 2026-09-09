@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import type { AsrClient } from '@wouice/asr'
+import type { AsrClient, Language } from '@wouice/asr'
 import type { Meetings } from '@wouice/store'
 import { meterLevel, rms } from '../capture/silence-policy.js'
 import { abandonedSessions, mergeSession, type MergeResult } from './merge.js'
@@ -67,6 +67,8 @@ export interface MeetingDeps {
   asr?: AsrClient
   store?: Meetings
   chunkSeconds?: number
+  /** Read at the start of each meeting, so changing it does not need a restart. */
+  language?(): Language
 }
 
 /**
@@ -130,6 +132,7 @@ export class MeetingController extends EventEmitter {
         ? new MeetingTranscriber({
             asr: this.deps.asr,
             chunkSeconds: this.deps.chunkSeconds,
+            language: this.deps.language?.(),
             onSegments: (segments) => this.record(segments),
           })
         : null
@@ -214,18 +217,21 @@ export class MeetingController extends EventEmitter {
       return null
     }
 
-    this.recorder = null
-    const transcriber = this.transcriber
-    this.transcriber = null
-    const meetingId = this.meetingId
-    this.meetingId = null
-    // Captured before the state is cleared: this is what the diagnostics are
-    // built from, and after `setPhase('idle')` there is nothing left to read.
+    // BEFORE anything is cleared. `state()` reads the recorder's own snapshot,
+    // so taking this after `this.recorder = null` reported every channel as
+    // zero seconds - which is what the first real meeting's diagnostic said,
+    // while 52 chunks and 107 segments proved audio had flowed the whole time.
     const channels = this.state().channels.map((c) => ({
       channel: c.channel,
       samples: c.samples,
       problem: c.problem,
     }))
+
+    this.recorder = null
+    const transcriber = this.transcriber
+    this.transcriber = null
+    const meetingId = this.meetingId
+    this.meetingId = null
     this.setPhase('merging')
 
     // Both at once. The merge is disk-bound and the transcript tail is waiting
@@ -268,6 +274,8 @@ export class MeetingController extends EventEmitter {
         channels,
         chunksSent: stats?.chunksSent ?? 0,
         chunksFailed: stats?.chunksFailed ?? 0,
+        chunksSkipped: stats?.chunksSkipped ?? 0,
+        language: stats?.language ?? 'auto',
         segments: stats?.segments ?? 0,
         skewMs: result?.skewMs ?? null,
         driftPpm: {
