@@ -1,37 +1,10 @@
-import { Menu, Tray, app, nativeImage } from 'electron'
+import { Menu, Tray, app } from 'electron'
 import type { SidecarSupervisor } from './sidecars/supervisor.js'
 import { SIDECARS, type SidecarId } from '../shared/models.js'
 import type { SettingsStore } from './settings-store.js'
+import { trayIcon } from './brand.js'
 
 let tray: Tray | null = null
-
-/**
- * A tiny procedurally-drawn icon, so the shell has no binary asset dependency
- * yet. Real branding comes later; this only has to be visible in both light and
- * dark trays and distinguishable at 16px.
- */
-function icon(): Electron.NativeImage {
-  const size = 16
-  const png = Buffer.alloc(size * size * 4)
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4
-      // A filled circle with a soft edge.
-      const dx = x - 7.5
-      const dy = y - 7.5
-      const d = Math.sqrt(dx * dx + dy * dy)
-      const a = d < 5 ? 255 : d < 6.5 ? Math.round(255 * (6.5 - d) / 1.5) : 0
-      png[i] = 226
-      png[i + 1] = 232
-      png[i + 2] = 240
-      png[i + 3] = a
-    }
-  }
-  return nativeImage.createFromBuffer(
-    Buffer.from(png),
-    { width: size, height: size }
-  )
-}
 
 function statusGlyph(status: string): string {
   switch (status) {
@@ -61,7 +34,7 @@ export interface TrayDeps {
  */
 export function createTray(deps: TrayDeps): Tray {
   if (tray) return tray
-  tray = new Tray(icon())
+  tray = new Tray(trayIcon())
   refreshTray(deps)
   tray.on('click', () => deps.onOpenWindow())
   return tray

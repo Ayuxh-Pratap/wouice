@@ -1,4 +1,5 @@
 import { BrowserWindow, screen, shell } from 'electron'
+import { appIcon } from './brand.js'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { hideFromAltTab } from './injection/win32.js'
@@ -391,6 +392,9 @@ export function createMainWindow(zoom = 1): BrowserWindow {
     minHeight: 480,
     show: false,
     title: 'Wouice',
+    // The same mark the rail draws, rasterised. Without this the window corner,
+    // Alt+Tab and the taskbar all show Electron's own default.
+    icon: appIcon(),
     autoHideMenuBar: true,
     backgroundColor: GROUND,
     titleBarStyle: 'hidden',
