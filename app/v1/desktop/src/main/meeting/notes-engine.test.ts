@@ -58,7 +58,9 @@ describe('a normal run', () => {
         case 'condense':
           return '- SSO must be done before rollout'
         case 'tasks':
-          return '{"text":"send the SSO timeline","owner":"You","due":"2026-09-14","line":2}'
+          // The quote has to be words actually in line 2, or the parser drops
+          // it - which is the whole grounding guard.
+          return '{"text":"send the SSO timeline","owner":"You","due":"2026-09-14","line":2,"quote":"I will send the timeline"}'
         default:
           return '## Summary\nSSO blocks rollout.'
       }
@@ -183,7 +185,7 @@ describe('when a step fails', () => {
       if (stageOf(req) === 'tasks') {
         extracted++
         if (extracted === 1) throw new Error('down')
-        return '{"text":"do the thing","owner":null,"due":null,"line":399}'
+        return `{"text":"do the thing","owner":null,"due":null,"line":399,"quote":"point 398 about the rollout"}`
       }
       if (stageOf(req) === 'condense') return '- a point'
       return '## Summary\nok'
@@ -207,7 +209,7 @@ describe('tasks the model was not entitled to', () => {
       if (stageOf(req) === 'tasks') {
         // Line 1 is only in the first chunk; every later chunk citing it is
         // pointing at something it never saw.
-        return '{"text":"invented","owner":null,"due":null,"line":1}'
+        return '{"text":"invented","owner":null,"due":null,"line":1,"quote":"point 0 about the rollout"}'
       }
       if (stageOf(req) === 'condense') return '- a point'
       return '## Summary\nok'

@@ -92,71 +92,95 @@ describe('what the model sees', () => {
 })
 
 describe('reading tasks back', () => {
-  const allowed = [10, 11, 12]
+  const lines = [
+    line(10, 'okay I will book the follow-up for next week'),
+    line(11, 'yes I will send Priya the SSO timeline on Monday'),
+    line(12, 'his salary is 1500 and he is also doing his masters'),
+  ]
 
-  it('takes a well-formed task', () => {
-    const tasks = parseTasks(
-      '{"text":"send Priya the SSO timeline","owner":"You","due":"2026-09-15","line":11}',
-      allowed
-    )
-    expect(tasks).toEqual([
+  const task = (over: Record<string, unknown>): string =>
+    JSON.stringify({ text: 'do it', owner: null, due: null, line: 11, quote: 'I will send Priya', ...over })
+
+  it('takes a well-formed, quoted task', () => {
+    const raw = task({ text: 'send Priya the SSO timeline', owner: 'You', due: '2026-09-15' })
+    expect(parseTasks(raw, lines)).toEqual([
       { text: 'send Priya the SSO timeline', owner: 'You', due: '2026-09-15', segmentId: 11 },
     ])
   })
 
+  it('drops a task whose quote is not in the line it cites', () => {
+    // The guard that matters. A model handed a chat about salaries will cite a
+    // real line and report "assume salary of fifteen hundred rupees" as a task;
+    // it cannot quote a commitment out of a sentence that contains none.
+    const raw = task({
+      text: 'assume salary of fifteen hundred rupees',
+      line: 12,
+      quote: 'I will assume the salary',
+    })
+    expect(parseTasks(raw, lines)).toEqual([])
+  })
+
+  it('drops a task with no quote at all', () => {
+    expect(parseTasks(task({ quote: undefined }), lines)).toEqual([])
+    expect(parseTasks(task({ quote: '' }), lines)).toEqual([])
+  })
+
+  it('refuses a quote too short to prove anything', () => {
+    // Two words appear in half the transcript. A citation has to be specific
+    // enough that it could have been wrong.
+    expect(parseTasks(task({ quote: 'I will' }), lines)).toEqual([])
+  })
+
+  it('ignores punctuation and case when checking the quote', () => {
+    const raw = task({ quote: 'i will send priya,' })
+    expect(parseTasks(raw, lines)).toHaveLength(1)
+  })
+
   it('drops a task citing a line that was never shown', () => {
-    // The B9 guard, and the reason it is here rather than in the prompt: the
-    // model may have invented the commitment as well as the citation.
-    expect(parseTasks('{"text":"do the thing","owner":null,"due":null,"line":99}', allowed))
-      .toEqual([])
+    expect(parseTasks(task({ line: 99 }), lines)).toEqual([])
   })
 
   it('drops a task with no citation at all', () => {
-    expect(parseTasks('{"text":"do the thing","owner":null,"due":null}', allowed)).toEqual([])
+    expect(parseTasks(task({ line: undefined }), lines)).toEqual([])
   })
 
   it('survives a fence and prose around the JSON', () => {
     const raw = [
       'Here are the tasks:',
       '```json',
-      '{"text":"book the follow-up","owner":null,"due":null,"line":10}',
+      task({ text: 'book the follow-up', line: 10, quote: 'I will book the follow-up' }),
       '```',
       'Let me know if you need more.',
     ].join('\n')
-    expect(parseTasks(raw, allowed).map((t) => t.text)).toEqual(['book the follow-up'])
+    expect(parseTasks(raw, lines).map((t) => t.text)).toEqual(['book the follow-up'])
   })
 
   it('never guesses an owner or a date', () => {
-    const raw = '{"text":"chase the invoice","owner":"null","due":"next Friday","line":12}'
-    const [task] = parseTasks(raw, allowed)
-    expect(task!.owner).toBeNull()
-    expect(task!.due).toBeNull()
+    const raw = task({ owner: 'null', due: 'next Friday' })
+    const [only] = parseTasks(raw, lines)
+    expect(only!.owner).toBeNull()
+    expect(only!.due).toBeNull()
   })
 
   it('drops empty and absurdly long text', () => {
-    expect(parseTasks('{"text":"   ","line":10}', allowed)).toEqual([])
-    expect(parseTasks(`{"text":"${'x'.repeat(500)}","line":10}`, allowed)).toEqual([])
+    expect(parseTasks(task({ text: '   ' }), lines)).toEqual([])
+    expect(parseTasks(task({ text: 'x'.repeat(500) }), lines)).toEqual([])
   })
 
   it('does not emit the same commitment twice', () => {
-    const raw = [
-      '{"text":"send the deck","owner":null,"due":null,"line":10}',
-      '{"text":"Send the deck","owner":null,"due":null,"line":10}',
-    ].join('\n')
-    expect(parseTasks(raw, allowed)).toHaveLength(1)
+    const raw = [task({ text: 'send the deck' }), task({ text: 'Send the deck' })].join('\n')
+    expect(parseTasks(raw, lines)).toHaveLength(1)
   })
 
   it('keeps two different commitments from one line', () => {
-    const raw = [
-      '{"text":"send the deck","owner":null,"due":null,"line":10}',
-      '{"text":"book the room","owner":null,"due":null,"line":10}',
-    ].join('\n')
-    expect(parseTasks(raw, allowed)).toHaveLength(2)
+    const raw = [task({ text: 'send the deck' }), task({ text: 'book the room' })].join('\n')
+    expect(parseTasks(raw, lines)).toHaveLength(2)
   })
 
-  it('returns nothing for nothing', () => {
-    expect(parseTasks('', allowed)).toEqual([])
-    expect(parseTasks('No commitments were made.', allowed)).toEqual([])
+  it('returns nothing for nothing, which is the usual answer', () => {
+    // Most conversations contain no commitments at all.
+    expect(parseTasks('', lines)).toEqual([])
+    expect(parseTasks('No commitments were made.', lines)).toEqual([])
   })
 })
 

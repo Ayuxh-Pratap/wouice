@@ -126,22 +126,32 @@ export interface ParsedTask {
 
 const MAX_TASK_CHARS = 300
 
+/** Letters and digits only, for comparing what was said against what was quoted. */
+function bare(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
 /**
  * Read the task lines back, and refuse anything that cannot be traced.
  *
- * THIS IS WHERE B9 IS ENFORCED, not in the prompt. A prompt rule is a request;
- * this is the thing that makes an invented citation impossible to ship. A task
- * whose `line` is not one of the ids actually handed to the model is dropped
- * outright - the model may have hallucinated the whole commitment, and a task
- * you cannot check against what was said is worse than a missing one.
+ * TWO GUARDS, AND THE SECOND IS THE ONE THAT MATTERS. The first is the line
+ * number: a task citing a line the model was not shown is dropped, because it
+ * cannot have read it. That alone is not enough - handed a casual conversation
+ * about salaries and university, a model will happily cite a real line and
+ * report "assume salary of fifteen hundred rupees" as a task.
  *
- * Every other malformed field is dropped rather than guessed. An owner is only
- * an owner if the model returned a string; a due date is only a date if it
- * looks like one. Guessing an owner quietly moves work to somebody who never
- * agreed to it.
+ * So the model must also QUOTE the words that prove somebody committed to
+ * something, and the quote must actually appear in the line it cites. It cannot
+ * quote a commitment out of a sentence that contains none. That turns "is this
+ * really a task" from the model's judgement into something checkable here,
+ * which is the whole of criterion B9.
+ *
+ * Everything else is dropped rather than guessed. An owner is only an owner if
+ * the model returned a name; guessing one quietly moves work to somebody who
+ * never agreed to it.
  */
-export function parseTasks(raw: string, allowedIds: Iterable<number>): ParsedTask[] {
-  const allowed = new Set(allowedIds)
+export function parseTasks(raw: string, lines: readonly TranscriptLine[]): ParsedTask[] {
+  const byId = new Map(lines.map((line) => [line.id, bare(line.text)]))
   const seen = new Set<string>()
   const tasks: ParsedTask[] = []
 
@@ -155,7 +165,6 @@ export function parseTasks(raw: string, allowedIds: Iterable<number>): ParsedTas
     try {
       parsed = JSON.parse(trimmed)
     } catch {
-      // Prose the model added despite being asked for JSON only.
       continue
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue
@@ -165,7 +174,12 @@ export function parseTasks(raw: string, allowedIds: Iterable<number>): ParsedTas
     if (!text || text.length > MAX_TASK_CHARS) continue
 
     const segmentId = typeof record.line === 'number' ? record.line : Number(record.line)
-    if (!Number.isInteger(segmentId) || !allowed.has(segmentId)) continue
+    if (!Number.isInteger(segmentId) || !byId.has(segmentId)) continue
+
+    // The grounding check. A quote that is not in the line is a quote the model
+    // wrote rather than read, and a task built on one is an invention.
+    const quote = typeof record.quote === 'string' ? bare(record.quote) : ''
+    if (quote.length < 8 || !byId.get(segmentId)!.includes(quote)) continue
 
     const owner =
       typeof record.owner === 'string' && record.owner.trim() && record.owner.trim() !== 'null'

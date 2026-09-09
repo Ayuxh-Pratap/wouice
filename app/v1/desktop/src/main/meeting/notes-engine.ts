@@ -100,9 +100,9 @@ export class MeetingNotesEngine {
         input.signal
       )
       if (raw !== null) {
-        // Only ids from THIS chunk are allowed, not the whole transcript: the
-        // model can only cite what it was actually shown.
-        tasks.push(...parseTasks(raw, chunk.lines.map((l) => l.id)))
+        // Only THIS chunk's lines: the model can only cite, and only quote
+        // from, what it was actually shown.
+        tasks.push(...parseTasks(raw, chunk.lines))
       }
     }
 
