@@ -51,7 +51,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   const [notesOpen, setNotesOpen] = useState(false)
   const [problem, setProblem] = useState('')
   const [copied, setCopied] = useState(false)
-  const [tab, setTab] = useState<MeetingTab>('summary')
+  const [tab, setTab] = useState<MeetingTab | null>(null)
 
   const load = useCallback(() => {
     void window.wouice.getMeeting(meetingId).then(setMeeting)
@@ -103,6 +103,9 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   const kind = kindOf(meeting.kind)
   const hasEnglish = segments.some((s) => s.textEn)
   const working = notesProgress !== null || englishProgress !== null || repass !== null
+  // Whatever there is to read. Landing on an empty Summary when the transcript
+  // is right there is a click for nothing.
+  const shown: MeetingTab = tab ?? (meeting.notesMd ? 'summary' : 'transcript')
 
   const changeTask = (taskId: number, taskState: TaskState): void => {
     setTasks((current) => current.map((t) => (t.id === taskId ? { ...t, state: taskState } : t)))
@@ -124,68 +127,65 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   /* ------------------------------------------------------------ recording -- */
 
   if (live) {
+    const settling = state!.phase !== 'recording'
     return (
       <div className="flex h-full flex-col gap-3">
-        <header className="flex shrink-0 items-center gap-3">
-          <span className="size-2 shrink-0 animate-pulse rounded-full bg-red-500" />
-          <span className="text-[22px] font-semibold tabular-nums text-neutral-50">
-            {formatElapsed(state?.elapsedMs ?? 0)}
+        <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
+          <span className="flex items-center gap-2.5">
+            <span className="size-2 shrink-0 animate-pulse rounded-full bg-red-500" />
+            <span className="text-[24px] font-semibold tabular-nums text-neutral-50">
+              {formatElapsed(state?.elapsedMs ?? 0)}
+            </span>
           </span>
-          <span className="text-[12px] text-neutral-500">{describePhase(state!.phase)}</span>
 
-          {/* Two lights, not two meters. The only thing worth knowing while a
-              call runs is that both halves are arriving. */}
-          <div className="ml-auto flex items-center gap-3">
+          {/*
+            Two lights that answer one question: is each half being heard RIGHT
+            NOW. Bright while somebody is speaking, dim while the channel is
+            open and quiet, amber before it opens, red when it failed. Watching
+            your own light come up as you talk is the fastest possible proof
+            that the recording is real.
+          */}
+          <span className="flex items-center gap-3">
             {(state?.channels ?? []).map((c) => (
-              <span key={c.channel} className="flex items-center gap-1.5" title={c.problem ?? ''}>
-                <span
-                  className="size-1.5 rounded-full"
-                  style={{
-                    backgroundColor: c.problem ? '#f87171' : c.live ? '#34d399' : '#fbbf24',
-                  }}
-                />
-                <span className="text-[11.5px] text-neutral-400">
-                  {c.channel === 'me' ? 'You' : 'Them'}
-                </span>
-              </span>
+              <SpeakingLight key={c.channel} view={c} />
             ))}
-            <button
-              onClick={() => setNotesOpen(true)}
-              className="rounded-lg px-2.5 py-1.5 text-[12px] text-neutral-300 ring-1 ring-white/10 transition hover:bg-white/[0.08]"
-            >
-              Notes{meeting.scratchMd ? ' •' : ''}
-            </button>
+          </span>
+
+          <span className="ml-auto flex items-center gap-2">
             <button
               onClick={() => void window.wouice.stopMeeting()}
               disabled={state?.phase === 'merging'}
-              className="rounded-lg bg-red-500/15 px-3.5 py-1.5 text-[12.5px] font-medium text-red-300 ring-1 ring-red-500/30 transition hover:bg-red-500/25 disabled:opacity-40"
+              className="rounded-lg bg-red-500/15 px-4 py-1.5 text-[12.5px] font-medium text-red-300 ring-1 ring-red-500/30 transition hover:bg-red-500/25 disabled:opacity-40"
             >
               Stop
             </button>
-          </div>
+          </span>
         </header>
 
-        {state?.message ? <p className="text-[12px] text-amber-300">{state.message}</p> : null}
-
-        <section className="lift flex min-h-0 flex-1 flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            <Transcript
-              segments={segments}
-              emptyMessage="Lines appear about half a minute behind the conversation."
-            />
-          </div>
-        </section>
-
-        {notesOpen ? (
-          <NotesDialog
-            meetingId={meetingId}
-            initial={meeting.scratchMd}
-            onClose={() => {
-              setNotesOpen(false)
-              load()
-            }}
-          />
+        {/* Status belongs under the row it describes, not wedged inside it. */}
+        {settling || state?.message ? (
+          <p className="shrink-0 text-[11.5px] text-neutral-500">
+            {state?.message || describePhase(state!.phase)}
+          </p>
         ) : null}
+
+        <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[1.7fr_1fr]">
+          <section className="lift flex min-h-0 flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <Transcript
+                segments={segments}
+                emptyMessage="Lines appear about half a minute behind the conversation."
+              />
+            </div>
+          </section>
+
+          {/*
+            An input, not a button that opens one. During a call you are typing
+            in fragments between sentences; a dialog to open first is a dialog
+            you do not open, and the note never gets written.
+          */}
+          <LiveNotes meetingId={meetingId} initial={meeting.scratchMd} />
+        </div>
       </div>
     )
   }
@@ -306,11 +306,11 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
             { id: 'tasks', label: 'Tasks', badge: tasks.filter((t) => t.state === 'open').length },
             { id: 'transcript', label: 'Transcript', badge: segments.length },
           ]}
-          active={tab}
+          active={shown}
           onChange={setTab}
         />
 
-        {tab === 'summary' ? (
+        {shown === 'summary' ? (
           meeting.notesMd ? (
             <Notes markdown={meeting.notesMd} tasks={[]} onTaskState={changeTask} />
           ) : (
@@ -331,7 +331,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
           )
         ) : null}
 
-        {tab === 'tasks' ? (
+        {shown === 'tasks' ? (
           tasks.length > 0 ? (
             <Notes markdown={null} tasks={tasks} onTaskState={changeTask} />
           ) : (
@@ -345,7 +345,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
           )
         ) : null}
 
-        {tab === 'transcript' ? (
+        {shown === 'transcript' ? (
           <section className="lift flex max-h-[62vh] flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
             {hasEnglish ? (
               <div className="mb-2.5 flex shrink-0 justify-end gap-1">
@@ -714,5 +714,87 @@ function Empty({
         </button>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * One channel, as a light that reacts to speech.
+ *
+ * The level is the same meter the dictation overlay uses, so "bright" means the
+ * same thing here as it does there.
+ */
+function SpeakingLight({
+  view,
+}: {
+  view: { channel: string; live: boolean; level: number; problem: string | null }
+}): React.JSX.Element {
+  const speaking = view.live && view.level > 0.08
+  const colour = view.problem ? '#f87171' : view.live ? '#34d399' : '#fbbf24'
+
+  return (
+    <span
+      className="flex items-center gap-1.5"
+      title={view.problem ?? (view.live ? 'being heard' : 'not open yet')}
+    >
+      <span
+        className="rounded-full transition-all duration-150"
+        style={{
+          backgroundColor: colour,
+          width: speaking ? 9 : 6,
+          height: speaking ? 9 : 6,
+          opacity: speaking ? 1 : view.live ? 0.45 : 0.8,
+          boxShadow: speaking ? `0 0 8px ${colour}` : 'none',
+        }}
+      />
+      <span
+        className="text-[11.5px] transition-colors"
+        style={{ color: speaking ? colour : '#a3a3a3' }}
+      >
+        {view.channel === 'me' ? 'You' : 'Them'}
+      </span>
+    </span>
+  )
+}
+
+/** The scratch pad, inline, for the length of the call. */
+function LiveNotes({
+  meetingId,
+  initial,
+}: {
+  meetingId: number
+  initial: string
+}): React.JSX.Element {
+  const [text, setText] = useState(initial)
+  const latest = useRef(initial)
+  latest.current = text
+
+  // Saved as you type. A meeting that ends unexpectedly should not take the
+  // last sentence with it.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void window.wouice.setMeetingScratch(meetingId, latest.current)
+    }, 600)
+    return () => clearTimeout(timer)
+  }, [text, meetingId])
+
+  useEffect(() => {
+    return () => {
+      void window.wouice.setMeetingScratch(meetingId, latest.current)
+    }
+  }, [meetingId])
+
+  return (
+    <section className="lift flex min-h-0 flex-col rounded-xl bg-white/[0.035] px-3.5 py-3 ring-1 ring-white/[0.08]">
+      <h2 className="mb-2 shrink-0 text-[11.5px] font-medium text-neutral-400">Your notes</h2>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={'pricing?? john wants Q3\nthey need SSO before rollout'}
+        className="min-h-0 flex-1 resize-none rounded-md bg-black/25 px-3 py-2 text-[12.5px] leading-relaxed text-neutral-200 ring-1 ring-white/[0.06] outline-none placeholder:text-neutral-700 focus:ring-white/20"
+      />
+      <p className="mt-2 shrink-0 text-[10.5px] leading-snug text-neutral-600">
+        Rough is fine. Used for the summary, and to spell names right.
+      </p>
+    </section>
   )
 }
