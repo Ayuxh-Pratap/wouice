@@ -10,6 +10,7 @@ import type {
 import { kindOf } from '../../shared/meeting-kind.js'
 import { Notes } from '../meetings/Notes.js'
 import { Transcript } from '../meetings/Transcript.js'
+import { Tabs } from '../shell/Tabs.js'
 
 /**
  * One meeting, on its own page.
@@ -28,6 +29,15 @@ import { Transcript } from '../meetings/Transcript.js'
 
 const RECORDING_PHASES = new Set(['starting', 'recording', 'stopping', 'merging'])
 
+/**
+ * Three things, read at different times.
+ *
+ * You open a meeting to check what you agreed, or to work the task list, or to
+ * read what was actually said - very rarely two of those in one visit. Stacked
+ * down a page, every visit costs a scroll past the parts you did not come for.
+ */
+type MeetingTab = 'summary' | 'tasks' | 'transcript'
+
 export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Element {
   const [meeting, setMeeting] = useState<MeetingRecord | null>(null)
   const [segments, setSegments] = useState<MeetingSegment[]>([])
@@ -41,6 +51,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   const [notesOpen, setNotesOpen] = useState(false)
   const [problem, setProblem] = useState('')
   const [copied, setCopied] = useState(false)
+  const [tab, setTab] = useState<MeetingTab>('summary')
 
   const load = useCallback(() => {
     void window.wouice.getMeeting(meetingId).then(setMeeting)
@@ -218,28 +229,35 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
           </p>
         </div>
 
-        {/* The two that are decisions; everything else is tidying. */}
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+        {/*
+          Notes is the only thing here you DO; the rest is redoing something
+          that already ran. It sits level with the title rather than with the
+          back link, because it belongs to this meeting, not to the navigation.
+        */}
+        <div className="flex shrink-0 items-center gap-1.5 self-center">
           <button
-            onClick={() => setConfirming(true)}
-            disabled={working || !meeting.audioPath}
-            title="Transcribe again with the larger, slower model."
-            className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[12px] text-neutral-200 ring-1 ring-white/10 transition hover:bg-white/[0.12] disabled:opacity-40"
+            onClick={() => setNotesOpen(true)}
+            className="flex items-center gap-1 rounded-lg bg-white/[0.06] px-3 py-1.5 text-[12px] text-neutral-200 ring-1 ring-white/10 transition hover:bg-white/[0.12]"
           >
-            Improve accuracy
+            <span className="text-[13px] leading-none">+</span>
+            Notes{meeting.scratchMd ? ' •' : ''}
           </button>
-          {kind.translate ? (
-            <button
-              onClick={() => void redo('english')}
-              disabled={working || segments.length === 0}
-              className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[12px] text-neutral-300 ring-1 ring-white/10 transition hover:bg-white/[0.12] disabled:opacity-40"
-            >
-              Redo English
-            </button>
-          ) : null}
           <Menu
             items={[
-              { label: `Your notes${meeting.scratchMd ? ' •' : ''}`, onClick: () => setNotesOpen(true) },
+              {
+                label: 'Improve accuracy',
+                onClick: () => setConfirming(true),
+                disabled: working || !meeting.audioPath,
+              },
+              ...(kind.translate
+                ? [
+                    {
+                      label: 'Redo English',
+                      onClick: () => void redo('english'),
+                      disabled: working || segments.length === 0,
+                    },
+                  ]
+                : []),
               {
                 label: 'Redo summary',
                 onClick: () => void redo('notes'),
@@ -281,23 +299,56 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
         </p>
       ) : null}
 
-      <div className="relative space-y-4">
-        <Notes markdown={meeting.notesMd} tasks={tasks} onTaskState={changeTask} />
+      <div className="relative space-y-3">
+        <Tabs<MeetingTab>
+          tabs={[
+            { id: 'summary', label: 'Summary' },
+            { id: 'tasks', label: 'Tasks', badge: tasks.filter((t) => t.state === 'open').length },
+            { id: 'transcript', label: 'Transcript', badge: segments.length },
+          ]}
+          active={tab}
+          onChange={setTab}
+        />
 
-        {!meeting.notesMd && !working && segments.length > 0 ? (
-          <button
-            onClick={() => void redo('notes')}
-            className="rounded-lg bg-white/[0.06] px-3 py-1.5 text-[12px] font-medium text-neutral-200 ring-1 ring-white/10 transition hover:bg-white/[0.12]"
-          >
-            Summary and tasks
-          </button>
+        {tab === 'summary' ? (
+          meeting.notesMd ? (
+            <Notes markdown={meeting.notesMd} tasks={[]} onTaskState={changeTask} />
+          ) : (
+            <Empty
+              text={
+                working
+                  ? 'The summary is being written.'
+                  : segments.length === 0
+                    ? 'Nothing was transcribed, so there is nothing to summarise.'
+                    : 'No summary yet.'
+              }
+              action={
+                !working && segments.length > 0
+                  ? { label: 'Summary and tasks', onClick: () => void redo('notes') }
+                  : undefined
+              }
+            />
+          )
         ) : null}
 
-        <section className="lift flex max-h-[58vh] flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
-          <div className="mb-2.5 flex shrink-0 items-center gap-2">
-            <h2 className="text-[12px] font-medium text-neutral-400">Transcript</h2>
+        {tab === 'tasks' ? (
+          tasks.length > 0 ? (
+            <Notes markdown={null} tasks={tasks} onTaskState={changeTask} />
+          ) : (
+            <Empty
+              text={
+                working
+                  ? 'Looking for commitments.'
+                  : 'No tasks. Most conversations contain none, and inventing them would be worse.'
+              }
+            />
+          )
+        ) : null}
+
+        {tab === 'transcript' ? (
+          <section className="lift flex max-h-[62vh] flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
             {hasEnglish ? (
-              <div className="ml-auto flex gap-1">
+              <div className="mb-2.5 flex shrink-0 justify-end gap-1">
                 {[
                   { on: true, label: 'English' },
                   { on: false, label: 'As spoken' },
@@ -318,16 +369,15 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
                 ))}
               </div>
             ) : null}
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-            <Transcript
-              segments={segments}
-              english={english && hasEnglish}
-              emptyMessage="No transcript — it was recorded before transcription existed, or the speech model was not running."
-            />
-          </div>
-        </section>
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <Transcript
+                segments={segments}
+                english={english && hasEnglish}
+                emptyMessage="No transcript — it was recorded before transcription existed, or the speech model was not running."
+              />
+            </div>
+          </section>
+        ) : null}
       </div>
 
       {confirming ? (
@@ -406,7 +456,10 @@ function Menu({
         <div
           role="menu"
           onClick={(e) => e.stopPropagation()}
-          className="lift absolute right-0 z-40 mt-1 w-48 overflow-hidden rounded-lg bg-neutral-900 py-1 ring-1 ring-white/[0.12]"
+          // Two steps lighter than the panel it floats over, with a real
+          // shadow. At the same value as its background it read as part of the
+          // page rather than as something on top of it.
+          className="absolute right-0 z-40 mt-1.5 w-52 overflow-hidden rounded-lg bg-neutral-800 py-1 shadow-2xl shadow-black/60 ring-1 ring-white/[0.16]"
         >
           {items.map((item) => (
             <button
@@ -640,4 +693,26 @@ function formatWhen(epochMs: number): string {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function Empty({
+  text,
+  action,
+}: {
+  text: string
+  action?: { label: string; onClick(): void }
+}): React.JSX.Element {
+  return (
+    <div className="lift rounded-xl bg-white/[0.035] px-4 py-8 text-center ring-1 ring-white/[0.08]">
+      <p className="text-[12.5px] text-neutral-400">{text}</p>
+      {action ? (
+        <button
+          onClick={action.onClick}
+          className="mt-3 rounded-lg bg-white/[0.06] px-3 py-1.5 text-[12px] font-medium text-neutral-200 ring-1 ring-white/10 transition hover:bg-white/[0.12]"
+        >
+          {action.label}
+        </button>
+      ) : null}
+    </div>
+  )
 }
