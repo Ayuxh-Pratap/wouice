@@ -10,6 +10,7 @@ import type {
 import { kindOf } from '../../shared/meeting-kind.js'
 import { Notes } from '../meetings/Notes.js'
 import { Transcript } from '../meetings/Transcript.js'
+import { Icon } from '../shell/Icon.js'
 import { Tabs } from '../shell/Tabs.js'
 
 /**
@@ -715,10 +716,15 @@ function Empty({
 /**
  * One channel, as a small avatar whose ring lights when that person speaks.
  *
- * INITIALS, NOT WORDS. Two words next to a Stop button is a row of labels; two
- * 26px circles is a glance. The name is on hover, and the colours do the
- * teaching - green is you and blue is them, the same two the transcript uses,
- * so the mapping is learned once and reused.
+ * A GLYPH, NOT A LETTER. These were "Y" and "T", which are initials of words
+ * that are never on screen: nothing tells you that T is Them rather than a
+ * name, and the pair reads as two tags rather than as two sources of sound. A
+ * microphone and a speaker say which input each one is without being read - your
+ * voice off your own microphone, everyone else off the system's output - which
+ * is also the distinction that matters when one of them is not being heard.
+ *
+ * Colour still does the second half of the teaching: green is you and blue is
+ * them, the same two the transcript uses, so the mapping is learned once.
  *
  * The level is the same meter the dictation overlay uses, so "lit" means the
  * same thing here as it does there.
@@ -734,7 +740,7 @@ function SpeakingAvatar({
 
   return (
     <span
-      className="grid size-[26px] shrink-0 place-items-center rounded-full text-[10.5px] font-semibold transition-all duration-150"
+      className="grid size-[26px] shrink-0 place-items-center rounded-full transition-all duration-150"
       title={
         view.problem
           ? `${mine ? 'You' : 'Them'}: ${view.problem}`
@@ -750,7 +756,7 @@ function SpeakingAvatar({
           : `0 0 0 1.5px ${view.live ? `${colour}4d` : 'rgba(255,255,255,0.10)'}`,
       }}
     >
-      {mine ? 'Y' : 'T'}
+      <Icon name={mine ? 'mic' : 'speaker'} className="size-[13px]" />
     </span>
   )
 }

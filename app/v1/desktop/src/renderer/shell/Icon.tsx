@@ -3,7 +3,7 @@ import type { IconName } from './routes.js'
 /**
  * The handful of icons the shell needs, drawn inline.
  *
- * No icon library. Six shapes do not justify a dependency, and the charts in
+ * No icon library. A handful of shapes do not justify a dependency, and the charts in
  * this app are hand-rolled SVG for the same reason - one line weight, one
  * stroke style, nothing to keep in step with a package's idea of a grid.
  *
@@ -11,7 +11,9 @@ import type { IconName } from './routes.js'
  * whatever the surrounding text is doing, including the dimmed state.
  */
 
-const PATHS: Record<IconName | 'chevronLeft' | 'chevronRight' | 'search', React.ReactNode> = {
+type ExtraIcon = 'chevronLeft' | 'chevronRight' | 'search' | 'mic' | 'speaker'
+
+const PATHS: Record<IconName | ExtraIcon, React.ReactNode> = {
   // A speedometer: numbers about speed and load.
   gauge: (
     <>
@@ -75,13 +77,29 @@ const PATHS: Record<IconName | 'chevronLeft' | 'chevronRight' | 'search', React.
       <path d="m20 20-3.5-3.5" />
     </>
   ),
+  // A microphone: the channel that is your own voice, off your own input.
+  mic: (
+    <>
+      <rect x="9" y="2.5" width="6" height="11" rx="3" />
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0" />
+      <path d="M12 17.5V21" />
+    </>
+  ),
+  // A speaker: the channel that is everyone else, off the system's output.
+  speaker: (
+    <>
+      <path d="M11 4.5 6.5 8.5H3.5v7h3l4.5 4z" />
+      <path d="M15.5 9a4 4 0 0 1 0 6" />
+      <path d="M18.5 6a8 8 0 0 1 0 12" />
+    </>
+  ),
 }
 
 export function Icon({
   name,
   className = 'size-[18px]',
 }: {
-  name: IconName | 'chevronLeft' | 'chevronRight' | 'search'
+  name: IconName | ExtraIcon
   className?: string
 }): React.JSX.Element {
   return (
