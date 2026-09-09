@@ -1,25 +1,31 @@
-import type { TokenTiming } from '@wouice/asr'
+import type { AsrSegment, TokenTiming } from '@wouice/asr'
 import type { Channel } from './session.js'
 
 /**
- * Raw ASR tokens, assembled into speaker-labelled segments.
+ * Raw ASR output, assembled into speaker-labelled segments.
  *
- * PURE, AND THAT IS THE POINT. Everything here is arithmetic over words and
- * timestamps: no model, no VRAM, no filesystem, no clock. The two rules that
- * decide whether a meeting transcript is readable - where one utterance ends
- * and the next begins, and which of your lines are really the far side coming
- * back through your speakers - are both testable in milliseconds.
+ * IT SEGMENTS ON WHISPER'S OWN BOUNDARIES, NOT ON WORD GAPS. The first version
+ * of this reconstructed utterances from per-word timings, which produced a
+ * transcript that was 46% one-word fragments on a real meeting. The cause is
+ * in the data: whisper.cpp reports `t_dtw: -1` on every word, meaning the DTW
+ * alignment is unavailable and the times are INTERPOLATED evenly across the
+ * segment rather than measured. On Devanagari it splits per glyph, so "कि" and
+ * "इतने" arrive as four "words" at invented times. Cutting on those is cutting
+ * on noise. The segment boundaries whisper reports are real; the word
+ * boundaries inside them frequently are not.
  *
- * SPEAKER SEPARATION IS ALREADY DONE BY THE TIME ANYTHING GETS HERE. The mic is
- * you and the loopback tap is everyone else, decided by capture topology rather
- * than by a diarization model. This does not identify anybody; it only groups
- * what each channel said into sentences.
+ * Word timings are still used for one thing - matching echo across the two
+ * channels - because an evenly-spread estimate is good enough for a two second
+ * window and nothing better exists.
+ *
+ * PURE. No model, no clock, no filesystem. The rules that decide what a
+ * transcript reads like should all be arguable in a test.
  */
 
 export interface SegmenterConfig {
-  /** Silence that closes a segment. */
+  /** Silence between whisper segments that starts a new utterance. */
   pauseGapSec: number
-  /** Hard cut on a monologue, so one long answer is not one long paragraph. */
+  /** Hard cut, so one long answer is not one long paragraph. */
   maxSegmentSec: number
   /** |mic time − system time| for two words to count as the same moment. */
   echoWindowSec: number
@@ -29,6 +35,16 @@ export interface SegmenterConfig {
   echoDropFraction: number
   /** How much system-channel word history to keep for echo matching. */
   systemMemorySec: number
+  /**
+   * Above this, whisper is telling us there was probably nothing there.
+   *
+   * This is the guard against the confident "Thank you." that appears over a
+   * quiet stretch. A real meeting produced "Thank" and "you." as five separate
+   * hallucinated segments; the model knew, and nothing was reading it.
+   */
+  maxNoSpeechProb: number
+  /** Below this the model was guessing. Very negative means noise. */
+  minAvgLogprob: number
 }
 
 export const DEFAULT_SEGMENTER: SegmenterConfig = {
@@ -38,6 +54,8 @@ export const DEFAULT_SEGMENTER: SegmenterConfig = {
   echoMinRun: 3,
   echoDropFraction: 0.7,
   systemMemorySec: 120,
+  maxNoSpeechProb: 0.6,
+  minAvgLogprob: -1.0,
 }
 
 export interface Segment {
@@ -50,10 +68,16 @@ export interface Segment {
    * True when this is the far side arriving through your own microphone.
    *
    * Flagged, never deleted. A wrongly dropped line is unrecoverable and a
-   * wrongly kept one is merely untidy, so the transcript keeps both and the
-   * reader decides.
+   * wrongly kept one is merely untidy.
    */
   echo: boolean
+}
+
+/** One chunk's worth of ASR output. */
+export interface AsrChunk {
+  segments: readonly AsrSegment[]
+  /** Only used for echo matching, where an approximate time is enough. */
+  words: readonly TokenTiming[]
 }
 
 interface Word {
@@ -63,13 +87,10 @@ interface Word {
 }
 
 /**
- * Tokens to words.
+ * Tokens to words, for echo matching only.
  *
- * Whisper and every other subword tokenizer emit pieces, and a piece that
- * begins with a space is the start of a new word - which is precisely why
- * concatenating them reproduces the transcript exactly. Splitting on anything
- * else would break the reconstruction, so this is not a heuristic, it is the
- * tokenizer's own contract.
+ * A token beginning with a space starts a new word, which is the tokenizer's
+ * own contract and the reason concatenation reproduces the transcript exactly.
  */
 export function wordsFromTokens(tokens: readonly TokenTiming[], offsetMs = 0): Word[] {
   const words: Word[] = []
@@ -80,11 +101,10 @@ export function wordsFromTokens(tokens: readonly TokenTiming[], offsetMs = 0): W
 
     const startsWord = /^\s/.test(raw) || words.length === 0
     const startMs = Math.round(offsetMs + token.startSec * 1000)
-    const endMs = Math.round(offsetMs + token.endSec * 1000)
+    const endMs = Math.max(startMs, Math.round(offsetMs + token.endSec * 1000))
 
-    if (startsWord) {
-      words.push({ text: raw.trim(), startMs, endMs })
-    } else {
+    if (startsWord) words.push({ text: raw.trim(), startMs, endMs })
+    else {
       const last = words[words.length - 1]!
       last.text += raw
       last.endMs = endMs
@@ -99,19 +119,28 @@ function normalise(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
 }
 
+/** True when a line carries no actual words, only punctuation or spaces. */
+export function isEmptyish(text: string): boolean {
+  return !/[\p{L}\p{N}]/u.test(text)
+}
+
 /**
- * Which of a segment's words also came out of the speakers at the same moment.
+ * Whether whisper was transcribing or inventing.
  *
- * THE PREMISE, WHICH IS WORTH STATING because the whole thing rests on it:
- * genuinely repeating someone almost never matches three consecutive words
- * inside two seconds. Agreeing, echoing a phrase back, or saying "yes exactly"
- * does not produce a three-word collision at the same instant; a speaker
- * bleeding into your microphone produces nothing else.
- *
- * Runs, not totals. Half a conversation shares words like "the" and "we" with
- * the other half, so counting matched words alone would flag every segment in
- * a long meeting. Requiring them CONSECUTIVE is what makes it specific.
+ * Both signals come from the model itself and cost nothing to read. Ignoring
+ * them is what let a real meeting accumulate `"Thank"` five times and
+ * `"There is no website at Saradin.ai"` three times over stretches where
+ * nobody was speaking.
  */
+export function isHallucination(segment: AsrSegment, config: SegmenterConfig): boolean {
+  if (isEmptyish(segment.text)) return true
+  if (segment.noSpeechProb > config.maxNoSpeechProb) return true
+  // A very negative average log probability with almost nothing said is noise
+  // being written down. Longer text at the same score is usually real.
+  if (segment.avgLogprob < config.minAvgLogprob && segment.text.trim().length < 25) return true
+  return false
+}
+
 function echoRunCoverage(
   words: readonly Word[],
   history: readonly Word[],
@@ -143,48 +172,59 @@ function echoRunCoverage(
   return covered / words.length
 }
 
-/**
- * Accumulates tokens per channel and hands back segments as they close.
- *
- * Stateful because a segment can span two ASR chunks: a sentence that runs
- * across a 25 second boundary is one utterance, and treating chunk edges as
- * sentence edges would chop the transcript on a schedule that has nothing to do
- * with speech.
- */
+interface Open {
+  startMs: number
+  endMs: number
+  parts: string[]
+}
+
 export class Segmenter {
-  private readonly open: Record<Channel, Word[]> = { me: [], them: [] }
+  private readonly open: Record<Channel, Open | null> = { me: null, them: null }
   /** System-channel words retained for echo matching. */
   private history: Word[] = []
+  /** Mic words, kept only long enough to score the segment they belong to. */
+  private mine: Word[] = []
 
   constructor(private readonly config: SegmenterConfig = DEFAULT_SEGMENTER) {}
 
   /**
-   * Add one chunk's tokens for one channel.
+   * Add one chunk's output for one channel.
    *
    * @param offsetMs where this chunk starts in the meeting's audio.
-   * @returns segments that closed as a result. Usually none.
+   * @returns segments that closed as a result.
    */
-  push(channel: Channel, tokens: readonly TokenTiming[], offsetMs: number): Segment[] {
-    const words = wordsFromTokens(tokens, offsetMs)
-    if (words.length === 0) return []
-
+  push(channel: Channel, chunk: AsrChunk, offsetMs: number): Segment[] {
+    const words = wordsFromTokens(chunk.words, offsetMs)
     if (channel === 'them') this.remember(words)
+    else this.mine.push(...words)
 
     const closed: Segment[] = []
-    for (const word of words) {
+    for (const raw of chunk.segments) {
+      if (isHallucination(raw, this.config)) continue
+
+      const startMs = Math.round(offsetMs + raw.startSec * 1000)
+      const endMs = Math.max(startMs, Math.round(offsetMs + raw.endSec * 1000))
       const current = this.open[channel]
-      const last = current[current.length - 1]
-      const first = current[0]
 
-      const gapTooLong = last !== undefined && word.startMs - last.endMs > this.config.pauseGapSec * 1000
+      // A pause between whisper's own utterances, or a segment that has grown
+      // past the cap, ends the one in progress.
+      const gapTooLong =
+        current !== null && startMs - current.endMs > this.config.pauseGapSec * 1000
       const tooLong =
-        first !== undefined && word.endMs - first.startMs > this.config.maxSegmentSec * 1000
+        current !== null && endMs - current.startMs > this.config.maxSegmentSec * 1000
 
-      if (gapTooLong || tooLong) {
+      if (current && (gapTooLong || tooLong)) {
         const segment = this.close(channel)
         if (segment) closed.push(segment)
       }
-      this.open[channel].push(word)
+
+      const open = this.open[channel]
+      if (open) {
+        open.parts.push(raw.text.trim())
+        open.endMs = Math.max(open.endMs, endMs)
+      } else {
+        this.open[channel] = { startMs, endMs, parts: [raw.text.trim()] }
+      }
     }
 
     return closed
@@ -201,30 +241,30 @@ export class Segmenter {
   }
 
   private close(channel: Channel): Segment | null {
-    const words = this.open[channel]
-    if (words.length === 0) return null
-    this.open[channel] = []
+    const open = this.open[channel]
+    if (!open) return null
+    this.open[channel] = null
 
-    // Only the mic can carry echo. The system channel is a digital tap of what
-    // was played, so nothing of yours can be in it - spike V4 measured a floor
-    // of exactly zero between sounds.
-    const echo =
-      channel === 'me' &&
-      echoRunCoverage(words, this.history, this.config) >= this.config.echoDropFraction
+    const text = open.parts.join(' ').replace(/\s+/g, ' ').trim()
+    if (!text || isEmptyish(text)) return null
 
-    return {
-      channel,
-      startMs: words[0]!.startMs,
-      endMs: words[words.length - 1]!.endMs,
-      text: words.map((w) => w.text).join(' '),
-      echo,
+    // Only the mic can carry echo: the system channel is a digital tap of what
+    // was played, so nothing of yours can be in it. Spike V4 measured its floor
+    // between sounds at exactly zero.
+    let echo = false
+    if (channel === 'me') {
+      const within = this.mine.filter((w) => w.startMs >= open.startMs && w.startMs <= open.endMs)
+      echo = echoRunCoverage(within, this.history, this.config) >= this.config.echoDropFraction
+      this.mine = this.mine.filter((w) => w.startMs > open.endMs)
     }
+
+    return { channel, startMs: open.startMs, endMs: open.endMs, text, echo }
   }
 
   private remember(words: readonly Word[]): void {
     this.history.push(...words)
-    // Bounded, or an hour of the far side accumulates for nothing: a word from
-    // forty minutes ago cannot be inside a two second window.
+    // Bounded: a word from forty minutes ago cannot be inside a two second
+    // window, and an hour of the far side would accumulate for nothing.
     const cutoff = (words[words.length - 1]?.endMs ?? 0) - this.config.systemMemorySec * 1000
     if (this.history.length > 0 && this.history[0]!.endMs < cutoff) {
       this.history = this.history.filter((w) => w.endMs >= cutoff)
