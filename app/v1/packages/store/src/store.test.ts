@@ -617,6 +617,7 @@ describe('stats', () => {
       'calibrations',
       'dictations',
       'dictionary',
+      'meeting_versions',
       'meetings',
       'ratings',
       'resource_samples',

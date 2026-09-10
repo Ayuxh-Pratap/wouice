@@ -381,6 +381,69 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE tasks ADD COLUMN reason TEXT NOT NULL DEFAULT '';
     `,
   },
+  {
+    id: 10,
+    name: 'a meeting keeps every transcript made of it',
+    sql: `
+      -- One row per transcript of a meeting: the one written live during the
+      -- call, and one per careful pass made afterwards, keyed by where it came
+      -- from. Before this the careful pass overwrote the live transcript, and
+      -- with it the summary and tasks you had already read and acted on - a
+      -- better transcript that cost you the record of what you had seen.
+      CREATE TABLE meeting_versions (
+        id          INTEGER PRIMARY KEY,
+        meeting_id  INTEGER NOT NULL REFERENCES meetings (id) ON DELETE CASCADE,
+        -- 'live' for the transcript written during the call, otherwise the
+        -- model or service that produced it. One per source: running the same
+        -- source again replaces its own version, never another.
+        source      TEXT    NOT NULL,
+        created_at  INTEGER NOT NULL,
+        -- Everything built FROM a transcript belongs to it. A summary shown
+        -- above a transcript it was not written from is the confusion this
+        -- table exists to remove.
+        notes_md    TEXT,
+        diagnostics TEXT    NOT NULL DEFAULT '{}',
+        UNIQUE (meeting_id, source)
+      );
+
+      -- The version the app reads by default: the one tasks are ticked on and
+      -- search looks through.
+      ALTER TABLE meetings ADD COLUMN main_version_id INTEGER
+        REFERENCES meeting_versions (id) ON DELETE SET NULL;
+      ALTER TABLE segments ADD COLUMN version_id INTEGER
+        REFERENCES meeting_versions (id) ON DELETE CASCADE;
+      ALTER TABLE tasks ADD COLUMN version_id INTEGER
+        REFERENCES meeting_versions (id) ON DELETE CASCADE;
+      -- The source of the version a task was carried over from, when a newer
+      -- version did not produce it but you had already ticked or dropped it.
+      ALTER TABLE tasks ADD COLUMN carried_from TEXT;
+
+      -- Every existing meeting becomes one version holding what it has now.
+      -- A meeting the careful pass already rewrote is labelled by the model
+      -- that did it, because that is what its transcript is.
+      INSERT INTO meeting_versions (meeting_id, source, created_at, notes_md, diagnostics)
+        SELECT id,
+               COALESCE(json_extract(diagnostics, '$.repass.model'), 'live'),
+               started_at,
+               notes_md,
+               json_object(
+                 'english', json_extract(diagnostics, '$.english'),
+                 'notes', json_extract(diagnostics, '$.notes'),
+                 'transcription', json_extract(diagnostics, '$.repass')
+               )
+        FROM meetings;
+
+      UPDATE meetings SET main_version_id =
+        (SELECT v.id FROM meeting_versions v WHERE v.meeting_id = meetings.id);
+      UPDATE segments SET version_id =
+        (SELECT m.main_version_id FROM meetings m WHERE m.id = segments.meeting_id);
+      UPDATE tasks SET version_id =
+        (SELECT m.main_version_id FROM meetings m WHERE m.id = tasks.meeting_id);
+
+      CREATE INDEX segments_by_version ON segments (version_id, start_ms);
+      CREATE INDEX tasks_by_version ON tasks (version_id);
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */

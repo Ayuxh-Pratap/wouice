@@ -1,5 +1,5 @@
 import { rows, row, type Db } from './db.js'
-import { TASK_AREAS, TASK_KINDS } from './types.js'
+import { LIVE_SOURCE, TASK_AREAS, TASK_KINDS } from './types.js'
 import type {
   MeetingDiagnostics,
   TaskArea,
@@ -10,6 +10,8 @@ import type {
   TaskInput,
   TaskRecord,
   TaskState,
+  VersionDiagnostics,
+  VersionRecord,
 } from './types.js'
 
 /**
@@ -25,6 +27,11 @@ import type {
  * SEGMENTS ARRIVE DURING THE MEETING, in the order they close. They are written
  * as they come rather than in one batch at the end, so a crash costs the tail
  * rather than the transcript.
+ *
+ * A MEETING HAS VERSIONS. The transcript written live is one; each careful pass
+ * made afterwards is another, and becomes the main one. A version owns its
+ * transcript, its summary and its tasks, so nothing built from one transcript
+ * is ever shown with another. Reads default to the main version.
  */
 
 interface MeetingRow {
@@ -42,6 +49,21 @@ interface MeetingRow {
   named: number
   diagnostics: string
   kind: string
+  main_version_id: number | null
+}
+
+/** A meeting row with what the list shows from its main version. */
+type MeetingWithMain = MeetingRow & { main_notes: string | null; segments: number }
+
+interface VersionRow {
+  id: number
+  meeting_id: number
+  source: string
+  created_at: number
+  notes_md: string | null
+  diagnostics: string
+  segments: number
+  main: number
 }
 
 interface SegmentRow {
@@ -55,7 +77,13 @@ interface SegmentRow {
   echo: number
 }
 
-function toMeeting(r: MeetingRow, segments = 0): MeetingRecord {
+/** The main version's summary and line count, joined onto a meeting row. */
+const WITH_MAIN = `
+  SELECT m.*, v.notes_md AS main_notes,
+         (SELECT COUNT(*) FROM segments s WHERE s.version_id = m.main_version_id) AS segments
+  FROM meetings m LEFT JOIN meeting_versions v ON v.id = m.main_version_id`
+
+function toMeeting(r: MeetingWithMain, versions: VersionRecord[]): MeetingRecord {
   let attendees: string[] = []
   try {
     const parsed: unknown = JSON.parse(r.attendees)
@@ -73,22 +101,37 @@ function toMeeting(r: MeetingRow, segments = 0): MeetingRecord {
     audioPath: r.audio_path,
     durationMs: r.duration_ms,
     scratchMd: r.scratch_md,
-    notesMd: r.notes_md,
+    notesMd: r.main_notes,
     kind: r.kind ?? 'mixed',
-    diagnostics: readDiagnostics(r.diagnostics),
-    segments,
+    diagnostics: readJson<MeetingDiagnostics>(r.diagnostics),
+    segments: r.segments,
+    mainVersionId: r.main_version_id,
+    versions,
   }
 }
 
-function readDiagnostics(raw: string | null): MeetingDiagnostics {
-  if (!raw) return {}
+function toVersion(r: VersionRow): VersionRecord {
+  return {
+    id: r.id,
+    meetingId: r.meeting_id,
+    source: r.source,
+    createdAt: r.created_at,
+    notesMd: r.notes_md,
+    diagnostics: readJson<VersionDiagnostics>(r.diagnostics),
+    segments: r.segments,
+    main: r.main === 1,
+  }
+}
+
+function readJson<T extends object>(raw: string | null): T {
+  if (!raw) return {} as T
   try {
     const parsed: unknown = JSON.parse(raw)
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? (parsed as MeetingDiagnostics)
-      : {}
+      ? (parsed as T)
+      : ({} as T)
   } catch {
-    return {}
+    return {} as T
   }
 }
 
@@ -108,6 +151,7 @@ function toSegment(r: SegmentRow): SegmentRecord {
 interface TaskRow {
   id: number
   meeting_id: number
+  version_id: number | null
   text: string
   owner: string | null
   due: string | null
@@ -122,6 +166,7 @@ interface TaskRow {
   source: string
   note_quote: string | null
   reason: string
+  carried_from: string | null
 }
 
 function toTask(r: TaskRow): TaskRecord {
@@ -130,6 +175,7 @@ function toTask(r: TaskRow): TaskRecord {
   return {
     id: r.id,
     meetingId: r.meeting_id,
+    versionId: r.version_id,
     text: r.text,
     owner: r.owner,
     due: r.due,
@@ -145,14 +191,33 @@ function toTask(r: TaskRow): TaskRecord {
     source: r.source === 'notes' ? 'notes' : 'transcript',
     noteQuote: r.note_quote,
     reason: r.reason,
+    carriedFrom: r.carried_from,
   }
 }
+
+const INSERT_SEGMENT = `INSERT INTO segments (meeting_id, version_id, channel, start_ms, end_ms, text, echo)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)`
+
+/** A version id, or the meeting's main version when none is given. */
+const VERSION_OR_MAIN = 'COALESCE(?, (SELECT main_version_id FROM meetings WHERE id = ?))'
 
 export class Meetings {
   constructor(private readonly db: Db) {}
 
+  private tx<T>(work: () => T): T {
+    this.db.raw.exec('BEGIN')
+    try {
+      const result = work()
+      this.db.raw.exec('COMMIT')
+      return result
+    } catch (err) {
+      this.db.raw.exec('ROLLBACK')
+      throw err
+    }
+  }
+
   /**
-   * Record that a meeting has begun.
+   * Record that a meeting has begun, with the version its live transcript goes into.
    *
    * Keyed on the session directory, which is unique and already exists by the
    * time this is called. Re-starting into the same directory returns the same
@@ -165,10 +230,15 @@ export class Meetings {
     )
     if (existing) return existing.id
 
-    const result = this.db.raw
-      .prepare('INSERT INTO meetings (started_at, dir, kind) VALUES (?, ?, ?)')
-      .run(startedAt, dir, kind)
-    return Number(result.lastInsertRowid)
+    return this.tx(() => {
+      const id = Number(
+        this.db.raw
+          .prepare('INSERT INTO meetings (started_at, dir, kind) VALUES (?, ?, ?)')
+          .run(startedAt, dir, kind).lastInsertRowid
+      )
+      this.liveVersionId(id, startedAt)
+      return id
+    })
   }
 
   /** Close it out once the audio is merged. */
@@ -181,83 +251,196 @@ export class Meetings {
       .run(detail.endedAt, detail.audioPath, detail.durationMs, id)
   }
 
-  /** Append transcript segments. Written as they close, not batched at the end. */
+  /**
+   * The version the live transcript is written into.
+   *
+   * Made on demand, so a meeting that somehow has none still records rather
+   * than losing its lines. It becomes the main version only if there is none.
+   */
+  private liveVersionId(meetingId: number, at = Date.now()): number {
+    const found = row<{ id: number }>(
+      this.db.raw
+        .prepare('SELECT id FROM meeting_versions WHERE meeting_id = ? AND source = ?')
+        .get(meetingId, LIVE_SOURCE)
+    )
+    if (found) return found.id
+    const id = Number(
+      this.db.raw
+        .prepare('INSERT INTO meeting_versions (meeting_id, source, created_at) VALUES (?, ?, ?)')
+        .run(meetingId, LIVE_SOURCE, at).lastInsertRowid
+    )
+    this.db.raw
+      .prepare('UPDATE meetings SET main_version_id = COALESCE(main_version_id, ?) WHERE id = ?')
+      .run(id, meetingId)
+    return id
+  }
+
+  /** Append live transcript segments. Written as they close, not batched at the end. */
   addSegments(meetingId: number, segments: readonly SegmentInput[]): void {
     if (segments.length === 0) return
-    const insert = this.db.raw.prepare(
-      `INSERT INTO segments (meeting_id, channel, start_ms, end_ms, text, echo)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
     // One transaction: twenty separate commits during a meeting is twenty
     // fsyncs on the path that has to keep up with live audio.
-    this.db.raw.exec('BEGIN')
-    try {
+    this.tx(() => {
+      const versionId = this.liveVersionId(meetingId)
+      const insert = this.db.raw.prepare(INSERT_SEGMENT)
       for (const s of segments) {
-        insert.run(meetingId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0)
+        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0)
       }
-      this.db.raw.exec('COMMIT')
-    } catch (err) {
-      this.db.raw.exec('ROLLBACK')
-      throw err
-    }
+    })
   }
 
   /**
-   * Swap in a completely new transcript for one meeting.
+   * A new transcript of a meeting, from a source other than the live one. It
+   * becomes the main version.
    *
-   * Used by the careful re-transcription pass, and only ever with segments in
-   * hand: the delete and the insert are one transaction, so a failure halfway
-   * leaves the previous transcript rather than an empty meeting.
+   * The live transcript is never touched, so a careful pass can only ever add.
+   * Running the same source again replaces that source's own transcript in
+   * place: its summary and English are cleared, because they were written from
+   * the lines being replaced, but its tasks stay until a new summary replaces
+   * them - they carry whatever you ticked, and the words they were taken from
+   * are copied onto them before those lines go.
    *
-   * The English renderings go with the old rows, because they were renderings
-   * OF those rows. Keeping them would attach an English sentence to a line that
-   * now says something different, which is worse than having none.
+   * Called only with segments in hand, in one transaction: a failure leaves
+   * everything as it was.
    */
-  replaceSegments(meetingId: number, segments: readonly SegmentInput[]): void {
-    this.db.raw.exec('BEGIN')
-    try {
-      this.db.raw.prepare('DELETE FROM segments WHERE meeting_id = ?').run(meetingId)
-      const insert = this.db.raw.prepare(
-        `INSERT INTO segments (meeting_id, channel, start_ms, end_ms, text, echo)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      )
-      for (const s of segments) {
-        insert.run(meetingId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0)
-      }
-      this.db.raw.exec('COMMIT')
-    } catch (err) {
-      this.db.raw.exec('ROLLBACK')
-      throw err
+  createVersion(
+    meetingId: number,
+    source: string,
+    segments: readonly SegmentInput[],
+    at = Date.now()
+  ): number {
+    if (source === LIVE_SOURCE) {
+      throw new Error('the live transcript is written by the recording, not replaced')
     }
+    return this.tx(() => {
+      const existing = row<{ id: number }>(
+        this.db.raw
+          .prepare('SELECT id FROM meeting_versions WHERE meeting_id = ? AND source = ?')
+          .get(meetingId, source)
+      )
+      let versionId: number
+      if (existing) {
+        versionId = existing.id
+        this.db.raw
+          .prepare(
+            `UPDATE tasks SET note_quote = COALESCE(note_quote,
+               (SELECT s.text FROM segments s WHERE s.id = tasks.segment_id))
+             WHERE version_id = ?`
+          )
+          .run(versionId)
+        this.db.raw.prepare('DELETE FROM segments WHERE version_id = ?').run(versionId)
+        this.db.raw
+          .prepare(
+            `UPDATE meeting_versions SET created_at = ?, notes_md = NULL, diagnostics = '{}'
+             WHERE id = ?`
+          )
+          .run(at, versionId)
+      } else {
+        versionId = Number(
+          this.db.raw
+            .prepare('INSERT INTO meeting_versions (meeting_id, source, created_at) VALUES (?, ?, ?)')
+            .run(meetingId, source, at).lastInsertRowid
+        )
+      }
+
+      const insert = this.db.raw.prepare(INSERT_SEGMENT)
+      for (const s of segments) {
+        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0)
+      }
+      this.db.raw
+        .prepare('UPDATE meetings SET main_version_id = ? WHERE id = ?')
+        .run(versionId, meetingId)
+      return versionId
+    })
+  }
+
+  /** Every version of a meeting, oldest first. */
+  versions(meetingId: number): VersionRecord[] {
+    return rows<VersionRow>(
+      this.db.raw
+        .prepare(
+          `SELECT v.*,
+                  (SELECT COUNT(*) FROM segments s WHERE s.version_id = v.id) AS segments,
+                  (v.id = m.main_version_id) AS main
+           FROM meeting_versions v JOIN meetings m ON m.id = v.meeting_id
+           WHERE v.meeting_id = ? ORDER BY v.created_at, v.id`
+        )
+        .all(meetingId)
+    ).map(toVersion)
+  }
+
+  version(versionId: number): VersionRecord | null {
+    const found = row<VersionRow>(
+      this.db.raw
+        .prepare(
+          `SELECT v.*,
+                  (SELECT COUNT(*) FROM segments s WHERE s.version_id = v.id) AS segments,
+                  (v.id = m.main_version_id) AS main
+           FROM meeting_versions v JOIN meetings m ON m.id = v.meeting_id
+           WHERE v.id = ?`
+        )
+        .get(versionId)
+    )
+    return found ? toVersion(found) : null
+  }
+
+  /**
+   * Make another of this meeting's versions the main one: the one its tasks
+   * are ticked on and search looks through.
+   *
+   * For when the careful pass came out worse than the first. On a meeting that
+   * was mostly English, it turned English speech into Hindi-script nonsense,
+   * and the first pass was the transcript worth working from.
+   *
+   * @returns false when that version does not belong to this meeting.
+   */
+  setMain(meetingId: number, versionId: number): boolean {
+    const result = this.db.raw
+      .prepare(
+        `UPDATE meetings SET main_version_id = ?
+         WHERE id = ? AND EXISTS
+           (SELECT 1 FROM meeting_versions v WHERE v.id = ? AND v.meeting_id = ?)`
+      )
+      .run(versionId, meetingId, versionId, meetingId)
+    return Number(result.changes) > 0
   }
 
   setScratch(id: number, markdown: string): void {
     this.db.raw.prepare('UPDATE meetings SET scratch_md = ? WHERE id = ?').run(markdown, id)
   }
 
-  setNotes(id: number, markdown: string): void {
-    this.db.raw.prepare('UPDATE meetings SET notes_md = ? WHERE id = ?').run(markdown, id)
+  /** The summary written from one version's transcript. */
+  setVersionNotes(versionId: number, markdown: string): void {
+    this.db.raw
+      .prepare('UPDATE meeting_versions SET notes_md = ? WHERE id = ?')
+      .run(markdown, versionId)
   }
 
   /**
-   * Merge into this meeting's diagnostics.
+   * Merge into this meeting's diagnostics: what happened while it was recorded.
    *
-   * Merged rather than replaced, because the facts arrive at different times:
-   * the channels and the drift when recording stops, the notes run whenever
-   * somebody asks for it, possibly days later.
+   * Merged rather than replaced, because the facts arrive at different times.
+   * What happened to a particular transcript afterwards is on its version.
    */
   setDiagnostics(id: number, patch: MeetingDiagnostics): void {
     const current = this.byId(id)?.diagnostics ?? {}
-    const merged = { ...current, ...patch }
     this.db.raw
       .prepare('UPDATE meetings SET diagnostics = ? WHERE id = ?')
-      .run(JSON.stringify(merged), id)
+      .run(JSON.stringify({ ...current, ...patch }), id)
   }
 
-  /** Append one notes run to the record, keeping the last few. */
-  recordNotesRun(id: number, run: NonNullable<MeetingDiagnostics['notes']>[number]): void {
-    const previous = this.byId(id)?.diagnostics.notes ?? []
-    this.setDiagnostics(id, { notes: [...previous, run].slice(-5) })
+  /** Merge into one version's diagnostics: how it was transcribed, rendered, summarised. */
+  setVersionDiagnostics(versionId: number, patch: VersionDiagnostics): void {
+    const current = this.version(versionId)?.diagnostics ?? {}
+    this.db.raw
+      .prepare('UPDATE meeting_versions SET diagnostics = ? WHERE id = ?')
+      .run(JSON.stringify({ ...current, ...patch }), versionId)
+  }
+
+  /** Append one notes run to a version's record, keeping the last few. */
+  recordNotesRun(versionId: number, run: NonNullable<MeetingDiagnostics['notes']>[number]): void {
+    const previous = this.version(versionId)?.diagnostics.notes ?? []
+    this.setVersionDiagnostics(versionId, { notes: [...previous, run].slice(-5) })
   }
 
   setKind(id: number, kind: string): void {
@@ -268,74 +451,66 @@ export class Meetings {
    * Attach English renderings to lines already stored.
    *
    * Keyed on the segment id, so a rendering can only ever land on the line it
-   * was made from. Anything the renderer could not produce is simply left null
-   * and the raw line stands on its own.
+   * was made from - and so on the version that line belongs to. Anything the
+   * renderer could not produce is simply left null and the raw line stands on
+   * its own.
    */
   setEnglish(pairs: readonly { id: number; textEn: string }[]): void {
     if (pairs.length === 0) return
-    const update = this.db.raw.prepare('UPDATE segments SET text_en = ? WHERE id = ?')
-    this.db.raw.exec('BEGIN')
-    try {
+    this.tx(() => {
+      const update = this.db.raw.prepare('UPDATE segments SET text_en = ? WHERE id = ?')
       for (const pair of pairs) update.run(pair.textEn, pair.id)
-      this.db.raw.exec('COMMIT')
-    } catch (err) {
-      this.db.raw.exec('ROLLBACK')
-      throw err
-    }
+    })
   }
 
   setTitle(id: number, title: string): void {
     this.db.raw.prepare('UPDATE meetings SET title = ? WHERE id = ?').run(title, id)
   }
 
-  /** Newest first, with each meeting's segment count. */
+  /** Newest first, each with its main version's line count and summary. */
   list(limit = 50, offset = 0): MeetingRecord[] {
-    const found = rows<MeetingRow & { segments: number }>(
+    return rows<MeetingWithMain>(
       this.db.raw
-        .prepare(
-          `SELECT m.*, (SELECT COUNT(*) FROM segments s WHERE s.meeting_id = m.id) AS segments
-           FROM meetings m ORDER BY m.started_at DESC LIMIT ? OFFSET ?`
-        )
+        .prepare(`${WITH_MAIN} ORDER BY m.started_at DESC LIMIT ? OFFSET ?`)
         .all(limit, offset)
-    )
-    return found.map((r) => toMeeting(r, r.segments))
+    ).map((r) => toMeeting(r, this.versions(r.id)))
   }
 
   byId(id: number): MeetingRecord | null {
-    const found = row<MeetingRow & { segments: number }>(
-      this.db.raw
-        .prepare(
-          `SELECT m.*, (SELECT COUNT(*) FROM segments s WHERE s.meeting_id = m.id) AS segments
-           FROM meetings m WHERE m.id = ?`
-        )
-        .get(id)
-    )
-    return found ? toMeeting(found, found.segments) : null
+    const found = row<MeetingWithMain>(this.db.raw.prepare(`${WITH_MAIN} WHERE m.id = ?`).get(id))
+    return found ? toMeeting(found, this.versions(found.id)) : null
   }
 
   byDir(dir: string): MeetingRecord | null {
-    const found = row<MeetingRow>(
-      this.db.raw.prepare('SELECT * FROM meetings WHERE dir = ?').get(dir)
-    )
-    return found ? toMeeting(found) : null
+    const found = row<MeetingWithMain>(this.db.raw.prepare(`${WITH_MAIN} WHERE m.dir = ?`).get(dir))
+    return found ? toMeeting(found, this.versions(found.id)) : null
   }
 
   /**
-   * One meeting's transcript, in the order it was said.
+   * One version's transcript - the main one unless told otherwise - in the
+   * order it was said.
    *
    * Both channels interleaved by time, because that is the conversation. Echo
    * segments are included and flagged; filtering them here would mean the
    * reader could never check whether the flag was right.
    */
-  segments(meetingId: number): SegmentRecord[] {
+  segments(meetingId: number, versionId?: number): SegmentRecord[] {
     return rows<SegmentRow>(
       this.db.raw
-        .prepare('SELECT * FROM segments WHERE meeting_id = ? ORDER BY start_ms, id')
-        .all(meetingId)
+        .prepare(
+          `SELECT * FROM segments WHERE meeting_id = ? AND version_id = ${VERSION_OR_MAIN}
+           ORDER BY start_ms, id`
+        )
+        .all(meetingId, versionId ?? null, meetingId)
     ).map(toSegment)
   }
 
-  /** Full-text search across every meeting. */
+  /**
+   * Full-text search across every meeting's main version.
+   *
+   * Only the main one: every line exists once per version, and a search that
+   * found everything twice would be wrong in the most visible way possible.
+   */
   search(query: string, limit = 100): SegmentRecord[] {
     const trimmed = query.trim()
     if (!trimmed) return []
@@ -343,7 +518,9 @@ export class Meetings {
       return rows<SegmentRow>(
         this.db.raw
           .prepare(
-            `SELECT s.* FROM segments_fts f JOIN segments s ON s.id = f.rowid
+            `SELECT s.* FROM segments_fts f
+             JOIN segments s ON s.id = f.rowid
+             JOIN meetings m ON m.id = s.meeting_id AND s.version_id = m.main_version_id
              WHERE segments_fts MATCH ? ORDER BY rank LIMIT ?`
           )
           .all(toMatch(trimmed), limit)
@@ -358,58 +535,74 @@ export class Meetings {
   /* ------------------------------------------------------------ tasks ---- */
 
   /**
-   * Replace this meeting's tasks.
+   * Replace one version's tasks.
    *
    * Replace rather than append, because the only thing that writes them is a
-   * notes run, and running it twice should not double the list. Tasks you have
-   * already marked done survive: their state is matched back by text, so a
-   * regenerate does not silently reopen work you finished.
+   * notes run, and running it twice should not double the list. A task given a
+   * state keeps it - that is a state carried over from another version. One
+   * without keeps whatever the same wording had in this version, so writing the
+   * summary again does not silently reopen work you finished.
    */
-  replaceTasks(meetingId: number, tasks: readonly TaskInput[], at = Date.now()): void {
+  replaceTasks(versionId: number, tasks: readonly TaskInput[], at = Date.now()): void {
+    const owner = row<{ meeting_id: number }>(
+      this.db.raw.prepare('SELECT meeting_id FROM meeting_versions WHERE id = ?').get(versionId)
+    )
+    if (!owner) throw new Error(`there is no version ${versionId}`)
     const previous = new Map(
-      this.tasksFor(meetingId).map((t) => [t.text.toLowerCase(), t.state] as const)
+      this.tasksFor(owner.meeting_id, versionId).map((t) => [t.text.toLowerCase(), t.state] as const)
     )
 
-    this.db.raw.exec('BEGIN')
-    try {
-      this.db.raw.prepare('DELETE FROM tasks WHERE meeting_id = ?').run(meetingId)
+    this.tx(() => {
+      this.db.raw.prepare('DELETE FROM tasks WHERE version_id = ?').run(versionId)
       const insert = this.db.raw.prepare(
-        `INSERT INTO tasks (meeting_id, text, owner, due, segment_id, state, created_at,
-                            area, kind, mine, source, note_quote, reason)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (meeting_id, version_id, text, owner, due, segment_id, state, created_at,
+                            area, kind, mine, source, note_quote, reason, carried_from)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       for (const task of tasks) {
         insert.run(
-          meetingId,
+          owner.meeting_id,
+          versionId,
           task.text,
           task.owner,
           task.due,
           task.segmentId,
-          previous.get(task.text.toLowerCase()) ?? 'open',
+          task.state ?? previous.get(task.text.toLowerCase()) ?? 'open',
           at,
           task.area ?? 'other',
           task.kind ?? 'other',
           task.mine ? 1 : 0,
           task.source ?? 'transcript',
           task.noteQuote ?? null,
-          task.reason ?? ''
+          task.reason ?? '',
+          task.carriedFrom ?? null
         )
       }
-      this.db.raw.exec('COMMIT')
-    } catch (err) {
-      this.db.raw.exec('ROLLBACK')
-      throw err
-    }
+    })
   }
 
   /**
-   * One meeting's tasks, each carrying the line it came from.
+   * One version's tasks - the main one unless told otherwise - each carrying
+   * the line it came from.
    *
    * The quote is joined here rather than looked up on demand, because a task
    * shown without its evidence is a task you cannot check - and one nobody
    * checks is one nobody trusts.
    */
-  tasksFor(meetingId: number): TaskRecord[] {
+  tasksFor(meetingId: number, versionId?: number): TaskRecord[] {
+    return rows<TaskRow>(
+      this.db.raw
+        .prepare(
+          `SELECT t.*, s.text AS quote, s.start_ms AS quote_at
+           FROM tasks t LEFT JOIN segments s ON s.id = t.segment_id
+           WHERE t.meeting_id = ? AND t.version_id = ${VERSION_OR_MAIN} ORDER BY t.id`
+        )
+        .all(meetingId, versionId ?? null, meetingId)
+    ).map(toTask)
+  }
+
+  /** Every version's tasks, for carrying what you ticked from one to the next. */
+  allTasks(meetingId: number): TaskRecord[] {
     return rows<TaskRow>(
       this.db.raw
         .prepare(
@@ -421,7 +614,7 @@ export class Meetings {
     ).map(toTask)
   }
 
-  /** Everything still open, newest meeting first. */
+  /** Everything still open on each meeting's main version, newest meeting first. */
   openTasks(limit = 200): TaskRecord[] {
     return rows<TaskRow>(
       this.db.raw
@@ -429,7 +622,7 @@ export class Meetings {
           `SELECT t.*, s.text AS quote, s.start_ms AS quote_at
            FROM tasks t
            LEFT JOIN segments s ON s.id = t.segment_id
-           JOIN meetings m ON m.id = t.meeting_id
+           JOIN meetings m ON m.id = t.meeting_id AND t.version_id = m.main_version_id
            WHERE t.state = 'open' ORDER BY m.started_at DESC, t.id LIMIT ?`
         )
         .all(limit)
@@ -440,11 +633,15 @@ export class Meetings {
     this.db.raw.prepare('UPDATE tasks SET state = ? WHERE id = ?').run(state, id)
   }
 
-  /** Removes the row and its segments. The audio on disk is the caller's. */
+  /** Removes the row, every version and everything in them. The audio on disk is the caller's. */
   remove(id: number): void {
-    this.db.raw.prepare('DELETE FROM tasks WHERE meeting_id = ?').run(id)
-    this.db.raw.prepare('DELETE FROM segments WHERE meeting_id = ?').run(id)
-    this.db.raw.prepare('DELETE FROM meetings WHERE id = ?').run(id)
+    this.tx(() => {
+      this.db.raw.prepare('DELETE FROM tasks WHERE meeting_id = ?').run(id)
+      this.db.raw.prepare('DELETE FROM segments WHERE meeting_id = ?').run(id)
+      this.db.raw.prepare('UPDATE meetings SET main_version_id = NULL WHERE id = ?').run(id)
+      this.db.raw.prepare('DELETE FROM meeting_versions WHERE meeting_id = ?').run(id)
+      this.db.raw.prepare('DELETE FROM meetings WHERE id = ?').run(id)
+    })
   }
 }
 

@@ -169,15 +169,59 @@ export interface MeetingRecord {
   dir: string
   audioPath: string | null
   durationMs: number
-  /** What you typed during the call. */
+  /** What you typed during the call. Shared by every version. */
   scratchMd: string
+  /** The main version's summary. */
   notesMd: string | null
   /** Which kind of meeting: see `MeetingKind` in shared. */
   kind: string
   /** What happened while it was recorded. See `MeetingDiagnostics`. */
   diagnostics: MeetingDiagnostics
-  /** How many transcript segments it has. */
+  /** How many lines the main version's transcript has. */
   segments: number
+  /** The version read by default: tasks are ticked on it, search looks through it. */
+  mainVersionId: number | null
+  /** Every transcript made of this meeting, oldest first. */
+  versions: VersionRecord[]
+}
+
+/** The source of the transcript written during the call. */
+export const LIVE_SOURCE = 'live'
+
+/** What happened to one version: how it was transcribed, rendered and summarised. */
+export interface VersionDiagnostics {
+  /** How a version made after the call was transcribed. Absent on the live one. */
+  transcription?: {
+    at: number
+    model: string
+    segments: number
+    ms: number
+    /** How many chunks were sent to the model as each language. */
+    languages?: Record<string, number>
+  } | null
+  english?: MeetingDiagnostics['english'] | null
+  notes?: MeetingDiagnostics['notes'] | null
+  [key: string]: unknown
+}
+
+/**
+ * One transcript of a meeting, and everything built from it.
+ *
+ * The transcript, its English rendering, the summary and the tasks all belong
+ * to exactly one version. Showing one version's summary above another's
+ * transcript is the confusion versions exist to remove.
+ */
+export interface VersionRecord {
+  id: number
+  meetingId: number
+  /** `LIVE_SOURCE` for the transcript written during the call, else the model that made it. */
+  source: string
+  createdAt: number
+  /** Null until a summary has been written from THIS transcript. */
+  notesMd: string | null
+  diagnostics: VersionDiagnostics
+  segments: number
+  main: boolean
 }
 
 export interface SegmentInput {
@@ -242,11 +286,20 @@ export interface TaskInput {
   noteQuote?: string | null
   /** Why it was judged a real commitment. */
   reason?: string
+  /**
+   * A state carried over from another version. Without one, a task keeps the
+   * state it had under the same wording in its own version, or starts open.
+   */
+  state?: TaskState
+  /** The source of the version this was carried from, when it was. */
+  carriedFrom?: string | null
 }
 
 export interface TaskRecord extends TaskInput {
   id: number
   meetingId: number
+  versionId: number | null
+  carriedFrom: string | null
   state: TaskState
   createdAt: number
   area: TaskArea
@@ -287,7 +340,16 @@ export interface MeetingDiagnostics {
   /** True when the merge ran without a manifest, so alignment is approximate. */
   recoveredWithoutManifest?: boolean
   /** The English rendering pass, when it has run. */
-  english?: { at: number; rendered: number; missed: number; failedBatches: number; ms: number }
+  english?: {
+    at: number
+    rendered: number
+    missed: number
+    failedBatches: number
+    ms: number
+    /** False when the pass failed outright; `message` says why. */
+    ok?: boolean
+    message?: string
+  }
   /** The careful re-transcription, when it has been run. */
   repass?: { at: number; model: string; segments: number; ms: number }
   /** One entry per notes run, newest last. */
