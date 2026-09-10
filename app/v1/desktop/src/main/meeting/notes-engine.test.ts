@@ -6,10 +6,9 @@ import type { TranscriptLine } from './notes.js'
 /**
  * The notes run, minus the model.
  *
- * Most cases here are failure modes, because the happy path is one call after
- * another and the interesting question is what survives when one of them does
- * not. The rules under test: a gap stays visible, and a task survives only if
- * something other than the extractor agreed it is one.
+ * The rules under test: a gap stays visible; a task is work that can be traced
+ * to lines of the transcript; the same work found twice is one task; what the
+ * meeting turned down is not a task; and a task carries its story.
  */
 
 function fakeLlm(
@@ -30,336 +29,313 @@ function fakeLlm(
   return { client: () => client, requests }
 }
 
-const line = (id: number, text: string): TranscriptLine => ({
+const line = (id: number, text: string, over: Partial<TranscriptLine> = {}): TranscriptLine => ({
   id,
-  channel: id % 2 === 0 ? 'me' : 'them',
+  channel: 'them',
   startMs: id * 5_000,
   text,
   echo: false,
+  ...over,
 })
 
+// From a real engineering call.
 const transcript = [
-  line(1, 'we need the SSO work finished before rollout'),
-  line(2, 'I can take that, I will send the timeline on Monday'),
-  line(3, 'pricing moves to twelve dollars a seat from Q3'),
+  line(1, 'We still have not fixed the capitalization stuff in the carousel guys.'),
+  line(2, 'Yeah, we are doing it right now.'),
+  line(3, 'Swap, you choose: ask finch or finch bot or finchy spelled with a Y.'),
 ]
 
 /** Which system prompt a request was for. */
 const stageOf = (req: LlmRequest): string =>
   req.system.startsWith('You are condensing')
     ? 'condense'
-    : req.system.startsWith('You extract')
-      ? 'tasks'
-      : req.system.startsWith('You check ONE')
-        ? 'verify'
-        : req.system.startsWith('You read the notes')
-          ? 'notesTasks'
-          : 'notes'
+    : req.system.startsWith('You read part of a meeting')
+      ? 'items'
+      : req.system.startsWith('You are sorting work items')
+        ? 'group'
+        : req.system.startsWith('You write up ONE task')
+          ? 'writeup'
+          : req.system.startsWith('You read the notes')
+            ? 'notesTasks'
+            : 'notes'
 
-const yes = (area = 'frontend', kind = 'feature', owner: string | null = null): string =>
-  JSON.stringify({ task: true, reason: 'somebody agreed to do it', area, kind, owner })
-const no = JSON.stringify({ task: false, reason: 'a description of a deal, not an action' })
+const carousel = JSON.stringify({
+  title: 'Fix capitalization in the carousel',
+  description: 'Raised again on this call.',
+  type: 'bug',
+  area: 'frontend',
+  owner: null,
+  status: 'agreed',
+  lines: [1, 2],
+  quote: 'fixed the capitalization stuff in the carousel',
+})
 
-/** A candidate for line 2, quoting words that really are in it. */
-const candidate =
-  '{"text":"send the SSO timeline","owner":"You","due":"2026-09-14","line":2,"quote":"I will send the timeline"}'
+const writeUp = (over: Record<string, unknown> = {}): string =>
+  JSON.stringify({
+    title: 'Fix capitalization in the carousel',
+    description:
+      'The carousel still capitalizes its labels wrongly; it has been raised on several calls. The team said they are fixing it now.',
+    type: 'bug',
+    area: 'frontend',
+    owner: null,
+    ...over,
+  })
+
+/** A model that answers every step sensibly, with overrides per stage. */
+const answering =
+  (over: Record<string, string> = {}) =>
+  (req: LlmRequest): string => {
+    const stage = stageOf(req)
+    if (stage in over) return over[stage]!
+    if (stage === 'condense') return '- carousel capitalization still broken'
+    if (stage === 'items') return carousel
+    if (stage === 'writeup') return writeUp()
+    if (stage === 'notesTasks') return ''
+    return '## Summary\nThe carousel is being fixed.'
+  }
+
+const run = (client: () => LlmClient, over: Partial<Parameters<MeetingNotesEngine['generate']>[0]> = {}) =>
+  new MeetingNotesEngine(client).generate({ lines: transcript, scratch: '', startedAt: Date.now(), ...over })
 
 describe('a normal run', () => {
-  it('condenses, extracts, checks and writes, in that order', async () => {
-    const { client, requests } = fakeLlm((req) => {
-      switch (stageOf(req)) {
-        case 'condense':
-          return '- SSO must be done before rollout'
-        case 'tasks':
-          return candidate
-        case 'verify':
-          return yes()
-        default:
-          return '## Summary\nSSO blocks rollout.'
-      }
-    })
+  it('condenses, finds the work, writes each task up, then the notes', async () => {
+    const { client, requests } = fakeLlm(answering())
+    const result = await run(client)
 
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: transcript,
-      scratch: '',
-      startedAt: Date.now(),
-    })
-
-    expect(requests.map(stageOf)).toEqual(['condense', 'tasks', 'verify', 'notes'])
-    expect(run.notesMd).toContain('## Summary')
-    expect(run.tasks).toEqual([
+    // One item needs no grouping call.
+    expect(requests.map(stageOf)).toEqual(['condense', 'items', 'writeup', 'notes'])
+    expect(result.notesMd).toContain('## Summary')
+    expect(result.tasks).toEqual([
       {
-        text: 'send the SSO timeline',
-        owner: 'You',
-        due: '2026-09-14',
-        segmentId: 2,
+        text: 'Fix capitalization in the carousel',
+        description:
+          'The carousel still capitalizes its labels wrongly; it has been raised on several calls. The team said they are fixing it now.',
+        owner: null,
+        due: null,
+        segmentId: 1,
+        evidence: [
+          { segmentId: 1, quote: 'fixed the capitalization stuff in the carousel' },
+          { segmentId: 2, quote: '' },
+        ],
+        status: 'agreed',
+        kind: 'bug',
         area: 'frontend',
-        kind: 'feature',
-        reason: 'somebody agreed to do it',
         source: 'transcript',
-        mine: true,
+        noteQuote: null,
+        reason: '',
+        mine: false,
       },
     ])
-    expect(run.failedChunks).toBe(0)
-    expect(run.coveredLines).toBe(run.totalLines)
+    expect(result.coveredLines).toBe(result.totalLines)
+  })
+
+  it('writes each task up from the lines themselves', async () => {
+    const { client, requests } = fakeLlm(answering())
+    await run(client)
+    const writeup = requests.find((r) => stageOf(r) === 'writeup')!
+    expect(writeup.user).toContain('[1] Them')
+    expect(writeup.user).toContain('capitalization stuff in the carousel')
+    // The answer after the request is how you know where it landed.
+    expect(writeup.user).toContain('we are doing it right now')
   })
 
   it('asks for the same answer every time', async () => {
-    // A meeting summary that changes when you regenerate it is one you cannot
-    // cite in an argument about what was agreed.
-    const { client, requests } = fakeLlm(() => '- something')
-    await new MeetingNotesEngine(client).generate({
-      lines: transcript,
-      scratch: '',
-      startedAt: Date.now(),
-    })
+    const { client, requests } = fakeLlm(answering())
+    await run(client)
     expect(requests.every((r) => r.temperature === 0)).toBe(true)
   })
 
+  it('reports each step, so a long run is not a frozen window', async () => {
+    const { client } = fakeLlm(answering())
+    const stages: string[] = []
+    await run(client, { onProgress: (p) => stages.push(p.stage) })
+    expect(stages).toEqual(['condensing', 'extracting', 'checking', 'checking', 'writing'])
+  })
+
   it('hands your notes to the summary and the task finder, never to the condenser', async () => {
-    const { client, requests } = fakeLlm((req) => (stageOf(req) === 'notesTasks' ? '' : '- something'))
-    await new MeetingNotesEngine(client).generate({
-      lines: transcript,
-      scratch: 'priya = decision maker',
-      startedAt: Date.now(),
-    })
+    const { client, requests } = fakeLlm(answering())
+    await run(client, { scratch: 'priya = decision maker' })
     const having = (stage: string): boolean =>
       requests.filter((r) => stageOf(r) === stage).some((r) => r.user.includes('priya'))
     expect(having('notes')).toBe(true)
     expect(having('notesTasks')).toBe(true)
-    // What was said is condensed on its own; your notes are a signal about
-    // what mattered, not part of the record of what was said.
     expect(having('condense')).toBe(false)
-    expect(having('tasks')).toBe(false)
-  })
-
-  it('reports each step, including checking, so a long run is not a frozen window', async () => {
-    const { client } = fakeLlm((req) =>
-      stageOf(req) === 'tasks' ? candidate : stageOf(req) === 'verify' ? yes() : '- something'
-    )
-    const stages: string[] = []
-    await new MeetingNotesEngine(client).generate({
-      lines: transcript,
-      scratch: '',
-      startedAt: Date.now(),
-      onProgress: (p) => stages.push(p.stage),
-    })
-    expect(stages).toEqual(['condensing', 'extracting', 'checking', 'writing'])
+    expect(having('items')).toBe(false)
   })
 })
 
-describe('what a task has to survive', () => {
-  it('refuses what the checker says is not a task', async () => {
-    // Three descriptions of a revenue split came out of a real meeting as
-    // tasks. The quote check could not stop them: the words were said.
-    const { client } = fakeLlm((req) =>
-      stageOf(req) === 'tasks' ? candidate : stageOf(req) === 'verify' ? no : '- something'
-    )
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: transcript,
-      scratch: '',
-      startedAt: Date.now(),
+describe('what makes a task', () => {
+  it('merges the same work found twice into one task with both lines', async () => {
+    const renamed = JSON.stringify({
+      title: 'Rename the chatbot to Finch Bot',
+      description: 'The name is being changed.',
+      type: 'change',
+      area: 'frontend',
+      status: 'proposed',
+      lines: [3],
+      quote: 'ask finch or finch bot',
     })
-    expect(run.tasks).toEqual([])
-    expect(run.candidates).toBe(1)
-    expect(run.rejected).toBe(1)
-  })
-
-  it('treats an unreadable verdict as no', async () => {
-    const { client } = fakeLlm((req) =>
-      stageOf(req) === 'tasks' ? candidate : stageOf(req) === 'verify' ? 'yes, probably' : '- x'
-    )
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: transcript,
-      scratch: '',
-      startedAt: Date.now(),
+    const again = JSON.stringify({
+      title: 'Choose between Ask Finch and Finch Bot',
+      description: 'Swap decides.',
+      type: 'change',
+      area: 'frontend',
+      status: 'agreed',
+      lines: [3],
+      quote: 'Swap, you choose',
     })
-    expect(run.tasks).toEqual([])
-  })
-
-  it('filters a refusal without asking the checker at all', async () => {
-    const refusal = [line(1, "This image issue, go to the largest platforms, I'm not doing it")]
     const { client, requests } = fakeLlm((req) =>
-      stageOf(req) === 'tasks'
-        ? '{"text":"go to the largest platforms","owner":null,"due":null,"line":1,"quote":"go to the largest platforms"}'
-        : stageOf(req) === 'verify'
-          ? yes()
-          : '- something'
+      stageOf(req) === 'writeup' && req.user.includes('Rename the chatbot')
+        ? writeUp({ title: 'Rename the chatbot to Finch Bot', type: 'change' })
+        : stageOf(req) === 'group'
+          ? req.user.includes('Choose between')
+            ? '{"job":2,"relation":"same"}'
+            : '{"job":null,"relation":"new"}'
+          : answering({ items: [carousel, renamed, again].join('\n') })(req)
     )
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: refusal,
-      scratch: '',
-      startedAt: Date.now(),
-    })
-    expect(run.tasks).toEqual([])
-    expect(run.filtered).toBe(1)
-    expect(requests.some((r) => stageOf(r) === 'verify')).toBe(false)
+    const result = await run(client)
+    // One placement for each item after the first.
+    expect(requests.filter((r) => stageOf(r) === 'group')).toHaveLength(2)
+    expect(requests.filter((r) => stageOf(r) === 'writeup')).toHaveLength(2)
+    expect(result.tasks).toHaveLength(2)
+    expect(result.candidates).toBe(3)
+    expect(result.merged).toBe(1)
   })
 
-  it('takes a task from your notes, checked the same way', async () => {
-    // "He reported the sign-in dialog is sticking" was in the notes of a real
-    // meeting, and it is exactly the task the transcript pass missed.
-    const scratch = 'he reported the sign in dialog is sticking after google sign in'
-    const { client } = fakeLlm((req) => {
-      switch (stageOf(req)) {
-        case 'notesTasks':
-          return '{"text":"fix the sticking sign-in dialog","owner":null,"due":null,"quote":"sign in dialog is sticking"}'
-        case 'verify':
-          return yes('frontend', 'bug')
-        case 'tasks':
-          return ''
-        default:
-          return '- something'
-      }
+  it('folds groups the write-up names as one job, with the lines of both', async () => {
+    // A rename argued at minute four and again at minute seventeen, grouped
+    // apart: once written up, the two are plainly the same task.
+    const restated = JSON.stringify({
+      title: 'Get the carousel capitalization fixed',
+      description: 'Swap is on it.',
+      type: 'bug',
+      area: 'frontend',
+      status: 'proposed',
+      lines: [3],
+      quote: 'ask finch or finch bot',
     })
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: transcript,
-      scratch,
-      startedAt: Date.now(),
+    const { client } = fakeLlm(
+      answering({
+        items: [carousel, restated].join('\n'),
+        group: '{"job":null,"relation":"new"}',
+      })
+    )
+    const result = await run(client)
+    expect(result.tasks).toHaveLength(1)
+    expect(result.tasks[0]?.evidence?.map((e) => e.segmentId)).toEqual([1, 2, 3])
+    expect(result.tasks[0]?.status).toBe('agreed')
+    expect(result.merged).toBe(1)
+  })
+
+  it('drops work the meeting replaced', async () => {
+    const lines = [...transcript, line(4, 'Instead of history, just clip the answers into the FAQ.')]
+    const history = JSON.stringify({
+      title: 'Add chat history to the bot',
+      description: 'Users could go back to past conversations.',
+      type: 'feature',
+      area: 'frontend',
+      status: 'proposed',
+      lines: [3],
+      quote: 'finch bot or finchy',
     })
-    expect(run.tasks).toEqual([
-      {
-        text: 'fix the sticking sign-in dialog',
-        owner: null,
-        due: null,
-        segmentId: null,
-        noteQuote: 'sign in dialog is sticking',
-        area: 'frontend',
-        kind: 'bug',
-        reason: 'somebody agreed to do it',
-        source: 'notes',
-        mine: false,
-      },
+    const clip = JSON.stringify({
+      title: 'Clip bot answers into the FAQ instead of history',
+      description: 'Replaces the history idea.',
+      type: 'feature',
+      area: 'frontend',
+      status: 'agreed',
+      lines: [4],
+      quote: 'clip the answers into the FAQ',
+    })
+    const { client, requests } = fakeLlm((req) =>
+      stageOf(req) === 'group'
+        ? req.user.includes('Clip bot answers')
+          ? '{"job":2,"relation":"replaces"}'
+          : '{"job":null,"relation":"new"}'
+        : stageOf(req) === 'writeup' && req.user.includes('Clip bot answers')
+          ? writeUp({ title: 'Clip bot answers into the FAQ', type: 'feature' })
+          : answering({ items: [carousel, history, clip].join('\n') })(req)
+    )
+    const result = await run(client, { lines })
+    expect(result.tasks.map((t) => t.text)).toEqual([
+      'Fix capitalization in the carousel',
+      'Clip bot answers into the FAQ',
     ])
+    expect(result.rejected).toBe(1)
+    // Nobody writes up a task that is not going to exist.
+    expect(requests.filter((r) => stageOf(r) === 'writeup')).toHaveLength(2)
   })
 
-  it('does not list the same task twice from the transcript and the notes', async () => {
-    const { client } = fakeLlm((req) => {
-      switch (stageOf(req)) {
-        case 'tasks':
-          return candidate
-        case 'notesTasks':
-          return '{"text":"send the SSO timeline","owner":null,"due":null,"quote":"send the SSO timeline"}'
-        case 'verify':
-          return yes()
-        default:
-          return '- something'
-      }
+  it('drops an item it cannot trace to a line, and one that does not say what', async () => {
+    const invented = JSON.stringify({
+      title: 'Assume a salary of 1500 rupees',
+      lines: [1],
+      quote: 'we will assume the salary',
     })
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: transcript,
-      scratch: 'remember to send the SSO timeline',
-      startedAt: Date.now(),
-    })
-    expect(run.tasks.map((t) => t.source)).toEqual(['transcript'])
+    const vague = JSON.stringify({ title: 'Fix it', lines: [1], quote: 'fixed the capitalization stuff' })
+    const { client } = fakeLlm(answering({ items: [carousel, invented, vague].join('\n') }))
+    const result = await run(client)
+    expect(result.tasks).toHaveLength(1)
+    expect(result.filtered).toBe(2)
+    expect(result.candidates).toBe(3)
   })
 
-  /** The same conversation, with somebody addressed by name. */
-  const addressing = (name: string): TranscriptLine[] => [
-    line(1, `${name}, the SSO work has to be finished before rollout`),
-    line(2, 'I can take that, I will send the timeline on Monday'),
-  ]
+  it('falls back to what was found when the write-up is unreadable', async () => {
+    const { client } = fakeLlm(answering({ writeup: 'I could not do this.' }))
+    const [task] = (await run(client)).tasks
+    expect(task).toMatchObject({
+      text: 'Fix capitalization in the carousel',
+      description: 'Raised again on this call.',
+      kind: 'bug',
+    })
+  })
 
-  it('marks a task yours when it was given to you by name', async () => {
-    const { client } = fakeLlm((req) =>
-      stageOf(req) === 'tasks'
-        ? candidate
-        : stageOf(req) === 'verify'
-          ? yes('frontend', 'bug', 'Ayush')
-          : '- something'
+  it('drops a task its own lines show was set aside', async () => {
+    const { client } = fakeLlm(answering({ writeup: writeUp({ status: 'parked' }) }))
+    const result = await run(client)
+    expect(result.tasks).toEqual([])
+    expect(result.rejected).toBe(1)
+  })
+
+  it('groups by wording when the grouping step fails', async () => {
+    const twice = [carousel, carousel.replace('Raised again on this call.', 'Still broken.').replace('"lines":[1,2]', '"lines":[2]')]
+    const { client } = fakeLlm(
+      answering({
+        items: [twice[0], JSON.stringify({ ...JSON.parse(twice[1]!), title: 'Fix the capitalization in the carousel' })].join('\n'),
+        group: 'the model rambled instead',
+      })
     )
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: addressing('Ayush'),
-      scratch: '',
-      startedAt: Date.now(),
-      me: { name: 'Ayush' },
-    })
-    expect(run.tasks[0]!.owner).toBe('Ayush')
-    expect(run.tasks[0]!.mine).toBe(true)
+    expect((await run(client)).tasks).toHaveLength(1)
   })
 
-  it('does not mark someone else’s task yours', async () => {
-    const { client } = fakeLlm((req) =>
-      stageOf(req) === 'tasks'
-        ? candidate
-        : stageOf(req) === 'verify'
-          ? yes('backend', 'chore', 'Himanshu')
-          : '- something'
+  it('makes the same work found in the transcript and in your notes one task', async () => {
+    const { client } = fakeLlm(
+      answering({
+        notesTasks:
+          '{"text":"fix the carousel capitalization","owner":null,"due":null,"quote":"carousel caps still wrong"}',
+        group: '{"job":1,"relation":"same"}',
+      })
     )
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: addressing('Himanshu'),
-      scratch: '',
-      startedAt: Date.now(),
-      me: { name: 'Ayush' },
-    })
-    expect(run.tasks[0]!.owner).toBe('Himanshu')
-    expect(run.tasks[0]!.mine).toBe(false)
+    const result = await run(client, { scratch: 'carousel caps still wrong' })
+    expect(result.tasks).toHaveLength(1)
+    expect(result.tasks[0]!.noteQuote).toBe('carousel caps still wrong')
+    expect(result.tasks[0]!.source).toBe('transcript')
   })
 
-  it('drops an owner nobody in those lines named', async () => {
-    // "Zhaal" was handed a task on a real meeting. Nobody said that word.
-    const unowned = candidate.replace('"owner":"You"', '"owner":null')
-    const { client } = fakeLlm((req) =>
-      stageOf(req) === 'tasks'
-        ? unowned
-        : stageOf(req) === 'verify'
-          ? yes('backend', 'feature', 'Zhaal')
-          : '- something'
-    )
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: transcript,
-      scratch: '',
-      startedAt: Date.now(),
-      me: { name: 'Ayush' },
-    })
-    expect(run.tasks[0]!.owner).toBeNull()
-    expect(run.tasks[0]!.mine).toBe(false)
-  })
+  it('keeps an owner only when the lines name them, and marks yours', async () => {
+    const { client } = fakeLlm(answering({ writeup: writeUp({ owner: 'Swap' }) }))
+    const lines = [...transcript.slice(0, 2), line(4, 'Swap is on it.')]
+    const items = JSON.stringify({ ...JSON.parse(carousel), lines: [1, 2, 4] })
+    const named = fakeLlm(answering({ items, writeup: writeUp({ owner: 'Swap' }) }))
+    expect((await run(named.client, { lines })).tasks[0]!.owner).toBe('Swap')
 
-  it('reads "I" as whoever spoke the line', async () => {
-    // Line 3 is on the far side, so its speaker's "I" is one of them.
-    const far = [line(3, 'I will check the leader board in Safari today')]
-    const { client } = fakeLlm((req) =>
-      stageOf(req) === 'tasks'
-        ? '{"text":"check the leader board in Safari","owner":"I","due":null,"line":3,"quote":"I will check the leader board"}'
-        : stageOf(req) === 'verify'
-          ? yes('frontend', 'bug', 'I')
-          : '- something'
-    )
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: far,
-      scratch: '',
-      startedAt: Date.now(),
-    })
-    expect(run.tasks[0]!.owner).toBe('Them')
-    expect(run.tasks[0]!.mine).toBe(false)
-  })
+    // Nobody in these lines is called Zhaal.
+    const invented = fakeLlm(answering({ writeup: writeUp({ owner: 'Zhaal' }) }))
+    expect((await run(invented.client)).tasks[0]!.owner).toBeNull()
 
-  it('counts a task said twice once, and checks it once', async () => {
-    // A real meeting listed the same leaderboard check three times.
-    const twice = [
-      line(1, 'I will check the leader board page on web'),
-      line(3, 'yes, I will check the leader board page again'),
-    ]
-    const { client, requests } = fakeLlm((req) =>
-      stageOf(req) === 'tasks'
-        ? [
-            '{"text":"check the leader board page","owner":null,"due":null,"line":1,"quote":"I will check the leader board page"}',
-            '{"text":"check on the leader board page","owner":null,"due":null,"line":3,"quote":"I will check the leader board page"}',
-          ].join('\n')
-        : stageOf(req) === 'verify'
-          ? yes('frontend', 'bug')
-          : '- something'
-    )
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: twice,
-      scratch: '',
-      startedAt: Date.now(),
-    })
-    expect(run.tasks.map((t) => t.segmentId)).toEqual([1])
-    expect(run.candidates).toBe(2)
-    expect(run.merged).toBe(1)
-    expect(requests.filter((r) => stageOf(r) === 'verify')).toHaveLength(1)
+    const mine = fakeLlm(answering({ items, writeup: writeUp({ owner: 'Swap' }) }))
+    expect((await run(mine.client, { lines, me: { name: 'Swap' } })).tasks[0]!.mine).toBe(true)
+    void client
   })
 })
 
@@ -382,19 +358,19 @@ describe('measuring before sending', () => {
       scratch: '',
       startedAt: Date.now(),
     })
-    // 4096 - 324 - 700 - 150 leaves 2922: three lines of 901 each.
-    expect(measured.chunks).toBe(4)
+    // 4096 - (300 + 24 + 1100) - 150 leaves 2522: two lines of 901 each.
+    expect(measured.chunks).toBe(5)
     expect(estimated.chunks).toBe(1)
   })
 
   it('falls back to a padded estimate when the tokenizer cannot be asked', async () => {
     const { client } = fakeLlm(() => '- something')
-    const run = await new MeetingNotesEngine(client, async () => null).generate({
+    const result = await new MeetingNotesEngine(client, async () => null).generate({
       lines: transcript,
       scratch: '',
       startedAt: Date.now(),
     })
-    expect(run.chunks).toBe(1)
+    expect(result.chunks).toBe(1)
   })
 })
 
@@ -410,100 +386,65 @@ describe('when a step fails', () => {
         if (condensed === 1) throw new Error('model restarting')
         return '- a point'
       }
-      if (stageOf(req) === 'tasks') return ''
+      if (stageOf(req) === 'items') return ''
       return '## Summary\nok'
     })
 
-    const run = await new MeetingNotesEngine(client).generate({
+    const result = await new MeetingNotesEngine(client).generate({
       lines: long,
       scratch: '',
       startedAt: Date.now(),
     })
-    expect(run.chunks).toBeGreaterThan(1)
-    expect(run.failedChunks).toBe(1)
-    // The gap is named, not just counted: a summary built from part of a
-    // meeting that looks whole is the worst outcome, because you would act on it.
-    expect(run.gapsAt).toHaveLength(1)
-    expect(run.gapsAt[0]!.fromMs).toBe(5_000)
-    expect(run.coveredLines).toBeLessThan(run.totalLines)
-    expect(run.notesMd).toContain('Summary')
+    expect(result.chunks).toBeGreaterThan(1)
+    expect(result.failedChunks).toBe(1)
+    expect(result.gapsAt).toHaveLength(1)
+    expect(result.gapsAt[0]!.fromMs).toBe(5_000)
+    expect(result.coveredLines).toBeLessThan(result.totalLines)
+    expect(result.notesMd).toContain('Summary')
   })
 
-  it('refuses the run when nothing could be summarised', async () => {
+  it('refuses the run when nothing could be summarised, and says why', async () => {
     const { client } = fakeLlm((req) => {
-      if (stageOf(req) === 'condense') throw new Error('down')
+      if (stageOf(req) === 'condense') throw new Error('503 Loading model')
       return ''
     })
-    await expect(
-      new MeetingNotesEngine(client).generate({
-        lines: transcript,
-        scratch: '',
-        startedAt: Date.now(),
-      })
-    ).rejects.toBeInstanceOf(NotesUnavailable)
+    const failure = run(client)
+    await expect(failure).rejects.toBeInstanceOf(NotesUnavailable)
+    await expect(failure).rejects.toThrow('503 Loading model')
   })
 
   it('refuses when the final write comes back empty', async () => {
-    const { client } = fakeLlm((req) => (stageOf(req) === 'notes' ? '   ' : '- a point'))
-    await expect(
-      new MeetingNotesEngine(client).generate({
-        lines: transcript,
-        scratch: '',
-        startedAt: Date.now(),
-      })
-    ).rejects.toBeInstanceOf(NotesUnavailable)
+    const { client } = fakeLlm(answering({ notes: '   ' }))
+    await expect(run(client)).rejects.toBeInstanceOf(NotesUnavailable)
   })
 
   it('refuses a meeting with no transcript at all', async () => {
     const { client } = fakeLlm(() => '')
-    await expect(
-      new MeetingNotesEngine(client).generate({ lines: [], scratch: '', startedAt: Date.now() })
-    ).rejects.toBeInstanceOf(NotesUnavailable)
-  })
-
-  it('keeps tasks from the chunks that worked when extraction fails elsewhere', async () => {
-    const long = Array.from({ length: 400 }, (_, i) => line(i + 1, `point ${i} about the rollout`))
-    let extracted = 0
-    const { client } = fakeLlm((req) => {
-      if (stageOf(req) === 'tasks') {
-        extracted++
-        if (extracted === 1) throw new Error('down')
-        return '{"text":"do the thing","owner":null,"due":null,"line":399,"quote":"point 398 about the rollout"}'
-      }
-      if (stageOf(req) === 'verify') return yes()
-      if (stageOf(req) === 'condense') return '- a point'
-      return '## Summary\nok'
-    })
-
-    const run = await new MeetingNotesEngine(client).generate({
-      lines: long,
-      scratch: '',
-      startedAt: Date.now(),
-    })
-    expect(run.tasks.length).toBeGreaterThan(0)
+    await expect(run(client, { lines: [] })).rejects.toBeInstanceOf(NotesUnavailable)
   })
 })
 
 describe('tasks the model was not entitled to', () => {
-  it('drops a task citing a line from a different chunk', async () => {
-    // Each extraction call sees one chunk, so a citation from outside it is a
-    // fabrication even if the line exists elsewhere in the meeting.
-    const long = Array.from({ length: 400 }, (_, i) => line(i + 1, `point ${i} about the rollout`))
+  it('drops an item quoting a line from a different chunk', async () => {
+    // Each extraction call sees one chunk, so a quote from outside it is a
+    // fabrication even if the words exist elsewhere in the meeting.
+    const long = Array.from({ length: 400 }, (_, i) => line(i + 1, `point ${i} about the rollout plan`))
     const { client } = fakeLlm((req) => {
-      if (stageOf(req) === 'tasks') {
-        return '{"text":"invented","owner":null,"due":null,"line":1,"quote":"point 0 about the rollout"}'
+      if (stageOf(req) === 'items') {
+        return '{"title":"Write the rollout plan","lines":[1],"quote":"point 0 about the rollout plan"}'
       }
-      if (stageOf(req) === 'verify') return yes()
+      if (stageOf(req) === 'writeup') return '{"title":"Write the rollout plan","description":"x"}'
+      if (stageOf(req) === 'group') return '{"items":["c1"],"status":"proposed"}'
       if (stageOf(req) === 'condense') return '- a point'
       return '## Summary\nok'
     })
 
-    const run = await new MeetingNotesEngine(client).generate({
+    const result = await new MeetingNotesEngine(client).generate({
       lines: long,
       scratch: '',
       startedAt: Date.now(),
     })
     // Exactly one chunk was entitled to cite line 1.
-    expect(run.tasks).toHaveLength(1)
+    expect(result.tasks).toHaveLength(1)
   })
 })
