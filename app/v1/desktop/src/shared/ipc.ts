@@ -110,6 +110,8 @@ export const IPC = {
   repassProgress: 'meeting:repassProgress',
   meetingOffer: 'meeting:offered',
   meetingJobs: 'meeting:jobsChanged',
+  // One step of a job stored its result, partway through the job.
+  meetingUpdated: 'meeting:updated',
 } as const
 
 /** Which way the capsule opens, and whether there is a pet to open it from. */
@@ -447,6 +449,11 @@ export interface WouiceApi {
    */
   setMainVersion(meetingId: number, versionId: number): Promise<string | null>
   onMeetingJobs(cb: (jobs: MeetingJobsView) => void): () => void
+  /**
+   * A step stored its result partway through a job - the English, before the
+   * summary is written. The page re-reads rather than waiting for the job to end.
+   */
+  onMeetingUpdated(cb: (meetingId: number) => void): () => void
   /** Full-text across every meeting. Empty query is no results, not an error. */
   searchMeetings(query: string): Promise<MeetingSegment[]>
   /**

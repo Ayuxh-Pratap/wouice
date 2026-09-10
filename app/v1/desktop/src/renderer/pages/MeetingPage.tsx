@@ -9,6 +9,7 @@ import type {
   RepassProgressView,
 } from '../../shared/ipc.js'
 import { kindOf } from '../../shared/meeting-kind.js'
+import { needsEnglish } from '../meetings/english.js'
 import { describeJob, jobColour, useMeetingJobs } from '../meetings/jobs.js'
 import { isImproved, mainVersion, versionLabel } from '../meetings/versions.js'
 import { Notes } from '../meetings/Notes.js'
@@ -110,6 +111,11 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
     const offRepass = window.wouice.onRepassProgress((p) => {
       if (p.meetingId === meetingId) setRepass(p)
     })
+    // A step finished partway through a job - the English, before the summary.
+    // Re-read, so what is on screen is what is stored.
+    const offUpdated = window.wouice.onMeetingUpdated((id) => {
+      if (id === meetingId) load()
+    })
     const offDone = window.wouice.onMeetingProcessed((id) => {
       if (id !== meetingId) return
       setNotesProgress(null)
@@ -124,6 +130,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
       offEnglish()
       offRepass()
       offDone()
+      offUpdated()
     }
   }, [meetingId, load])
 
@@ -133,7 +140,9 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
 
   const live = state?.meetingId === meetingId && RECORDING_PHASES.has(state.phase)
   const kind = kindOf(meeting.kind)
-  const hasEnglish = segments.some((s) => s.textEn)
+  // Lines that still need an English rendering. A line already spoken in
+  // English is its own English and is not counted.
+  const missingEnglish = segments.filter(needsEnglish).length
   // What is on screen: the version picked, or the main one. Everything below
   // reads from this one version, so a summary is only ever shown with the
   // transcript it was written from.
@@ -159,6 +168,14 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   const running = jobs.running?.meetingId === meetingId ? jobs.running : null
   const waiting = running ? null : (jobs.queued.find((j) => j.meetingId === meetingId) ?? null)
   const working = running !== null || waiting !== null
+  // Whether the English itself is being written right now - not merely whether
+  // anything is running. The summary step of the same job is not it.
+  const englishPending =
+    englishProgress !== null ||
+    running?.kind === 'english' ||
+    repass?.stage === 'warming' ||
+    repass?.stage === 'rendering' ||
+    (running?.kind === 'process' && notesProgress === null)
   const improved = isImproved(meeting)
   // Whatever there is to read. Landing on an empty Summary when the transcript
   // is right there is a click for nothing.
@@ -545,9 +562,10 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
                 ))}
               </div>
             ) : null}
-            {kind.translate && english && !hasEnglish && segments.length > 0 ? (
+            {kind.translate && english && missingEnglish > 0 ? (
               <EnglishMissing
-                running={working}
+                missing={missingEnglish}
+                running={englishPending}
                 failed={englishFailed}
                 onRedo={onMain && !working ? () => void redo('english') : undefined}
               />
@@ -555,7 +573,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
               <Transcript
                 segments={segments}
-                english={english && hasEnglish}
+                english={english && kind.translate}
                 emptyMessage="No transcript — it was recorded before transcription existed, or the speech model was not running."
               />
             </div>
@@ -1215,26 +1233,30 @@ function VersionSwitch({
 }
 
 /**
- * English is on and this transcript has none: say why, and offer the fix,
- * rather than quietly showing the raw lines under an "English" label.
+ * English is on and some Hindi lines have no English: say why, and offer the
+ * fix, rather than quietly showing them as spoken under an "English" label.
+ * Lines already spoken in English are not counted - they are their English.
  */
 function EnglishMissing({
+  missing,
   running,
   failed,
   onRedo,
 }: {
+  missing: number
   running: boolean
   failed: string | null
   onRedo?: () => void
 }): React.JSX.Element {
+  const lines = `${missing} line${missing === 1 ? '' : 's'}`
   return (
     <div className="mb-2.5 flex shrink-0 items-center gap-3 rounded-lg bg-white/[0.04] px-3 py-2 text-[12px] leading-snug text-neutral-300 ring-1 ring-white/[0.08]">
       <span className="min-w-0 flex-1">
         {running
-          ? 'The English is being written. Showing the lines as spoken until then.'
+          ? 'The English is being written. Hindi lines are shown as spoken until then.'
           : failed
-            ? `The English could not be written: ${failed}. Showing the lines as spoken.`
-            : 'This transcript has no English yet. Showing the lines as spoken.'}
+            ? `The English could not be written: ${failed}. ${lines} in Hindi are shown as spoken.`
+            : `${lines} in Hindi ${missing === 1 ? 'has' : 'have'} no English yet and ${missing === 1 ? 'is' : 'are'} shown as spoken.`}
       </span>
       {!running && onRedo ? (
         <button

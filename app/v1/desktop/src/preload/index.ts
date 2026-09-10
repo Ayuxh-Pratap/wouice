@@ -87,6 +87,7 @@ const api: WouiceApi = {
   setMainVersion: (meetingId: number, versionId: number) =>
     ipcRenderer.invoke(IPC.setMainVersion, meetingId, versionId),
   onMeetingJobs: (cb) => subscribe<MeetingJobsView>(IPC.meetingJobs, cb),
+  onMeetingUpdated: (cb) => subscribe<number>(IPC.meetingUpdated, cb),
   setTaskState: (taskId: number, state: TaskState) =>
     ipcRenderer.invoke(IPC.setTaskState, taskId, state),
   getOpenTasks: () => ipcRenderer.invoke(IPC.getOpenTasks),

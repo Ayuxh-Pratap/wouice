@@ -1,4 +1,5 @@
 import type { MeetingSegment } from '../../shared/ipc.js'
+import { needsEnglish } from './english.js'
 
 /**
  * A meeting transcript, read as a conversation.
@@ -69,7 +70,8 @@ export function Transcript({
                 return highlight ? mark(shown, highlight) : shown
               })()}
             </p>
-            {english && !segment.textEn ? (
+            {/* Only a Hindi line lacks English; one spoken in English is its own. */}
+            {english && needsEnglish(segment) ? (
               <span className="text-[10px] text-neutral-600">not rendered</span>
             ) : null}
           </div>

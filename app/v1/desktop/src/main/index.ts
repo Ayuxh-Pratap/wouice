@@ -261,6 +261,7 @@ async function writeNotes(id: number, versionId?: number): Promise<NotesOutcome>
       merged: run.merged,
       rejected: run.rejected,
     })
+    broadcast(IPC.meetingUpdated, id)
     console.log(
       `[meeting] notes for ${id}: ${run.chunks} chunk(s), covered ${run.coveredLines}/${run.totalLines} lines,` +
         ` tasks ${run.tasks.length} kept of ${run.candidates}` +
@@ -352,6 +353,9 @@ async function renderEnglish(id: number, versionId?: number): Promise<EnglishOut
         ms: run.ms,
       },
     })
+    // Said now, not when the whole job ends: the summary still has minutes to
+    // go, and the page should show the English it already has.
+    broadcast(IPC.meetingUpdated, id)
     console.log(
       `[meeting] english for ${id}: ${run.rendered.length} line(s), ${run.missed} missed, ${Math.round(run.ms / 1000)}s`
     )
