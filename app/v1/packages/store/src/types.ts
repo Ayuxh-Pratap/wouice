@@ -198,6 +198,10 @@ export interface VersionDiagnostics {
     ms: number
     /** How many chunks were sent to the model as each language. */
     languages?: Record<string, number>
+    /** Lines written over silence and dropped. */
+    unheard?: number
+    /** Whether the everyday speech model was confirmed back on the card afterwards. */
+    restored?: boolean
   } | null
   english?: MeetingDiagnostics['english'] | null
   notes?: MeetingDiagnostics['notes'] | null
@@ -251,7 +255,29 @@ export type TaskState = 'open' | 'done' | 'dropped'
 export type TaskArea = 'frontend' | 'backend' | 'design' | 'product' | 'business' | 'ops' | 'other'
 
 /** What sort of work it is. */
-export type TaskKind = 'feature' | 'bug' | 'chore' | 'followup' | 'other'
+export type TaskKind =
+  | 'feature'
+  | 'bug'
+  | 'change'
+  | 'research'
+  | 'content'
+  | 'followup'
+  | 'chore'
+  | 'other'
+
+/** Where the meeting landed on a task. Empty for tasks from before this was recorded. */
+export type TaskStatus = 'agreed' | 'proposed' | ''
+
+/** A line of the transcript a task came from. */
+export interface TaskEvidence {
+  segmentId: number
+  /** The words quoted from it; empty when the line was cited without a quote. */
+  quote: string
+  /** When it was said. Null when the line is gone. */
+  atMs: number | null
+  /** The line itself, in English where there is one. Null when the line is gone. */
+  line: string | null
+}
 
 export const TASK_AREAS: readonly TaskArea[] = [
   'frontend',
@@ -262,7 +288,16 @@ export const TASK_AREAS: readonly TaskArea[] = [
   'ops',
   'other',
 ]
-export const TASK_KINDS: readonly TaskKind[] = ['feature', 'bug', 'chore', 'followup', 'other']
+export const TASK_KINDS: readonly TaskKind[] = [
+  'feature',
+  'bug',
+  'change',
+  'research',
+  'content',
+  'followup',
+  'chore',
+  'other',
+]
 
 export interface TaskInput {
   text: string
@@ -293,6 +328,11 @@ export interface TaskInput {
   state?: TaskState
   /** The source of the version this was carried from, when it was. */
   carriedFrom?: string | null
+  /** The story: what exactly, how it should work, and why - from what was said. */
+  description?: string
+  /** Every line it came from. */
+  evidence?: { segmentId: number; quote: string }[]
+  status?: TaskStatus
 }
 
 export interface TaskRecord extends TaskInput {
@@ -310,6 +350,10 @@ export interface TaskRecord extends TaskInput {
   /** What was actually said. Joined from the segment it cites. */
   quote: string | null
   quoteAtMs: number | null
+  description: string
+  /** Every line it came from, with when and what was said. */
+  evidence: TaskEvidence[]
+  status: TaskStatus
 }
 
 /**
@@ -330,6 +374,8 @@ export interface MeetingDiagnostics {
   chunksFailed?: number
   /** Chunks that were silence and were never sent to the model. */
   chunksSkipped?: number
+  /** Lines the speech model wrote over silence, dropped by their own audio level. */
+  segmentsUnheard?: number
   /** The language every chunk after the first was forced to. */
   language?: string
   segments?: number
