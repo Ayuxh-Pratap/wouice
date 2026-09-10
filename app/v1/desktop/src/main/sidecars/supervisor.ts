@@ -104,6 +104,39 @@ export class SidecarSupervisor extends EventEmitter {
     return false
   }
 
+  /**
+   * Resolve true once this sidecar is running `modelId`, with no switch still
+   * queued behind a dictation, and answering. False if it fails, or after
+   * `timeoutMs`.
+   *
+   * A SWITCH ASKED FOR DURING A DICTATION IS QUEUED, NOT DONE, and
+   * `switchModel` returns either way. The careful pass once took that return
+   * as done: the restore it asked for afterwards was of whatever happened to
+   * be loaded, the large model stayed on the card, and the next meeting was
+   * transcribed live by it without anybody choosing that. Anything that needs
+   * a particular model loaded checks here instead of trusting the call.
+   */
+  async whenModel(id: SidecarId, modelId: string, timeoutMs = 180_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const s = this.snapshot(id)
+      if (s.modelId === modelId && s.pendingModelId === null && s.status === 'ready') return true
+      if (s.status === 'failed') return false
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    return false
+  }
+
+  /** Resolve true once no dictation is holding this sidecar; false after `timeoutMs`. */
+  async whenIdle(id: SidecarId, timeoutMs = 60_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (!this.snapshot(id).busy) return true
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    return false
+  }
+
   canServe(id: SidecarId): boolean {
     return canServe(this.require(id).state)
   }
