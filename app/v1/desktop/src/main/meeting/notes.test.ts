@@ -3,7 +3,13 @@ import {
   allFailed,
   assembleCondensed,
   chunkTranscript,
+  contextAround,
+  isMine,
+  looksLikeCommitment,
+  parseNoteTasks,
   parseTasks,
+  parseVerdict,
+  sentenceWith,
   reduceInput,
   renderChunk,
   CHUNK_TOKEN_BUDGET,
@@ -229,5 +235,165 @@ describe('the reduce input', () => {
 
   it('says nothing about notes when there are none', () => {
     expect(reduceInput('- a point', '   ', new Date())).not.toContain("person's own notes")
+  })
+})
+
+describe('chunking against real token counts', () => {
+  it('uses the cost it is given, not the character estimate', () => {
+    // The estimate undercounted a real meeting by up to 1.8x and three of four
+    // chunks overflowed. The engine hands in the model's own count.
+    const lines = Array.from({ length: 10 }, (_, i) => line(i + 1, 'short'))
+    const chunks = chunkTranscript(lines, 100, () => 30)
+    // 31 per line (+1 newline) against 100: three per chunk.
+    expect(chunks.map((c) => c.lines.length)).toEqual([3, 3, 3, 1])
+  })
+
+  it('pads the fallback when no real count is available', () => {
+    const lines = Array.from({ length: 200 }, (_, i) =>
+      line(i + 1, 'we talked about the deployment pipeline and the pricing question at length')
+    )
+    const padded = chunkTranscript(lines)
+    const naive = chunkTranscript(lines, CHUNK_TOKEN_BUDGET, (t) => Math.ceil(t.length / 4))
+    // Wrong in the safe direction: more, smaller chunks.
+    expect(padded.length).toBeGreaterThan(naive.length)
+  })
+})
+
+describe('the commitment filter', () => {
+  it('drops a refusal', () => {
+    // A real meeting reported "go to the largest platforms" as a task, from a
+    // line that ended "I'm not doing it".
+    expect(looksLikeCommitment("This image issue, go to the largest platforms, I'm not doing it")).toBe(false)
+    expect(looksLikeCommitment('no need to change the pricing page')).toBe(false)
+    expect(looksLikeCommitment("let's not ship the banner this week")).toBe(false)
+  })
+
+  it('drops a first-person maybe', () => {
+    expect(looksLikeCommitment('Or maybe I need to handle it')).toBe(false)
+    expect(looksLikeCommitment('should we move the button to the header')).toBe(false)
+  })
+
+  it('keeps a bug report, negatives and all', () => {
+    // The whole reason this is not a "contains not" check.
+    expect(looksLikeCommitment('the sign in dialog is not closing after Google sign-in')).toBe(true)
+    expect(looksLikeCommitment("images don't load on the profile page, I'll fix it")).toBe(true)
+  })
+
+  it('keeps a request phrased as a question', () => {
+    // An assignment, not a musing. The verifier decides questions.
+    expect(looksLikeCommitment('Ayush, can you fix the login bug?')).toBe(true)
+  })
+
+  it('keeps a plain commitment', () => {
+    expect(looksLikeCommitment('I will send the SSO timeline on Monday')).toBe(true)
+  })
+})
+
+describe('the sentence a quote came from', () => {
+  it('judges the commitment, not its neighbour', () => {
+    const text = "We'll fix the login bug today. I'm not doing the Instagram thing."
+    expect(sentenceWith(text, 'fix the login bug')).toBe("We'll fix the login bug today.")
+    expect(sentenceWith(text, 'the Instagram thing')).toBe("I'm not doing the Instagram thing.")
+  })
+
+  it('falls back to the whole line when the quote spans sentences', () => {
+    expect(sentenceWith('one. two.', 'nothing like it')).toBe('one. two.')
+  })
+})
+
+describe('what the verifier reads', () => {
+  const lines = [1, 2, 3, 4, 5, 6, 7].map((id) => line(id, `line ${id}`))
+
+  it('marks the cited line and shows two either side', () => {
+    const context = contextAround(lines, 4)
+    expect(context.split('\n')).toHaveLength(5)
+    expect(context).toContain('>> [4]')
+    expect(context).toContain('[2]')
+    expect(context).toContain('[6]')
+    expect(context).not.toContain('[1]')
+  })
+
+  it('stops at the edges', () => {
+    expect(contextAround(lines, 1).split('\n')).toHaveLength(3)
+    expect(contextAround(lines, 99)).toBe('')
+  })
+})
+
+describe("reading the verifier's answer", () => {
+  it('reads a yes with its classification', () => {
+    const v = parseVerdict(
+      '{"task": true, "reason": "Ayush agreed to fix it", "area": "frontend", "kind": "bug", "owner": "Ayush"}'
+    )
+    expect(v).toEqual({
+      task: true,
+      reason: 'Ayush agreed to fix it',
+      area: 'frontend',
+      kind: 'bug',
+      owner: 'Ayush',
+    })
+  })
+
+  it('reads a no', () => {
+    expect(parseVerdict('{"task": false, "reason": "a refusal"}')?.task).toBe(false)
+  })
+
+  it('finds the object inside prose', () => {
+    const v = parseVerdict('Sure. Here is my answer:\n{"task": true, "reason": "x", "area": "backend", "kind": "chore", "owner": null}\nThanks')
+    expect(v?.area).toBe('backend')
+  })
+
+  it('treats an unreadable answer as no answer', () => {
+    // Unreadable is null, and the caller counts null as not a task.
+    expect(parseVerdict('yes it is a task')).toBeNull()
+    expect(parseVerdict('{"task": "yes"}')).toBeNull()
+  })
+
+  it('never invents an area or a kind', () => {
+    const v = parseVerdict('{"task": true, "reason": "", "area": "mobile", "kind": "epic", "owner": "null"}')
+    expect(v?.area).toBe('other')
+    expect(v?.kind).toBe('other')
+    expect(v?.owner).toBeNull()
+  })
+})
+
+describe('whose task it is', () => {
+  it('counts the person who recorded the meeting', () => {
+    expect(isMine('You', '')).toBe(true)
+    expect(isMine('you', 'Ayush')).toBe(true)
+  })
+
+  it('counts a task given by name', () => {
+    expect(isMine('Ayush', 'Ayush')).toBe(true)
+    expect(isMine('ayush', 'Ayush')).toBe(true)
+    expect(isMine('Ayush & Himanshu', 'Ayush')).toBe(true)
+  })
+
+  it('does not count someone else, or nobody', () => {
+    expect(isMine('Himanshu', 'Ayush')).toBe(false)
+    expect(isMine(null, 'Ayush')).toBe(false)
+    // With no name configured, only "You" can be yours.
+    expect(isMine('Ayush', '')).toBe(false)
+  })
+})
+
+describe('tasks from your own notes', () => {
+  const notes =
+    'he reported a issue that sign in dialog is sticking when we return back from google sign in\nthen i discussed some kyc stuff'
+
+  it('takes a task whose quote is in the notes', () => {
+    const raw =
+      '{"text":"fix the sticking sign-in dialog","owner":null,"due":null,"quote":"sign in dialog is sticking"}'
+    expect(parseNoteTasks(raw, notes)).toEqual([
+      { text: 'fix the sticking sign-in dialog', owner: null, due: null, quote: 'sign in dialog is sticking' },
+    ])
+  })
+
+  it('drops one whose quote is not in the notes', () => {
+    const raw = '{"text":"ship KYC","owner":null,"due":null,"quote":"ship the kyc flow on friday"}'
+    expect(parseNoteTasks(raw, notes)).toEqual([])
+  })
+
+  it('returns nothing for nothing', () => {
+    expect(parseNoteTasks('', notes)).toEqual([])
   })
 })
