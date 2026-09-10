@@ -522,7 +522,7 @@ const FILLER = new Set([
   'them',
 ])
 
-function contentWords(text: string): Set<string> {
+export function contentWords(text: string): Set<string> {
   return new Set(
     text
       .toLowerCase()
