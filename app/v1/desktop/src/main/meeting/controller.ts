@@ -277,6 +277,7 @@ export class MeetingController extends EventEmitter {
         chunksSent: stats?.chunksSent ?? 0,
         chunksFailed: stats?.chunksFailed ?? 0,
         chunksSkipped: stats?.chunksSkipped ?? 0,
+        segmentsUnheard: stats?.segmentsUnheard ?? 0,
         language: stats?.language ?? 'auto',
         segments: stats?.segments ?? 0,
         skewMs: result?.skewMs ?? null,
