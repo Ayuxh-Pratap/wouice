@@ -371,6 +371,10 @@ export class MeetingBot extends EventEmitter {
         const others = Math.max(0, snapshot.participants - 1)
         if (others !== run.participants) {
           run.participants = others
+          // Into the log as well as the view: leaving when alone rests on this
+          // count, and a run that left too early or never left is diagnosed
+          // from what the bot believed about who was there.
+          this.note(run, `participant tiles: ${snapshot.participants} (${others} other${others === 1 ? '' : 's'})`)
           this.changed(run)
         }
         if (others > 0) {
