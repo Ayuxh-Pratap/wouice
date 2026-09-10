@@ -234,6 +234,7 @@ export function formatMeeting(meeting: MeetingRecord, tasks: number): string {
     if (run.candidates !== undefined) {
       lines.push(
         `      tasks     ${run.candidates} proposed, ${run.filtered ?? 0} filtered as refusal/maybe,` +
+          (run.merged !== undefined ? ` ${run.merged} merged as said twice,` : '') +
           ` ${run.rejected ?? 0} refused on checking, ${run.tasks} kept`
       )
     }

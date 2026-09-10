@@ -304,9 +304,13 @@ export interface MeetingDiagnostics {
     totalLines?: number
     /** The stretches that could not be read. */
     gapsAt?: { fromMs: number; toMs: number }[]
-    /** Proposed, dropped by the word filter, refused by the checker. */
+    /**
+     * Proposed, dropped by the word filter, merged as the same task said twice,
+     * refused by the checker. Proposed is the sum of the other three and kept.
+     */
     candidates?: number
     filtered?: number
+    merged?: number
     rejected?: number
   }[]
   [key: string]: unknown

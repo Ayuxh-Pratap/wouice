@@ -254,6 +254,12 @@ describe('what a task has to survive', () => {
     expect(run.tasks.map((t) => t.source)).toEqual(['transcript'])
   })
 
+  /** The same conversation, with somebody addressed by name. */
+  const addressing = (name: string): TranscriptLine[] => [
+    line(1, `${name}, the SSO work has to be finished before rollout`),
+    line(2, 'I can take that, I will send the timeline on Monday'),
+  ]
+
   it('marks a task yours when it was given to you by name', async () => {
     const { client } = fakeLlm((req) =>
       stageOf(req) === 'tasks'
@@ -263,7 +269,7 @@ describe('what a task has to survive', () => {
           : '- something'
     )
     const run = await new MeetingNotesEngine(client).generate({
-      lines: transcript,
+      lines: addressing('Ayush'),
       scratch: '',
       startedAt: Date.now(),
       me: { name: 'Ayush' },
@@ -281,12 +287,79 @@ describe('what a task has to survive', () => {
           : '- something'
     )
     const run = await new MeetingNotesEngine(client).generate({
+      lines: addressing('Himanshu'),
+      scratch: '',
+      startedAt: Date.now(),
+      me: { name: 'Ayush' },
+    })
+    expect(run.tasks[0]!.owner).toBe('Himanshu')
+    expect(run.tasks[0]!.mine).toBe(false)
+  })
+
+  it('drops an owner nobody in those lines named', async () => {
+    // "Zhaal" was handed a task on a real meeting. Nobody said that word.
+    const unowned = candidate.replace('"owner":"You"', '"owner":null')
+    const { client } = fakeLlm((req) =>
+      stageOf(req) === 'tasks'
+        ? unowned
+        : stageOf(req) === 'verify'
+          ? yes('backend', 'feature', 'Zhaal')
+          : '- something'
+    )
+    const run = await new MeetingNotesEngine(client).generate({
       lines: transcript,
       scratch: '',
       startedAt: Date.now(),
       me: { name: 'Ayush' },
     })
+    expect(run.tasks[0]!.owner).toBeNull()
     expect(run.tasks[0]!.mine).toBe(false)
+  })
+
+  it('reads "I" as whoever spoke the line', async () => {
+    // Line 3 is on the far side, so its speaker's "I" is one of them.
+    const far = [line(3, 'I will check the leader board in Safari today')]
+    const { client } = fakeLlm((req) =>
+      stageOf(req) === 'tasks'
+        ? '{"text":"check the leader board in Safari","owner":"I","due":null,"line":3,"quote":"I will check the leader board"}'
+        : stageOf(req) === 'verify'
+          ? yes('frontend', 'bug', 'I')
+          : '- something'
+    )
+    const run = await new MeetingNotesEngine(client).generate({
+      lines: far,
+      scratch: '',
+      startedAt: Date.now(),
+    })
+    expect(run.tasks[0]!.owner).toBe('Them')
+    expect(run.tasks[0]!.mine).toBe(false)
+  })
+
+  it('counts a task said twice once, and checks it once', async () => {
+    // A real meeting listed the same leaderboard check three times.
+    const twice = [
+      line(1, 'I will check the leader board page on web'),
+      line(3, 'yes, I will check the leader board page again'),
+    ]
+    const { client, requests } = fakeLlm((req) =>
+      stageOf(req) === 'tasks'
+        ? [
+            '{"text":"check the leader board page","owner":null,"due":null,"line":1,"quote":"I will check the leader board page"}',
+            '{"text":"check on the leader board page","owner":null,"due":null,"line":3,"quote":"I will check the leader board page"}',
+          ].join('\n')
+        : stageOf(req) === 'verify'
+          ? yes('frontend', 'bug')
+          : '- something'
+    )
+    const run = await new MeetingNotesEngine(client).generate({
+      lines: twice,
+      scratch: '',
+      startedAt: Date.now(),
+    })
+    expect(run.tasks.map((t) => t.segmentId)).toEqual([1])
+    expect(run.candidates).toBe(2)
+    expect(run.merged).toBe(1)
+    expect(requests.filter((r) => stageOf(r) === 'verify')).toHaveLength(1)
   })
 })
 

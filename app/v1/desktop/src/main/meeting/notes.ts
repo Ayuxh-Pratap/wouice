@@ -419,6 +419,162 @@ export function isMine(owner: string | null, name: string): boolean {
   return who === mine || who.split(/[\s,&/]+/).includes(mine)
 }
 
+/* ---------------------------------------------------------- the owner ---- */
+
+const YOU = new Set(['you', 'me', 'myself', 'yourself'])
+const FAR_SIDE = new Set(['them', 'they', 'he', 'she', 'him', 'her'])
+const NOBODY_IN_PARTICULAR = new Set([
+  'we',
+  'us',
+  'everyone',
+  'everybody',
+  'someone',
+  'somebody',
+  'anyone',
+  'team',
+  'the team',
+  'all',
+  'both',
+])
+
+/**
+ * Who a task belongs to, in the transcript's own words.
+ *
+ * THE CHECKER'S OWNER IS A CLAIM, NOT A FACT. On a real meeting it came back as
+ * "I", "them", "Them" and "Zhaal" - the last a misheard word promoted to a
+ * person and handed a task. So:
+ *
+ * - A pronoun is resolved against who SPOKE the line. "I" on the far side is
+ *   Them; "I" in your own notes is You. "You" is always the person recording.
+ * - "We" and "the team" are nobody in particular, which is what unassigned is.
+ * - A name is kept only if it appears in the lines the checker was shown. A
+ *   name nobody said is one the model supplied, and moving work to somebody who
+ *   never heard about it is worse than leaving it unassigned.
+ *
+ * What this cannot catch is a name the English pass invented and wrote into the
+ * line itself: the check is against the text the model read, and that text
+ * already says it.
+ */
+export function resolveOwner(
+  owner: string | null,
+  speaker: MeetingChannel | 'notes',
+  said: string
+): string | null {
+  const who = owner?.trim() ?? ''
+  if (!who) return null
+  const lower = who.toLowerCase()
+  if (YOU.has(lower)) return 'You'
+  if (lower === 'i') return speaker === 'them' ? 'Them' : 'You'
+  if (FAR_SIDE.has(lower)) return speaker === 'notes' ? null : 'Them'
+  if (NOBODY_IN_PARTICULAR.has(lower)) return null
+
+  const heard = new Set(said.toLowerCase().split(/[^\p{L}\p{M}\p{N}]+/u))
+  const parts = lower.split(/[\s,&/]+/).filter((part) => part.length >= 3)
+  return parts.some((part) => heard.has(part)) ? who : null
+}
+
+/* ----------------------------------------------------- the same task ---- */
+
+/** What two tasks are compared on. */
+export interface TaskProbe {
+  text: string
+  /** The line it cites; null for a task from your own notes. */
+  segmentId: number | null
+  quote: string
+  /** When that line was said; null for your notes. */
+  atMs: number | null
+}
+
+/** How close two lines have to be for similar wording to mean the same task. */
+const NEAR_MS = 120_000
+
+const FILLER = new Set([
+  'a',
+  'an',
+  'the',
+  'to',
+  'of',
+  'in',
+  'on',
+  'at',
+  'for',
+  'and',
+  'or',
+  'with',
+  'from',
+  'by',
+  'it',
+  'its',
+  'is',
+  'be',
+  'this',
+  'that',
+  'will',
+  'would',
+  'should',
+  'can',
+  'need',
+  'needs',
+  'i',
+  'we',
+  'you',
+  'they',
+  'them',
+])
+
+function contentWords(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/[^\p{L}\p{M}\p{N}]+/u)
+      .filter((word) => word.length > 1 && !FILLER.has(word))
+  )
+}
+
+/** Shared words over all words: 1 is the same words in any order. */
+function similarity(a: string, b: string): number {
+  const x = contentWords(a)
+  const y = contentWords(b)
+  if (x.size === 0 || y.size === 0) return 0
+  let shared = 0
+  for (const word of x) if (y.has(word)) shared++
+  return shared / (x.size + y.size - shared)
+}
+
+/** The same quoted words, or one quote sitting inside the other. */
+function sameQuote(a: string, b: string): boolean {
+  const x = bare(a)
+  const y = bare(b)
+  if (x.length < 8 || y.length < 8) return false
+  return x.includes(y) || y.includes(x)
+}
+
+/**
+ * Whether two tasks are one task said twice.
+ *
+ * Exact text was the only check, and a real meeting produced "will check on the
+ * leader board page" and "will check in the leader board page" twenty-five
+ * seconds apart, plus a third task quoting the same words of the same line.
+ * Three rules, each narrow:
+ *
+ * - The same line and the same quoted words: one piece of evidence proves one
+ *   commitment, however many ways it is paraphrased.
+ * - The same line and mostly the same words.
+ * - Lines within two minutes and nearly the same words. People restate what
+ *   they have just agreed; the same thing agreed again an hour later is worth
+ *   keeping as its own.
+ *
+ * A task from your notes has no time, so it is compared on its words alone.
+ */
+export function isDuplicate(a: TaskProbe, b: TaskProbe): boolean {
+  if (a.segmentId !== null && a.segmentId === b.segmentId) {
+    return sameQuote(a.quote, b.quote) || similarity(a.text, b.text) >= 0.5
+  }
+  const words = similarity(a.text, b.text)
+  if (a.atMs === null || b.atMs === null) return words >= 0.6
+  return Math.abs(a.atMs - b.atMs) <= NEAR_MS && words >= 0.6
+}
+
 /* ------------------------------------------------- tasks from notes ------ */
 
 export interface NoteCandidate {

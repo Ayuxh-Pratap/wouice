@@ -4,11 +4,13 @@ import {
   assembleCondensed,
   chunkTranscript,
   contextAround,
+  isDuplicate,
   isMine,
   looksLikeCommitment,
   parseNoteTasks,
   parseTasks,
   parseVerdict,
+  resolveOwner,
   sentenceWith,
   reduceInput,
   renderChunk,
@@ -395,5 +397,97 @@ describe('tasks from your own notes', () => {
 
   it('returns nothing for nothing', () => {
     expect(parseNoteTasks('', notes)).toEqual([])
+  })
+})
+
+describe('who a task belongs to', () => {
+  it('reads a pronoun against who spoke the line', () => {
+    expect(resolveOwner('I', 'them', '')).toBe('Them')
+    expect(resolveOwner('I', 'me', '')).toBe('You')
+    // In your own notes, "I" is the person typing them.
+    expect(resolveOwner('I', 'notes', '')).toBe('You')
+    expect(resolveOwner('them', 'me', '')).toBe('Them')
+    expect(resolveOwner('Them', 'them', '')).toBe('Them')
+    expect(resolveOwner('you', 'them', '')).toBe('You')
+  })
+
+  it('treats "we" and the team as nobody in particular', () => {
+    expect(resolveOwner('we', 'me', '')).toBeNull()
+    expect(resolveOwner('the team', 'them', '')).toBeNull()
+  })
+
+  it('keeps a name that was said', () => {
+    const said = contextAround(
+      [line(541, 'Rahul Dhir, what is the branch name? Check it once again')],
+      541
+    )
+    expect(resolveOwner('Rahul Dhir', 'them', said)).toBe('Rahul Dhir')
+    expect(resolveOwner('Rahul', 'them', said)).toBe('Rahul')
+  })
+
+  it('drops a name nobody said', () => {
+    // From a real meeting: "Zhaal" was given a task, and no line says it.
+    const said = contextAround([line(378, 'So, revive the call on met collection')], 378)
+    expect(resolveOwner('Zhaal', 'them', said)).toBeNull()
+  })
+
+  it('is nobody when nothing was given', () => {
+    expect(resolveOwner(null, 'me', 'anything')).toBeNull()
+    expect(resolveOwner('   ', 'me', 'anything')).toBeNull()
+  })
+})
+
+describe('the same task said twice', () => {
+  const probe = (text: string, segmentId: number | null, quote: string, atMs: number | null) => ({
+    text,
+    segmentId,
+    quote,
+    atMs,
+  })
+
+  it('catches a restatement a few seconds later', () => {
+    // Both from a real meeting, twenty-five seconds apart.
+    expect(
+      isDuplicate(
+        probe('will check on the leader board page', 603, 'leader board on vote page', 3_201_008),
+        probe('will check in the leader board page', 606, 'I will check in safir', 3_226_008)
+      )
+    ).toBe(true)
+  })
+
+  it('catches two tasks resting on the same words of one line', () => {
+    expect(
+      isDuplicate(
+        probe('will check in safir', 606, 'I will check in safir', 3_226_008),
+        probe('check the leaderboard in Safari', 606, 'and I will check in safir', 3_226_008)
+      )
+    ).toBe(true)
+  })
+
+  it('keeps two different tasks from one line', () => {
+    expect(
+      isDuplicate(
+        probe('fix the login bug', 7, "we'll fix the login bug", 0),
+        probe('ship the pricing page', 7, 'ship the pricing page', 0)
+      )
+    ).toBe(false)
+  })
+
+  it('keeps the same words an hour apart', () => {
+    expect(
+      isDuplicate(
+        probe('check the leader board page', 1, 'check the leader board', 0),
+        probe('check the leader board page', 2, 'check the leader board', 3_600_000)
+      )
+    ).toBe(false)
+  })
+
+  it('compares a task from your notes on its words alone', () => {
+    expect(
+      isDuplicate(
+        probe('send the SSO timeline', 2, 'I will send the timeline', 10_000),
+        probe('send Priya the SSO timeline', null, 'send the SSO timeline', null)
+      )
+    ).toBe(true)
   })
 })

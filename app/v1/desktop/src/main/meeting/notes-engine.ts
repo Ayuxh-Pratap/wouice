@@ -12,6 +12,7 @@ import {
   assembleCondensed,
   chunkTranscript,
   contextAround,
+  isDuplicate,
   isMine,
   looksLikeCommitment,
   parseCandidates,
@@ -20,10 +21,12 @@ import {
   reduceInput,
   renderChunk,
   renderLine,
+  resolveOwner,
   sentenceWith,
   type Chunk,
   type ChunkOutcome,
   type ParsedTask,
+  type TaskProbe,
   type TranscriptLine,
   type Verdict,
 } from './notes.js'
@@ -67,9 +70,13 @@ export interface NotesRun {
   totalLines: number
   /** The stretches that could not be read, so the gap can be named. */
   gapsAt: { fromMs: number; toMs: number }[]
-  /** Proposed by the extractor, dropped by the word filter, refused by the checker. */
+  /**
+   * Proposed by the extractor, dropped by the word filter, merged as the same
+   * task said twice, refused by the checker. Proposed is those three plus kept.
+   */
   candidates: number
   filtered: number
+  merged: number
   rejected: number
   ms: number
 }
@@ -204,28 +211,39 @@ export class MeetingNotesEngine {
       gapsAt: failed.map((o) => ({ fromMs: o.chunk.startMs, toMs: o.chunk.endMs })),
       candidates: checked.candidates,
       filtered: checked.filtered,
+      merged: checked.merged,
       rejected: checked.rejected,
       ms: Date.now() - started,
     }
   }
 
   /**
-   * Find, filter, verify.
+   * Find, filter, merge, verify.
    *
    * The extractor is asked to be generous; this is where generosity is paid
    * for. A word filter removes what is plainly not a commitment - a refusal, a
-   * first-person maybe - for free, and every survivor is then judged on its
-   * own by a narrow yes-or-no call that can see the lines around it. Your own
-   * notes are a second source, checked the same way.
+   * first-person maybe - for free. A task already kept, said again, is merged
+   * into it, also for free: the checker is never asked about the same thing
+   * twice. Every survivor is then judged on its own by a narrow yes-or-no call
+   * that can see the lines around it, and its owner is held to those same
+   * lines. Your own notes are a second source, checked the same way.
    */
   private async checkTasks(
     proposed: { candidate: ReturnType<typeof parseCandidates>[number]; lines: readonly TranscriptLine[] }[],
     input: NotesInput,
     date: string
-  ): Promise<{ tasks: ParsedTask[]; candidates: number; filtered: number; rejected: number }> {
+  ): Promise<{
+    tasks: ParsedTask[]
+    candidates: number
+    filtered: number
+    merged: number
+    rejected: number
+  }> {
     const name = input.me?.name ?? ''
     const tasks: ParsedTask[] = []
+    const kept: TaskProbe[] = []
     let filtered = 0
+    let merged = 0
     let rejected = 0
 
     // Tasks from your notes, proposed first so they can be checked in the same
@@ -255,20 +273,36 @@ export class MeetingNotesEngine {
         filtered++
         continue
       }
+      const probe: TaskProbe = {
+        text: candidate.task.text,
+        segmentId: id,
+        quote: candidate.quote,
+        atMs: line.startMs,
+      }
+      if (kept.some((other) => isDuplicate(other, probe))) {
+        merged++
+        continue
+      }
 
+      const around = contextAround(lines, id)
       const verdict = await this.verify(
         name,
         candidate.task.text,
         `line [${id}]`,
         candidate.quote,
-        `The lines around it:\n${contextAround(lines, id)}`,
+        `The lines around it:\n${around}`,
         input.signal
       )
       if (!verdict?.task) {
         rejected++
         continue
       }
-      const owner = verdict.owner ?? candidate.task.owner
+      // The checker's owner if it holds up against the lines it read, else the
+      // extractor's if that does, else nobody.
+      const owner =
+        resolveOwner(verdict.owner, line.channel, around) ??
+        resolveOwner(candidate.task.owner, line.channel, around)
+      kept.push(probe)
       tasks.push({
         ...candidate.task,
         owner,
@@ -280,14 +314,18 @@ export class MeetingNotesEngine {
       })
     }
 
-    const seen = new Set(tasks.map((t) => t.text.toLowerCase()))
     for (const note of fromNotes) {
       input.signal?.throwIfAborted()
       input.onProgress?.({ stage: 'checking', chunk: ++step, chunks: total })
 
-      if (seen.has(note.text.toLowerCase())) continue
       if (!looksLikeCommitment(sentenceWith(input.scratch, note.quote))) {
         filtered++
+        continue
+      }
+      // Most often the transcript already has it: you wrote down what was said.
+      const probe: TaskProbe = { text: note.text, segmentId: null, quote: note.quote, atMs: null }
+      if (kept.some((other) => isDuplicate(other, probe))) {
+        merged++
         continue
       }
       const verdict = await this.verify(
@@ -302,8 +340,10 @@ export class MeetingNotesEngine {
         rejected++
         continue
       }
-      const owner = verdict.owner ?? note.owner
-      seen.add(note.text.toLowerCase())
+      const owner =
+        resolveOwner(verdict.owner, 'notes', input.scratch) ??
+        resolveOwner(note.owner, 'notes', input.scratch)
+      kept.push(probe)
       tasks.push({
         text: note.text,
         owner,
@@ -318,7 +358,7 @@ export class MeetingNotesEngine {
       })
     }
 
-    return { tasks, candidates: total, filtered, rejected }
+    return { tasks, candidates: total, filtered, merged, rejected }
   }
 
   /** One candidate, one narrow question. Null - unreadable - counts as no. */
