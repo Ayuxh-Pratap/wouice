@@ -400,6 +400,9 @@ function adoptTaskStates(meetingId: number, versionId: number): void {
     noteQuote: t.noteQuote ?? null,
     reason: t.reason,
     carriedFrom: t.carriedFrom,
+    description: t.description,
+    evidence: t.evidence.map((e) => ({ segmentId: e.segmentId, quote: e.quote })),
+    status: t.status,
   })
   const { tasks, carried } = carryOver(
     acted,
@@ -561,6 +564,9 @@ function setEscapeCancel(on: boolean): void {
 let meetingTicker: NodeJS.Timeout | null = null
 meetings.on('state', (state: { phase: string }) => {
   broadcast(IPC.meetingState, meetings.state())
+  // Recording beats improving. A meeting that starts while the careful pass
+  // holds the card would otherwise be transcribed live by the large model.
+  if (state.phase === 'starting' && improving) improving.abort()
   const busy = state.phase !== 'idle'
   if (busy && !meetingTicker) {
     meetingTicker = setInterval(() => broadcast(IPC.meetingState, meetings.state()), 250)
@@ -587,6 +593,7 @@ meetings.on('finished', (summary: { meetingId: number } & Record<string, unknown
       chunksSent: summary.chunksSent as number,
       chunksFailed: summary.chunksFailed as number,
       chunksSkipped: summary.chunksSkipped as number,
+      segmentsUnheard: summary.segmentsUnheard as number,
       language: summary.language as string,
       segments: summary.segments as number,
       channels: summary.channels as never,
@@ -621,6 +628,8 @@ meetings.on('finished', (summary: { meetingId: number } & Record<string, unknown
  */
 /** What the careful pass transcribes with, and so the source its version is filed under. */
 const IMPROVE_MODEL = 'large-v3'
+/** The careful pass in progress, so a recording that starts can stop it. */
+let improving: AbortController | null = null
 
 /**
  * The careful pass, end to end: re-transcribe, then redo everything built on it.
@@ -639,13 +648,25 @@ async function runRepass(meetingId: number): Promise<RepassOutcome> {
   }
 
   const started = Date.now()
+  const abort = new AbortController()
+  improving = abort
   try {
     const result = await repassMeeting(meetingId, {
       supervisor,
       meetings: store.meetings,
       modelId: IMPROVE_MODEL,
+      // Back to the model your settings name - never whatever happened to be
+      // loaded, which once left the large model on the card for the next meeting.
+      restoreModelId: settings.get().models.whisper,
       onProgress: (p) => broadcast(IPC.repassProgress, p),
+      signal: abort.signal,
     })
+    if (!result.restored) {
+      notify(
+        'Speech model not restored',
+        `Wouice could not confirm ${settings.get().models.whisper} is back. Restart Wouice before your next meeting.`
+      )
+    }
 
     // A new version, beside the first pass and never over it. It is the main
     // version from the moment its transcript exists: if what follows fails,
@@ -659,6 +680,8 @@ async function runRepass(meetingId: number): Promise<RepassOutcome> {
         segments: result.segments.length,
         ms: Date.now() - started,
         languages: result.languages,
+        unheard: result.unheard,
+        restored: result.restored,
       },
     })
     broadcast(IPC.meetingReady2, meetingId)
@@ -688,13 +711,15 @@ async function runRepass(meetingId: number): Promise<RepassOutcome> {
     )
     return { ok: true, message: '', segments: result.segments.length, seconds: result.seconds }
   } catch (err) {
-    const message =
-      err instanceof RepassUnavailable
+    const message = abort.signal.aborted
+      ? 'Stopped because a recording started. Nothing was changed - run Improve again when the meeting is over.'
+      : err instanceof RepassUnavailable
         ? err.message
         : `the careful pass failed: ${err instanceof Error ? err.message : String(err)}`
     notify('Could not improve the transcript', message)
     return { ok: false, message, ...empty }
   } finally {
+    improving = null
     broadcast(IPC.meetingReady2, meetingId)
   }
 }
