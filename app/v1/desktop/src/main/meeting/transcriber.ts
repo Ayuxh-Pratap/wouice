@@ -1,4 +1,5 @@
 import type { AsrClient, Language } from '@wouice/asr'
+import { heardSegments } from './heard.js'
 import { Segmenter, type Segment, type SegmenterConfig } from './segmenter.js'
 import { rms } from '../capture/silence-policy.js'
 import { CHANNELS, MEETING_SAMPLE_RATE, type Channel } from './session.js'
@@ -53,6 +54,8 @@ export interface TranscriberStats {
   chunksFailed: number
   /** Chunks that were silence and never sent. */
   chunksSkipped: number
+  /** Lines the model wrote over silence, dropped by their own audio level. */
+  segmentsUnheard: number
   /** The language every chunk after the first is being forced to. */
   language: string
   /** Wall time of the most recent successful request. */
@@ -103,6 +106,7 @@ export class MeetingTranscriber {
 
   private chunksSent = 0
   private chunksSkipped = 0
+  private segmentsUnheard = 0
   private chunksFailed = 0
   private lastLatencyMs = 0
   private segmentCount = 0
@@ -158,6 +162,7 @@ export class MeetingTranscriber {
       chunksSent: this.chunksSent,
       chunksFailed: this.chunksFailed,
       chunksSkipped: this.chunksSkipped,
+      segmentsUnheard: this.segmentsUnheard,
       language: this.pinned ?? 'auto',
       lastLatencyMs: this.lastLatencyMs,
       segments: this.segmentCount,
@@ -239,7 +244,14 @@ export class MeetingTranscriber {
         this.pinned = result.language as Language
       }
 
-      const segments = result.segments ?? []
+      // A line no louder than the room was not said - see `heardSegments`. The
+      // chunk gate above cannot catch it: a quiet room sits just above it.
+      const { heard: segments, unheard } = heardSegments(
+        result.segments ?? [],
+        job.samples,
+        this.sampleRate
+      )
+      this.segmentsUnheard += unheard
       if (segments.length === 0) return
 
       const closed = this.segmenter.push(
