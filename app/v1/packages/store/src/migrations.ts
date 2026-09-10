@@ -444,6 +444,25 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX tasks_by_version ON tasks (version_id);
     `,
   },
+  {
+    id: 11,
+    name: 'a task has a title, a story and the lines it came from',
+    sql: `
+      -- A task used to be one line of text pointing at one line of transcript,
+      -- found by asking "who promised what". Real work is described over
+      -- minutes of a meeting and by several people - a feature is asked for,
+      -- argued, narrowed, agreed - and a single line cannot hold it. So a task
+      -- is now a one-line title (the existing text column), a description that
+      -- tells the story, and every line it came from.
+      ALTER TABLE tasks ADD COLUMN description TEXT NOT NULL DEFAULT '';
+      -- JSON array of {"segmentId": n, "quote": "..."}. Empty for a task from
+      -- before this existed, which still has its one segment_id.
+      ALTER TABLE tasks ADD COLUMN evidence TEXT NOT NULL DEFAULT '[]';
+      -- Where the meeting landed on it: 'agreed' or 'proposed'. Empty for a
+      -- task from before this existed.
+      ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT '';
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */
