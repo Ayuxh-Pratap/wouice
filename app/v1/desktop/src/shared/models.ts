@@ -63,6 +63,15 @@ export interface SidecarDef {
   defaultPort: number
   /** Path that answers when the process is up. */
   healthPath: string
+  /**
+   * What counts as ready. 'any': any HTTP answer at all. 'ok': a 2xx only.
+   *
+   * NOT THE SAME FOR BOTH. whisper-server has no health endpoint, so any answer
+   * means it is listening. llama-server answers /health with 503 "Loading
+   * model" for the seconds it spends loading, and counting that as ready is
+   * what sent the English and the summary to a model that could not answer.
+   */
+  readyWhen: 'any' | 'ok'
   models: ModelChoice[]
   defaultModelId: string
   /** Command line for a given model file and port. */
@@ -76,6 +85,7 @@ export const SIDECARS: Record<SidecarId, SidecarDef> = {
     defaultPort: 8178,
     // whisper-server has no /health; the root path answers once it is listening.
     healthPath: '/',
+    readyWhen: 'any',
     models: WHISPER_MODELS,
     defaultModelId: 'turbo',
     args: (modelPath, port) => [
@@ -89,6 +99,7 @@ export const SIDECARS: Record<SidecarId, SidecarDef> = {
     exe: 'llama/llama-server.exe',
     defaultPort: 8179,
     healthPath: '/health',
+    readyWhen: 'ok',
     models: LLM_MODELS,
     defaultModelId: 'qwen3-4b',
     args: (modelPath, port) => [

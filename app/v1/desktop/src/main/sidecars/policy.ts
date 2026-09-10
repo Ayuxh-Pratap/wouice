@@ -140,3 +140,17 @@ export function onStopped(state: SidecarState): SidecarState {
 export function canServe(state: SidecarState): boolean {
   return state.status === 'ready'
 }
+
+/**
+ * Whether a health-check answer means the sidecar can serve.
+ *
+ * 'any' for a server with no health endpoint, where answering at all proves
+ * the model loaded. 'ok' for one that answers WHILE loading: llama-server
+ * replies 503 "Loading model" for the seconds it spends reading its weights.
+ * Counting that reply as ready sent the English and the summary to a model
+ * that could not answer them - both failed two seconds after the careful pass
+ * handed the language model back.
+ */
+export function answeredReady(readyWhen: 'any' | 'ok', httpStatus: number): boolean {
+  return readyWhen === 'any' || (httpStatus >= 200 && httpStatus < 300)
+}

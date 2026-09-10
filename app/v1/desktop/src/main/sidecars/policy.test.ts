@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   BACKOFF_CAP_MS,
   FAILURE_THRESHOLD,
+  answeredReady,
   backoffFor,
   canServe,
   initialState,
@@ -115,6 +116,22 @@ describe('crash handling', () => {
     expect(s.failures).toBe(2)
     expect(onHealthy(s).failures).toBe(0)
     expect(onHealthy(s).lastError).toBeNull()
+  })
+})
+
+describe('what counts as ready', () => {
+  it('takes any answer from a server with no health endpoint', () => {
+    // whisper-server answers its root path with whatever it likes once up.
+    expect(answeredReady('any', 404)).toBe(true)
+    expect(answeredReady('any', 200)).toBe(true)
+  })
+
+  it('does not take "still loading" for ready', () => {
+    // Measured: llama-server answered 503 "Loading model" from 0.3s to 4.2s
+    // after starting, and only then 200.
+    expect(answeredReady('ok', 503)).toBe(false)
+    expect(answeredReady('ok', 500)).toBe(false)
+    expect(answeredReady('ok', 200)).toBe(true)
   })
 })
 

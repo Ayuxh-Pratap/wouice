@@ -4,6 +4,7 @@ import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { SIDECARS, findModel, type SidecarDef, type SidecarId } from '../../shared/models.js'
 import {
+  answeredReady,
   canServe,
   initialState,
   markBusy,
@@ -79,6 +80,28 @@ export class SidecarSupervisor extends EventEmitter {
 
   snapshotAll(): SidecarSnapshot[] {
     return [...this.managed.keys()].map((id) => this.snapshot(id))
+  }
+
+  /**
+   * Resolve true once this sidecar answers; false if it has stopped or failed,
+   * or has not answered within `timeoutMs`.
+   *
+   * STARTED IS NOT READY. `start` and `switchModel` return once the process
+   * exists, and the model then spends seconds reading its weights. The careful
+   * pass restarted the language model and asked it for the English and the
+   * summary fifty milliseconds later; both failed against a server that was
+   * still loading, and the improved meeting was left with neither.
+   */
+  async whenReady(id: SidecarId, timeoutMs = 120_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const { status } = this.snapshot(id)
+      if (status === 'ready') return true
+      // Nothing is bringing it up, so there is nothing to wait for.
+      if (status === 'failed' || status === 'stopped') return false
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    return false
   }
 
   canServe(id: SidecarId): boolean {
@@ -266,12 +289,14 @@ export class SidecarSupervisor extends EventEmitter {
   }
 
   /**
-   * Poll until the process answers, then keep watching.
+   * Poll until the process is ready, then keep watching.
    *
-   * "Ready" means it responded, not that it returned 200: whisper-server has no
-   * health endpoint and answers the root path with whatever it feels like. What
-   * we need to know is whether the model finished loading and the socket is
-   * live, which any HTTP response proves and a connection refusal disproves.
+   * What "ready" means depends on the server - see `answeredReady`.
+   * whisper-server has no health endpoint and answers the root path with
+   * whatever it feels like, so any HTTP response proves it loaded. llama-server
+   * answers /health with 503 while it is still loading, so only a 200 does.
+   * Treating that 503 as ready is what made the English and the summary fail
+   * two seconds after the careful pass restarted the language model.
    */
   private beginHealthPolling(id: SidecarId): void {
     const m = this.require(id)
@@ -280,9 +305,10 @@ export class SidecarSupervisor extends EventEmitter {
     const poll = async () => {
       if (!m.proc) return
       try {
-        await fetch(`${this.baseUrl(id)}${m.def.healthPath}`, {
+        const res = await fetch(`${this.baseUrl(id)}${m.def.healthPath}`, {
           signal: AbortSignal.timeout(1_500),
         })
+        if (!answeredReady(m.def.readyWhen, res.status)) return
         if (m.state.status !== 'ready') {
           m.state = onHealthy(m.state)
           this.emitState(id)
