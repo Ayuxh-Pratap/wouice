@@ -1,5 +1,6 @@
 import type { TaskRecord, TaskState } from '@wouice/store'
 import { formatStamp } from './Transcript.js'
+import { versionLabel } from './versions.js'
 
 /**
  * Notes and tasks for one meeting.
@@ -12,16 +13,22 @@ import { formatStamp } from './Transcript.js'
  * DONE AND DROPPED ARE DIFFERENT. A task the model invented, or one that turned
  * out not to be yours, is not "done" - dropping it says so, and keeps the
  * distinction visible for as long as anyone cares to look.
+ *
+ * READ-ONLY FOR AN OLDER VERSION. You work the task list of the main version;
+ * an earlier one is there to compare against, and ticking a task on a list
+ * nothing reads any more would be a tick that goes nowhere.
  */
 
 export function Notes({
   markdown,
   tasks,
   onTaskState,
+  readOnly = false,
 }: {
   markdown: string | null
   tasks: TaskRecord[]
   onTaskState(id: number, state: TaskState): void
+  readOnly?: boolean
 }): React.JSX.Element | null {
   if (!markdown && tasks.length === 0) return null
 
@@ -34,7 +41,7 @@ export function Notes({
           </h3>
           <ul className="space-y-1">
             {tasks.map((task) => (
-              <TaskRow key={task.id} task={task} onState={onTaskState} />
+              <TaskRow key={task.id} task={task} onState={onTaskState} readOnly={readOnly} />
             ))}
           </ul>
         </section>
@@ -55,9 +62,11 @@ export function Notes({
 function TaskRow({
   task,
   onState,
+  readOnly,
 }: {
   task: TaskRecord
   onState(id: number, state: TaskState): void
+  readOnly: boolean
 }): React.JSX.Element {
   const done = task.state === 'done'
   const dropped = task.state === 'dropped'
@@ -69,7 +78,7 @@ function TaskRow({
           type="checkbox"
           checked={done}
           onChange={() => onState(task.id, done ? 'open' : 'done')}
-          disabled={dropped}
+          disabled={dropped || readOnly}
           className="mt-0.5 size-3.5 shrink-0 accent-emerald-500 disabled:opacity-30"
         />
         <div className="min-w-0 flex-1">
@@ -97,6 +106,11 @@ function TaskRow({
             ) : null}
             {task.mine ? <Badge tone="mine">yours</Badge> : null}
             {task.source === 'notes' ? <Badge>from your notes</Badge> : null}
+            {/* You had acted on it, and the newer transcript did not produce
+                it. Kept, and said, rather than silently dropped. */}
+            {task.carriedFrom ? (
+              <Badge tone="carried">from the {versionLabel(task.carriedFrom).toLowerCase()}</Badge>
+            ) : null}
             {task.owner ? (
               <span className="text-neutral-400">{task.owner}</span>
             ) : (
@@ -112,17 +126,19 @@ function TaskRow({
             )}
           </div>
         </div>
-        <button
-          onClick={() => onState(task.id, dropped ? 'open' : 'dropped')}
-          title={
-            dropped
-              ? 'Put it back on the list.'
-              : 'Not a real commitment. Different from done, and kept visible.'
-          }
-          className="shrink-0 rounded px-1.5 py-0.5 text-[10.5px] text-neutral-600 ring-1 ring-white/10 transition hover:bg-white/5 hover:text-neutral-300"
-        >
-          {dropped ? 'Restore' : 'Not a task'}
-        </button>
+        {readOnly ? null : (
+          <button
+            onClick={() => onState(task.id, dropped ? 'open' : 'dropped')}
+            title={
+              dropped
+                ? 'Put it back on the list.'
+                : 'Not a real commitment. Different from done, and kept visible.'
+            }
+            className="shrink-0 rounded px-1.5 py-0.5 text-[10.5px] text-neutral-600 ring-1 ring-white/10 transition hover:bg-white/5 hover:text-neutral-300"
+          >
+            {dropped ? 'Restore' : 'Not a task'}
+          </button>
+        )}
       </div>
     </li>
   )
@@ -199,20 +215,22 @@ function inline(text: string): React.ReactNode {
   )
 }
 
-/** A small label on a task: what it is about, what kind, whose. */
+/** A small label on a task: what it is about, what kind, whose, where from. */
 function Badge({
   children,
   tone,
 }: {
   children: React.ReactNode
-  tone?: 'bug' | 'mine'
+  tone?: 'bug' | 'mine' | 'carried'
 }): React.JSX.Element {
   const colours =
     tone === 'bug'
       ? 'bg-red-500/10 text-red-300/90 ring-red-500/20'
       : tone === 'mine'
         ? 'bg-emerald-500/10 text-emerald-300/90 ring-emerald-500/20'
-        : 'bg-white/[0.05] text-neutral-400 ring-white/10'
+        : tone === 'carried'
+          ? 'bg-sky-500/10 text-sky-300/90 ring-sky-500/20'
+          : 'bg-white/[0.05] text-neutral-400 ring-white/10'
   return (
     <span className={`rounded px-1.5 py-px text-[10px] ring-1 ${colours}`}>{children}</span>
   )

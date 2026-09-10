@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MeetingSegment, MeetingState } from '../../shared/ipc.js'
+import type { MeetingJobsView, MeetingSegment, MeetingState } from '../../shared/ipc.js'
 import type { MeetingRecord } from '@wouice/store'
 import type { Settings } from '../../shared/settings.js'
 import { MEETING_KINDS, type MeetingKind } from '../../shared/meeting-kind.js'
-import { enhancementOf } from '../meetings/enhanced.js'
+import { describeJob, jobColour, useMeetingJobs } from '../meetings/jobs.js'
+import { isImproved, mainVersion } from '../meetings/versions.js'
 import { hashForMeeting } from '../shell/routes.js'
 import { Transcript } from '../meetings/Transcript.js'
 
@@ -34,6 +35,7 @@ export function MeetingsPage(): React.JSX.Element {
   const [removeProblem, setRemoveProblem] = useState<string | null>(null)
   /** So a meeting that has already sent us to its page cannot do it twice. */
   const sentTo = useRef(0)
+  const jobs = useMeetingJobs()
 
   const refresh = useCallback(() => {
     void window.wouice.listMeetings().then(setMeetings)
@@ -215,7 +217,7 @@ export function MeetingsPage(): React.JSX.Element {
                       {formatDuration(meeting.durationMs)} · {meeting.segments} line
                       {meeting.segments === 1 ? '' : 's'}
                       {meeting.notesMd ? ' · summarised' : ''}
-                      {enhancementOf(meeting) ? (
+                      {isImproved(meeting) ? (
                         <span className="text-sky-300/80"> · improved</span>
                       ) : null}
                       {problemOf(meeting) ? (
@@ -223,6 +225,7 @@ export function MeetingsPage(): React.JSX.Element {
                       ) : null}
                     </p>
                   </div>
+                  <JobChip meetingId={meeting.id} jobs={jobs} />
                   <button
                     onClick={(e) => {
                       e.preventDefault()
@@ -259,9 +262,39 @@ function problemOf(meeting: MeetingRecord): string | null {
   const failed = d.chunksFailed ?? 0
   const sent = d.chunksSent ?? 0
   if (failed > 0 && failed >= (sent + failed) * 0.1) return `${failed} chunks failed to transcribe`
-  const lastRun = (d.notes ?? []).at(-1)
+  const lastRun = (mainVersion(meeting)?.diagnostics.notes ?? []).at(-1)
   if (lastRun && !lastRun.ok) return 'summary failed'
   return null
+}
+
+/**
+ * Work on a meeting, on its own row: green while it writes, orange while it is
+ * improved, grey while it waits its turn. Read from the job queue, so the list
+ * is right the moment it is opened rather than at the next progress message.
+ */
+function JobChip({
+  meetingId,
+  jobs,
+}: {
+  meetingId: number
+  jobs: MeetingJobsView
+}): React.JSX.Element | null {
+  const running = jobs.running?.meetingId === meetingId ? jobs.running : null
+  const waiting = running ? null : jobs.queued.find((j) => j.meetingId === meetingId)
+  if (!running && !waiting) return null
+  const colour = running ? jobColour(running.kind) : '#737373'
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1.5 text-[11px]"
+      style={{ color: running ? colour : '#a3a3a3' }}
+    >
+      <span
+        className={`size-1.5 rounded-full ${running ? 'animate-pulse' : ''}`}
+        style={{ backgroundColor: colour }}
+      />
+      {running ? describeJob(running.kind) : 'Waiting'}
+    </span>
+  )
 }
 
 function formatDuration(ms: number): string {

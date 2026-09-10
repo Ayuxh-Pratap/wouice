@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MeetingRecord, TaskArea, TaskRecord, TaskState } from '@wouice/store'
+import type { MeetingRecord, TaskArea, TaskRecord, TaskState, VersionRecord } from '@wouice/store'
 import type {
   EnglishProgressView,
+  MeetingJobView,
   MeetingSegment,
   MeetingState,
   NotesProgressView,
   RepassProgressView,
 } from '../../shared/ipc.js'
 import { kindOf } from '../../shared/meeting-kind.js'
-import { enhancementOf, type Enhancement } from '../meetings/enhanced.js'
+import { describeJob, jobColour, useMeetingJobs } from '../meetings/jobs.js'
+import { isImproved, mainVersion, versionLabel } from '../meetings/versions.js'
 import { Notes } from '../meetings/Notes.js'
 import { Transcript } from '../meetings/Transcript.js'
 import { Icon } from '../shell/Icon.js'
@@ -56,6 +58,11 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   const [tab, setTab] = useState<MeetingTab | null>(null)
   const [taskFilter, setTaskFilter] = useState<'all' | 'mine' | 'area'>('all')
   const [myArea, setMyArea] = useState<TaskArea>('frontend')
+  /** Which version is on screen. Null follows the main one, including when it changes. */
+  const [viewing, setViewing] = useState<number | null>(null)
+  /** Something else is running: asked before this one queues behind it. */
+  const [queueing, setQueueing] = useState<{ what: string; start(): void } | null>(null)
+  const jobs = useMeetingJobs()
 
   // Your area names the third filter. Read once; it changes in Settings.
   useEffect(() => {
@@ -64,11 +71,21 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
 
   const load = useCallback(() => {
     void window.wouice.getMeeting(meetingId).then(setMeeting)
-    void window.wouice.getMeetingSegments(meetingId).then(setSegments)
-    void window.wouice.getMeetingTasks(meetingId).then(setTasks)
-  }, [meetingId])
+    void window.wouice.getMeetingSegments(meetingId, viewing ?? undefined).then(setSegments)
+    void window.wouice.getMeetingTasks(meetingId, viewing ?? undefined).then(setTasks)
+  }, [meetingId, viewing])
 
-  useEffect(load, [load])
+  // Again whenever work on this meeting starts or stops, and the progress of a
+  // job that has finished is forgotten with it.
+  const busyHere = jobs.running?.meetingId === meetingId
+  useEffect(() => {
+    if (!busyHere) {
+      setNotesProgress(null)
+      setEnglishProgress(null)
+      setRepass(null)
+    }
+    load()
+  }, [load, busyHere])
 
   useEffect(() => {
     void window.wouice.getMeetingState().then(setState)
@@ -78,11 +95,17 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
     const offSegments = window.wouice.onMeetingSegments(() => {
       void window.wouice.getMeetingSegments(meetingId).then(setSegments)
     })
+    // The latest step wins: the English pass and the summary run one after the
+    // other, and the first one's last message must not outlive it.
     const offNotes = window.wouice.onNotesProgress((p) => {
-      if (p.meetingId === meetingId) setNotesProgress(p)
+      if (p.meetingId !== meetingId) return
+      setNotesProgress(p)
+      setEnglishProgress(null)
     })
     const offEnglish = window.wouice.onEnglishProgress((p) => {
-      if (p.meetingId === meetingId) setEnglishProgress(p)
+      if (p.meetingId !== meetingId) return
+      setEnglishProgress(p)
+      setNotesProgress(null)
     })
     const offRepass = window.wouice.onRepassProgress((p) => {
       if (p.meetingId === meetingId) setRepass(p)
@@ -111,25 +134,83 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   const live = state?.meetingId === meetingId && RECORDING_PHASES.has(state.phase)
   const kind = kindOf(meeting.kind)
   const hasEnglish = segments.some((s) => s.textEn)
-  const working = notesProgress !== null || englishProgress !== null || repass !== null
+  // What is on screen: the version picked, or the main one. Everything below
+  // reads from this one version, so a summary is only ever shown with the
+  // transcript it was written from.
+  const main = mainVersion(meeting)
+  const version = meeting.versions.find((v) => v.id === viewing) ?? main
+  const onMain = version === null || version.main
+  const notesMd = version?.notesMd ?? null
+  const shownLines = version?.segments ?? meeting.segments
+  // A step that failed on this version, said where its result would have been.
+  const lastRun = (version?.diagnostics.notes ?? []).at(-1)
+  const summaryFailed = lastRun && !lastRun.ok ? (lastRun.message ?? 'it failed') : null
+  const englishFailed =
+    version?.diagnostics.english?.ok === false
+      ? (version.diagnostics.english.message ?? 'it failed')
+      : null
+  // The version that is not main, when there are two: what the menu can switch to.
+  const other = meeting.versions.length > 1 ? (meeting.versions.find((v) => !v.main) ?? null) : null
+  // Tasks are written with the summary. A version with no summary yet has none
+  // of its own to show, whatever an earlier run of it left behind.
+  const listed = notesMd !== null ? tasks : []
+  // Asked of the job queue, not inferred from progress messages - which only
+  // arrive while something is reporting, so a page opened mid-run looked idle.
+  const running = jobs.running?.meetingId === meetingId ? jobs.running : null
+  const waiting = running ? null : (jobs.queued.find((j) => j.meetingId === meetingId) ?? null)
+  const working = running !== null || waiting !== null
+  const improved = isImproved(meeting)
   // Whatever there is to read. Landing on an empty Summary when the transcript
   // is right there is a click for nothing.
-  const shown: MeetingTab = tab ?? (meeting.notesMd ? 'summary' : 'transcript')
+  const shown: MeetingTab = tab ?? (notesMd ? 'summary' : 'transcript')
 
   const changeTask = (taskId: number, taskState: TaskState): void => {
     setTasks((current) => current.map((t) => (t.id === taskId ? { ...t, state: taskState } : t)))
     void window.wouice.setTaskState(taskId, taskState)
   }
 
-  const redo = async (what: 'notes' | 'english'): Promise<void> => {
-    setProblem('')
-    const outcome =
+  /**
+   * Start a job, or ask first when another is already running.
+   *
+   * One runs at a time - there is one card - so starting this behind another
+   * means waiting, and behind a careful pass that can be twenty minutes. Worth
+   * a question rather than a surprise.
+   */
+  const startJob = (what: string, run: () => Promise<{ ok: boolean; message: string }>): void => {
+    const go = (): void => {
+      setProblem('')
+      void run().then((outcome) => {
+        if (!outcome.ok) setProblem(outcome.message)
+        load()
+      })
+    }
+    if (jobs.running) setQueueing({ what, start: go })
+    else go()
+  }
+
+  const redo = (what: 'notes' | 'english'): void =>
+    startJob(what === 'notes' ? 'Redo summary' : 'Redo English', () =>
       what === 'notes'
-        ? await window.wouice.generateNotes(meetingId)
-        : await window.wouice.renderEnglish(meetingId)
-    if (!outcome.ok) setProblem(outcome.message)
-    setNotesProgress(null)
-    setEnglishProgress(null)
+        ? window.wouice.generateNotes(meetingId)
+        : window.wouice.renderEnglish(meetingId)
+    )
+
+  /**
+   * The English if this transcript has none, then the summary and tasks.
+   *
+   * What the summary's own button does. The summary is written from the
+   * English, so writing it alone while the English is missing would build it
+   * from raw recognition output.
+   */
+  const finish = (): void =>
+    startJob('Write the English, summary and tasks', () => window.wouice.processMeeting(meetingId))
+
+  /** Work from another version: for when the careful pass came out worse. */
+  const makeMain = async (versionId: number): Promise<void> => {
+    setProblem('')
+    const refused = await window.wouice.setMainVersion(meetingId, versionId)
+    if (refused) setProblem(refused)
+    setViewing(null)
     load()
   }
 
@@ -196,8 +277,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
 
   /* ------------------------------------------------------------- finished -- */
 
-  const aura = repass ? '#fb923c' : working ? '#34d399' : null
-  const enhanced = enhancementOf(meeting)
+  const aura = running ? jobColour(running.kind) : null
 
   return (
     <div className="relative space-y-4">
@@ -228,39 +308,62 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
             {meeting.title ?? formatWhen(meeting.startedAt)}
           </h1>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-neutral-500">
+            {/* No "improved" badge here: the switch beside the title already
+                says which version this is, and saying it twice was noise. */}
             <span>
-              {formatDuration(meeting.durationMs)} · {meeting.segments} line
-              {meeting.segments === 1 ? '' : 's'} · {kind.label}
+              {formatDuration(meeting.durationMs)} · {shownLines} line
+              {shownLines === 1 ? '' : 's'} · {kind.label}
               {meeting.endedAt === null ? ' · never finished' : ''}
             </span>
-            <PassBadge enhanced={enhanced} firstModel={meeting.diagnostics.asrModel} />
           </div>
         </div>
 
         {/*
-          Notes is the only thing here you DO; the rest is redoing something
-          that already ran. It sits level with the title rather than with the
-          back link, because it belongs to this meeting, not to the navigation.
+          Which transcript you are reading, level with the title: the one
+          choice on this page that changes everything under it. Improving is
+          offered in the same place, as the version it would create. Your
+          notes, redoing a step and the audio are in the menu.
         */}
         <div className="flex shrink-0 items-center gap-1.5 self-center">
-          <button
-            onClick={() => setNotesOpen(true)}
-            className="flex items-center gap-1 rounded-lg bg-white/[0.06] px-3 py-1.5 text-[12px] text-neutral-200 ring-1 ring-white/10 transition hover:bg-white/[0.12]"
-          >
-            <span className="text-[13px] leading-none">+</span>
-            Notes{meeting.scratchMd ? ' •' : ''}
-          </button>
+          <VersionSwitch
+            versions={meeting.versions}
+            shown={version?.id ?? null}
+            onShow={setViewing}
+            improving={running?.kind === 'improve' ? describeImproving(repass) : null}
+            waiting={waiting?.kind === 'improve'}
+            canImprove={!working && meeting.audioPath !== null}
+            onImprove={() => setConfirming(true)}
+          />
           <Menu
             items={[
               {
-                // Still offered once improved, for when a better model arrives;
-                // the dialog says that running it again on the same model gives
-                // the same transcript. Worded differently so it cannot be read
-                // as the first pass never having run.
-                label: enhanced ? 'Improve accuracy again' : 'Improve accuracy',
-                onClick: () => setConfirming(true),
-                disabled: working || !meeting.audioPath,
+                label: meeting.scratchMd ? 'Your notes •' : 'Your notes',
+                onClick: () => setNotesOpen(true),
               },
+              ...(meeting.versions.length > 1
+                ? [
+                    {
+                      // Offered for when a better model arrives; the dialog says
+                      // the same model gives essentially the same transcript.
+                      label: 'Improve accuracy again',
+                      onClick: () => setConfirming(true),
+                      disabled: working || !meeting.audioPath,
+                    },
+                  ]
+                : []),
+              ...(other
+                ? [
+                    {
+                      // For when the careful pass came out worse than the first.
+                      label:
+                        versionLabel(other.source) === 'First pass'
+                          ? 'Go back to the first pass'
+                          : 'Use the improved version',
+                      onClick: () => void makeMain(other.id),
+                      disabled: working,
+                    },
+                  ]
+                : []),
               ...(kind.translate
                 ? [
                     {
@@ -289,18 +392,29 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
         </div>
       </header>
 
-      {working ? (
+      {running ? (
         <div className="relative flex items-center gap-2.5 rounded-xl bg-white/[0.05] px-4 py-2.5 ring-1 ring-white/[0.10]">
           <span
             className="size-1.5 shrink-0 animate-pulse rounded-full"
-            style={{ backgroundColor: aura ?? '#34d399' }}
+            style={{ backgroundColor: jobColour(running.kind) }}
           />
           <span className="text-[12.5px] text-neutral-200">
+            {/* The step, once one has reported; until then, what the job is. */}
             {repass
               ? describeRepass(repass)
               : englishProgress
                 ? 'Rendering into English…'
-                : describeNotes(notesProgress!)}
+                : notesProgress
+                  ? describeNotes(notesProgress)
+                  : `${describeJob(running.kind)}…`}
+          </span>
+        </div>
+      ) : waiting ? (
+        <div className="relative flex items-center gap-2.5 rounded-xl bg-white/[0.03] px-4 py-2.5 ring-1 ring-white/[0.08]">
+          <span className="size-1.5 shrink-0 rounded-full bg-neutral-500" />
+          <span className="text-[12.5px] text-neutral-400">
+            Waiting — {describeJob(waiting.kind).toLowerCase()} starts when the job running now
+            finishes.
           </span>
         </div>
       ) : null}
@@ -312,30 +426,27 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
       ) : null}
 
       <div className="relative space-y-3">
+        {version && !version.main && main ? (
+          <p className="text-[11.5px] text-neutral-500">
+            Looking at the {versionLabel(version.source).toLowerCase()}. Its tasks are read-only —
+            the {versionLabel(main.source).toLowerCase()} version is the one you work from.
+          </p>
+        ) : null}
         <Tabs<MeetingTab>
           tabs={[
             { id: 'summary', label: 'Summary' },
-            { id: 'tasks', label: 'Tasks', badge: tasks.filter((t) => t.state === 'open').length },
+            { id: 'tasks', label: 'Tasks', badge: listed.filter((t) => t.state === 'open').length },
             { id: 'transcript', label: 'Transcript', badge: segments.length },
           ]}
           active={shown}
           onChange={setTab}
         />
 
-        {enhanced && (shown === 'summary' || shown === 'tasks') && meeting.notesMd ? (
-          <Provenance
-            state={enhanced.summary}
-            what={shown === 'summary' ? 'This summary' : 'These tasks'}
-            enhanced={enhanced}
-            redo={{ label: 'Redo summary', onClick: () => void redo('notes') }}
-            busy={working}
-          />
-        ) : null}
-        {shown === 'summary' ? <Coverage meeting={meeting} /> : null}
+        {shown === 'summary' && version ? <Coverage version={version} /> : null}
 
         {shown === 'summary' ? (
-          meeting.notesMd ? (
-            <Notes markdown={meeting.notesMd} tasks={[]} onTaskState={changeTask} />
+          notesMd ? (
+            <Notes markdown={notesMd} tasks={[]} onTaskState={changeTask} />
           ) : (
             <Empty
               text={
@@ -343,37 +454,45 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
                   ? 'The summary is being written.'
                   : segments.length === 0
                     ? 'Nothing was transcribed, so there is nothing to summarise.'
-                    : 'No summary yet.'
+                    : summaryFailed
+                      ? `The summary could not be written: ${summaryFailed}.`
+                      : improved && onMain
+                        ? 'No summary has been written from the improved transcript yet.'
+                        : 'No summary yet.'
               }
               action={
-                !working && segments.length > 0
-                  ? { label: 'Summary and tasks', onClick: () => void redo('notes') }
+                !working && onMain && segments.length > 0
+                  ? {
+                      label: summaryFailed ? 'Try again' : 'Write summary and tasks',
+                      onClick: finish,
+                    }
                   : undefined
               }
             />
           )
         ) : null}
 
-        {shown === 'tasks' && tasks.length > 0 ? (
+        {shown === 'tasks' && listed.length > 0 ? (
           <TaskFilters
             active={taskFilter}
             onChange={setTaskFilter}
             area={myArea}
             counts={{
-              all: tasks.length,
-              mine: tasks.filter((t) => t.mine).length,
-              area: tasks.filter((t) => t.area === myArea).length,
+              all: listed.length,
+              mine: listed.filter((t) => t.mine).length,
+              area: listed.filter((t) => t.area === myArea).length,
             }}
           />
         ) : null}
 
         {shown === 'tasks' ? (
-          tasks.length > 0 ? (
-            filterTasks(tasks, taskFilter, myArea).length > 0 ? (
+          listed.length > 0 ? (
+            filterTasks(listed, taskFilter, myArea).length > 0 ? (
               <Notes
                 markdown={null}
-                tasks={filterTasks(tasks, taskFilter, myArea)}
+                tasks={filterTasks(listed, taskFilter, myArea)}
                 onTaskState={changeTask}
+                readOnly={!onMain}
               />
             ) : (
               <Empty
@@ -389,25 +508,22 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
               text={
                 working
                   ? 'Looking for commitments.'
-                  : 'No tasks. Most conversations contain none, and inventing them would be worse.'
+                  : notesMd === null && segments.length > 0
+                    ? summaryFailed
+                      ? `The summary and tasks could not be written: ${summaryFailed}.`
+                      : 'Tasks are written with the summary, and this transcript has no summary yet.'
+                    : 'No tasks. Most conversations contain none, and inventing them would be worse.'
               }
             />
           )
         ) : null}
 
-        {enhanced && shown === 'transcript' && segments.length > 0 ? (
-          <Provenance
-            state={english && hasEnglish && enhanced.english === 'stale' ? 'stale' : 'improved'}
-            what="This English"
-            improvedText="Transcribed a second time, with the more accurate model."
-            enhanced={enhanced}
-            redo={{ label: 'Redo English', onClick: () => void redo('english') }}
-            busy={working}
-          />
-        ) : null}
         {shown === 'transcript' ? (
           <section className="lift flex max-h-[62vh] flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
-            {hasEnglish ? (
+            {/* On every version of a meeting that has English at all - not only
+                when this one's English happens to exist. Its absence is said
+                below, rather than shown as a missing button. */}
+            {kind.translate ? (
               <div className="mb-2.5 flex shrink-0 justify-end gap-1">
                 {[
                   { on: true, label: 'English' },
@@ -429,6 +545,13 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
                 ))}
               </div>
             ) : null}
+            {kind.translate && english && !hasEnglish && segments.length > 0 ? (
+              <EnglishMissing
+                running={working}
+                failed={englishFailed}
+                onRedo={onMain && !working ? () => void redo('english') : undefined}
+              />
+            ) : null}
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
               <Transcript
                 segments={segments}
@@ -443,16 +566,28 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
       {confirming ? (
         <ImproveDialog
           meeting={meeting}
+          busy={jobs.running !== null}
           onCancel={() => setConfirming(false)}
           onConfirm={() => {
             setConfirming(false)
             setProblem('')
-            setRepass({ meetingId, stage: 'loading', doneSec: 0, totalSec: 0 })
             void window.wouice.repassMeeting(meetingId).then((outcome) => {
               if (!outcome.ok) setProblem(outcome.message)
-              setRepass(null)
               load()
             })
+          }}
+        />
+      ) : null}
+
+      {queueing ? (
+        <QueueDialog
+          what={queueing.what}
+          running={jobs.running}
+          meetingId={meetingId}
+          onCancel={() => setQueueing(null)}
+          onQueue={() => {
+            queueing.start()
+            setQueueing(null)
           }}
         />
       ) : null}
@@ -551,16 +686,19 @@ function Menu({
  */
 function ImproveDialog({
   meeting,
+  busy,
   onCancel,
   onConfirm,
 }: {
   meeting: MeetingRecord
+  /** Another job is running, so this one would wait its turn. */
+  busy: boolean
   onCancel(): void
   onConfirm(): void
 }): React.JSX.Element {
   // Measured at roughly 2.7x turbo, over both channels.
   const minutes = Math.max(1, Math.round((meeting.durationMs / 1000 / 60) * 0.75))
-  const already = enhancementOf(meeting)
+  const already = isImproved(meeting) ? mainVersion(meeting) : null
 
   return (
     <Dialog title="Transcribe this meeting again?" onClose={onCancel}>
@@ -569,9 +707,14 @@ function ImproveDialog({
           second run mostly buys twenty minutes without dictation. */}
       {already ? (
         <p className="mb-3 rounded-lg bg-sky-500/10 px-3 py-2 text-[12.5px] leading-snug text-sky-200 ring-1 ring-sky-400/20">
-          This meeting was already transcribed with {already.model} on {formatWhen(already.at)}.
-          The same model will give essentially the same transcript. To use notes you have added since, Redo
+          This meeting was already improved on {formatWhen(already.createdAt)}. The same model
+          will give essentially the same transcript. To use notes you have added since, Redo
           English or Redo summary instead — neither transcribes again.
+        </p>
+      ) : null}
+      {busy ? (
+        <p className="mb-3 rounded-lg bg-white/[0.05] px-3 py-2 text-[12.5px] leading-snug text-neutral-300 ring-1 ring-white/10">
+          Something else is running. This will wait its turn and start when that finishes.
         </p>
       ) : null}
       <p className="text-[13px] leading-relaxed text-neutral-300">
@@ -583,8 +726,11 @@ function ImproveDialog({
       <ul className="mt-3 space-y-1.5 text-[12.5px] text-neutral-400">
         <li>· Roughly {minutes} minute{minutes === 1 ? '' : 's'} for this meeting.</li>
         <li>· Dictation will not work while it runs — the language model is unloaded to make room.</li>
-        <li>· The transcript, the English and the summary are all replaced.</li>
-        <li>· Your own notes and any task you have ticked off are kept.</li>
+        <li>
+          · It becomes a new, improved version with its own English, summary and tasks. The first
+          pass is kept, and you can switch back to look at it.
+        </li>
+        <li>· Tasks you have ticked or dropped carry over to the improved version.</li>
       </ul>
       <p className="mt-3 text-[12px] text-neutral-500">
         You will get a notification when it finishes. If anything fails, the transcript you have
@@ -601,7 +747,7 @@ function ImproveDialog({
           onClick={onConfirm}
           className="rounded-lg bg-white/[0.09] px-3 py-1.5 text-[12.5px] font-medium text-neutral-100 ring-1 ring-white/20 transition hover:bg-white/[0.15]"
         >
-          Transcribe again
+          {busy ? 'Queue it' : 'Transcribe again'}
         </button>
       </div>
     </Dialog>
@@ -696,16 +842,34 @@ function Dialog({
   )
 }
 
+/** How far through the whole transcription: your side first, then theirs. */
+function repassPercent(p: RepassProgressView): number {
+  if (p.totalSec <= 0) return 0
+  const before = p.side === 'them' ? p.totalSec : 0
+  return Math.min(100, Math.round(((before + p.doneSec) / (2 * p.totalSec)) * 100))
+}
+
+/** The short form, for the Improve half of the version switch. */
+function describeImproving(p: RepassProgressView | null): string {
+  if (!p || p.stage === 'loading') return 'Improving…'
+  if (p.stage === 'transcribing') return `Improving ${repassPercent(p)}%`
+  return 'Improving · writing'
+}
+
 function describeRepass(p: RepassProgressView): string {
   switch (p.stage) {
     case 'loading':
       return 'Loading the larger model…'
     case 'transcribing':
+      // In meeting time, one side at a time. Adding the two sides together
+      // once called a two-minute meeting "4 min".
       return p.totalSec > 0
-        ? `Transcribing — ${Math.round((p.doneSec / p.totalSec) * 100)}% (${formatDuration(p.doneSec * 1000)} of ${formatDuration(p.totalSec * 1000)})`
+        ? `Transcribing ${p.side === 'them' ? 'their side' : 'your side'} — ${formatClock(p.doneSec)} of ${formatClock(p.totalSec)} · ${repassPercent(p)}%`
         : 'Transcribing…'
     case 'restoring':
       return 'Putting the models back…'
+    case 'warming':
+      return 'Waiting for the language model to load…'
     case 'rendering':
       return 'Rendering into English…'
     default:
@@ -747,6 +911,12 @@ function formatElapsed(ms: number): string {
   const hours = Math.floor(total / 3600)
   if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${seconds}`
   return `${String(minutes).padStart(2, '0')}:${seconds}`
+}
+
+/** Seconds as m:ss, for progress through a meeting. */
+function formatClock(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds))
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`
 }
 
 function formatDuration(ms: number): string {
@@ -953,8 +1123,8 @@ function TaskFilters({
  * The only sign was "3 gap(s)" in a panel nobody opens. A partial summary that
  * looks whole is the worst possible outcome, because you would act on it.
  */
-function Coverage({ meeting }: { meeting: MeetingRecord }): React.JSX.Element | null {
-  const run = (meeting.diagnostics.notes ?? []).at(-1)
+function Coverage({ version }: { version: VersionRecord }): React.JSX.Element | null {
+  const run = (version.diagnostics.notes ?? []).at(-1)
   if (!run?.ok || !run.totalLines || !run.gapsAt?.length) return null
   const pct = Math.round(((run.coveredLines ?? 0) / run.totalLines) * 100)
   const where = run.gapsAt
@@ -968,89 +1138,158 @@ function Coverage({ meeting }: { meeting: MeetingRecord }): React.JSX.Element | 
   )
 }
 
+
 /**
- * Which transcript this meeting is showing: the quick one made live, or the
- * careful one made afterwards.
+ * Which transcript the page shows, and the way to make a better one.
  *
- * SHOWN BOTH WAYS. An improved meeting and one that was not look the same line
- * by line, and the difference decides how far a name or a number in it can be
- * trusted. Saying only "improved" would leave "not improved" to be inferred
- * from an absence.
+ * FIRST PASS AND IMPROVED, IN ONE PLACE. The transcript, the summary and the
+ * tasks switch together, because each version owns all three. Before the
+ * careful pass has run, its half of the switch is the button that runs it;
+ * while it runs, that half says how far it has got, in orange.
  */
-function PassBadge({
-  enhanced,
-  firstModel,
+function VersionSwitch({
+  versions,
+  shown,
+  onShow,
+  improving,
+  waiting,
+  canImprove,
+  onImprove,
 }: {
-  enhanced: Enhancement | null
-  firstModel: string | undefined
+  versions: VersionRecord[]
+  shown: number | null
+  onShow(versionId: number | null): void
+  /** What the careful pass is doing, while it runs for this meeting. */
+  improving: string | null
+  waiting: boolean
+  canImprove: boolean
+  onImprove(): void
 }): React.JSX.Element {
-  return enhanced ? (
-    <span
-      title={`Transcribed a second time with ${enhanced.model}, ${formatWhen(enhanced.at)}.`}
-      className="rounded-full bg-sky-500/10 px-2 py-px text-[11px] text-sky-300 ring-1 ring-sky-400/25"
-    >
-      ✦ Improved transcript
-    </span>
-  ) : (
-    <span
-      title={`Transcribed live with ${firstModel ?? 'the fast model'}. Improve accuracy, in the ⋯ menu, runs the more accurate model over the saved audio.`}
-      className="rounded-full px-2 py-px text-[11px] text-neutral-500 ring-1 ring-white/10"
-    >
-      Quick transcript
-    </span>
+  const segment = 'rounded-md px-2.5 py-1 text-[11.5px] transition'
+  return (
+    <div className="inline-flex items-center rounded-lg bg-black/25 p-0.5 ring-1 ring-white/[0.08]">
+      {versions.map((v) => {
+        const active = v.id === shown
+        const isImprovedOne = versionLabel(v.source) === 'Improved'
+        return (
+          <button
+            key={v.id}
+            // The main one is followed rather than pinned, so a newer main
+            // version takes over the page when it arrives.
+            onClick={() => onShow(v.main ? null : v.id)}
+            aria-pressed={active}
+            title={v.main ? 'The version you work from' : 'Read-only: compare against it'}
+            className={
+              `${segment} ` +
+              (active
+                ? isImprovedOne
+                  ? 'bg-sky-500/15 text-sky-200 ring-1 ring-sky-400/30'
+                  : 'bg-white/[0.10] text-neutral-100 ring-1 ring-white/20'
+                : 'text-neutral-500 hover:text-neutral-300')
+            }
+          >
+            {isImprovedOne ? '✦ ' : ''}
+            {versionLabel(v.source)}
+          </button>
+        )
+      })}
+      {improving !== null ? (
+        <span className={`${segment} flex items-center gap-1.5 text-orange-300`}>
+          <span className="size-1.5 animate-pulse rounded-full bg-orange-400" />
+          {improving}
+        </span>
+      ) : waiting ? (
+        <span className={`${segment} text-neutral-500`}>Improve · waiting</span>
+      ) : versions.length === 1 ? (
+        <button
+          onClick={onImprove}
+          disabled={!canImprove}
+          title="Transcribe again with the more accurate model"
+          className={`${segment} text-neutral-400 hover:bg-white/[0.06] hover:text-neutral-200 disabled:opacity-40`}
+        >
+          ✦ Improve
+        </button>
+      ) : null}
+    </div>
   )
 }
 
 /**
- * Where what is under a tab came from, once there are two transcripts it could
- * have come from.
- *
- * Quiet when it is the improved one. Amber, with the button that fixes it, when
- * it was built from the first transcript because the rebuild after the careful
- * pass failed - the one case where the page would otherwise show an improved
- * transcript above an unimproved summary and say nothing.
+ * English is on and this transcript has none: say why, and offer the fix,
+ * rather than quietly showing the raw lines under an "English" label.
  */
-function Provenance({
-  state,
-  what,
-  improvedText,
-  enhanced,
-  redo,
-  busy,
+function EnglishMissing({
+  running,
+  failed,
+  onRedo,
 }: {
-  state: Enhancement['summary']
-  what: string
-  improvedText?: string
-  enhanced: Enhancement
-  redo: { label: string; onClick(): void }
-  busy: boolean
-}): React.JSX.Element | null {
-  if (state === 'none') return null
-  const were = what.startsWith('These') ? 'were' : 'was'
-
-  if (state === 'stale') {
-    return (
-      <div className="flex items-center gap-3 rounded-lg bg-amber-500/10 px-3 py-2 text-[12px] leading-snug text-amber-200 ring-1 ring-amber-500/20">
-        <span className="min-w-0 flex-1">
-          {what} {were} built from the first transcript, before it was improved.
-        </span>
+  running: boolean
+  failed: string | null
+  onRedo?: () => void
+}): React.JSX.Element {
+  return (
+    <div className="mb-2.5 flex shrink-0 items-center gap-3 rounded-lg bg-white/[0.04] px-3 py-2 text-[12px] leading-snug text-neutral-300 ring-1 ring-white/[0.08]">
+      <span className="min-w-0 flex-1">
+        {running
+          ? 'The English is being written. Showing the lines as spoken until then.'
+          : failed
+            ? `The English could not be written: ${failed}. Showing the lines as spoken.`
+            : 'This transcript has no English yet. Showing the lines as spoken.'}
+      </span>
+      {!running && onRedo ? (
         <button
-          onClick={redo.onClick}
-          disabled={busy}
-          className="shrink-0 rounded-md bg-amber-500/15 px-2 py-0.5 text-[11.5px] text-amber-100 ring-1 ring-amber-400/30 transition hover:bg-amber-500/25 disabled:opacity-40"
+          onClick={onRedo}
+          className="shrink-0 rounded-md bg-white/[0.08] px-2 py-0.5 text-[11.5px] text-neutral-100 ring-1 ring-white/15 transition hover:bg-white/[0.14]"
         >
-          {redo.label}
+          Redo English
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * Asked when something else is already running.
+ *
+ * One job at a time - there is one card - so starting this means waiting, and
+ * behind a careful pass that can be twenty minutes. Better asked than found out.
+ */
+function QueueDialog({
+  what,
+  running,
+  meetingId,
+  onCancel,
+  onQueue,
+}: {
+  what: string
+  running: MeetingJobView | null
+  meetingId: number
+  onCancel(): void
+  onQueue(): void
+}): React.JSX.Element {
+  return (
+    <Dialog title="Something is already running" onClose={onCancel}>
+      <p className="text-[13px] leading-relaxed text-neutral-300">
+        {running
+          ? `Wouice is ${describeJob(running.kind).toLowerCase()} for ${
+              running.meetingId === meetingId ? 'this' : 'another'
+            } meeting. Only one of these runs at a time, so “${what}” would wait until it finishes.`
+          : 'That has just finished, so this can start straight away.'}
+      </p>
+      <div className="mt-4 flex justify-end gap-2">
+        <button
+          onClick={onCancel}
+          className="rounded-lg px-3 py-1.5 text-[12.5px] text-neutral-400 ring-1 ring-white/10 transition hover:bg-white/5"
+        >
+          Don’t start
+        </button>
+        <button
+          onClick={onQueue}
+          className="rounded-lg bg-white/[0.09] px-3 py-1.5 text-[12.5px] font-medium text-neutral-100 ring-1 ring-white/20 transition hover:bg-white/[0.15]"
+        >
+          {running ? 'Queue it' : 'Start'}
         </button>
       </div>
-    )
-  }
-
-  return (
-    <p
-      className="text-[11.5px] text-sky-300/80"
-      title={`Transcribed a second time with ${enhanced.model}, ${formatWhen(enhanced.at)}.`}
-    >
-      ✦ {improvedText ?? `${what} ${were} built from the improved transcript.`}
-    </p>
+    </Dialog>
   )
 }

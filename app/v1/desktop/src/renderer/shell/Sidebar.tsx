@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { MARK_BARS, MARK_STROKE, MARK_VIEWBOX } from '../../shared/mark.js'
 import { zoomLabel } from '../../shared/settings.js'
+import { jobColour, useMeetingJobs } from '../meetings/jobs.js'
 import { Icon } from './Icon.js'
 import { groupedRoutes, hashFor, type RouteDef, type RouteId } from './routes.js'
 
@@ -70,10 +71,13 @@ function Item({
   route,
   active,
   collapsed,
+  dot,
 }: {
   route: RouteDef
   active: boolean
   collapsed: boolean
+  /** A colour when something is running here, shown on the icon from anywhere in the app. */
+  dot?: string | null
 }): React.JSX.Element {
   const shared = [
     'flex w-full items-center rounded-lg transition',
@@ -111,7 +115,15 @@ function Item({
           : 'text-neutral-500 hover:bg-white/[0.04] hover:text-neutral-300',
       ].join(' ')}
     >
-      <Icon name={route.icon} />
+      <span className="relative flex">
+        <Icon name={route.icon} />
+        {dot ? (
+          <span
+            className="absolute -top-0.5 -right-0.5 size-1.5 animate-pulse rounded-full ring-2 ring-black/60"
+            style={{ backgroundColor: dot }}
+          />
+        ) : null}
+      </span>
       {!collapsed && <span className="flex-1 text-left text-[13px]">{route.label}</span>}
     </a>
   )
@@ -195,6 +207,15 @@ export function Sidebar({
   onToggle(): void
   zoom: number
 }): React.JSX.Element {
+  // A meeting being written up or improved, visible from Dictation or Settings:
+  // the work takes minutes, and it should not take opening Meetings to see it.
+  const jobs = useMeetingJobs()
+  const meetingDot = jobs.running
+    ? jobColour(jobs.running.kind)
+    : jobs.queued.length > 0
+      ? '#737373'
+      : null
+
   return (
     <nav
       className={[
@@ -242,7 +263,13 @@ export function Sidebar({
             )}
             <div className="space-y-0.5">
               {routes.map((r) => (
-                <Item key={r.id} route={r} active={r.id === active} collapsed={collapsed} />
+                <Item
+                  key={r.id}
+                  route={r}
+                  active={r.id === active}
+                  collapsed={collapsed}
+                  dot={r.id === 'meetings' ? meetingDot : null}
+                />
               ))}
             </div>
           </div>
