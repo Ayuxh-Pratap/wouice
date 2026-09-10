@@ -206,6 +206,10 @@ export function formatMeeting(
   lines.push(`  chunks sent   ${d.chunksSent ?? 0}`)
   lines.push(`  chunks silent ${d.chunksSkipped ?? 0}  (never sent, so never hallucinated over)`)
   lines.push(
+    `  lines unheard ${d.segmentsUnheard ?? 'not measured'}` +
+      '  (written over silence and dropped - "Thank you." over a quiet room)'
+  )
+  lines.push(
     `  chunks failed ${d.chunksFailed ?? 0}` +
       ((d.chunksFailed ?? 0) > 0 ? '  <- lost audio, one slice each' : '')
   )
@@ -232,7 +236,11 @@ export function formatMeeting(
       lines.push(
         `  transcribed   ${v.transcription.model}, ${v.transcription.segments} lines, ` +
           `${Math.round(v.transcription.ms / 1000)}s, ${new Date(v.transcription.at).toLocaleString()}` +
-          (languages ? `, chunks sent as ${languages}` : '')
+          (languages ? `, chunks sent as ${languages}` : '') +
+          (v.transcription.unheard ? `, ${v.transcription.unheard} lines dropped as silence` : '') +
+          (v.transcription.restored === false
+            ? '  <- the everyday speech model was NOT confirmed back'
+            : '')
       )
     }
     if (v.english) {
@@ -272,9 +280,9 @@ function formatNotesRuns(runs: NonNullable<MeetingDiagnostics['notes']>, lines: 
     }
     if (run.candidates !== undefined) {
       lines.push(
-        `      tasks     ${run.candidates} proposed, ${run.filtered ?? 0} filtered as refusal/maybe,` +
-          (run.merged !== undefined ? ` ${run.merged} merged as said twice,` : '') +
-          ` ${run.rejected ?? 0} refused on checking, ${run.tasks} kept`
+        `      tasks     ${run.candidates} found, ${run.filtered ?? 0} not traceable or too vague,` +
+          ` ${run.merged ?? 0} merged into the same work, ${run.rejected ?? 0} turned down or already done,` +
+          ` ${run.tasks} kept`
       )
     }
   }
