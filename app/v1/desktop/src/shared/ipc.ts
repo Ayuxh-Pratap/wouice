@@ -302,7 +302,7 @@ export interface MeetingState {
 
 export interface NotesProgressView {
   meetingId: number
-  stage: 'condensing' | 'extracting' | 'writing'
+  stage: 'condensing' | 'extracting' | 'checking' | 'writing'
   chunk: number
   chunks: number
 }

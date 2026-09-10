@@ -105,8 +105,34 @@ const notesEngine = new MeetingNotesEngine(
     new OpenAiCompatClient({
       baseUrl: supervisor.baseUrl('llama'),
       model: supervisor.snapshot('llama').modelId,
-    })
+    }),
+  countLlamaTokens
 )
+
+/**
+ * The model's own count of a piece of text.
+ *
+ * WHY ASK RATHER THAN ESTIMATE. The estimate was calibrated on dictation and
+ * undercounted a real meeting by up to 1.8x; three of four summary chunks
+ * overflowed and the summary was written from the last six minutes. llama.cpp
+ * will tell us exactly. Null when it cannot, and the engine falls back to a
+ * padded estimate - wrong in the safe direction.
+ */
+async function countLlamaTokens(text: string): Promise<number | null> {
+  try {
+    const res = await fetch(`${supervisor.baseUrl('llama')}/tokenize`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: text }),
+      signal: AbortSignal.timeout(5_000),
+    })
+    if (!res.ok) return null
+    const body = (await res.json()) as { tokens?: unknown[] }
+    return Array.isArray(body.tokens) ? body.tokens.length : null
+  } catch {
+    return null
+  }
+}
 let notesRunning = 0
 
 /**
@@ -156,6 +182,7 @@ async function writeNotes(id: number): Promise<NotesOutcome> {
       })),
       scratch: meeting.scratchMd,
       startedAt: meeting.startedAt,
+      me: { name: settings.get().meetings.me.name },
       onProgress: (p) => broadcast(IPC.notesProgress, { meetingId: id, ...p }),
     })
 
@@ -168,11 +195,17 @@ async function writeNotes(id: number): Promise<NotesOutcome> {
       gaps: run.failedChunks,
       tasks: run.tasks.length,
       ms: run.ms,
+      coveredLines: run.coveredLines,
+      totalLines: run.totalLines,
+      gapsAt: run.gapsAt,
+      candidates: run.candidates,
+      filtered: run.filtered,
+      rejected: run.rejected,
     })
     console.log(
-      `[meeting] notes for ${id}: ${run.chunks} chunk(s), ${run.tasks.length} task(s)` +
-        `, ${Math.round(run.ms / 1000)}s` +
-        (run.failedChunks ? `, ${run.failedChunks} gap(s)` : '')
+      `[meeting] notes for ${id}: ${run.chunks} chunk(s), covered ${run.coveredLines}/${run.totalLines} lines,` +
+        ` tasks ${run.tasks.length} kept of ${run.candidates} (${run.filtered} filtered, ${run.rejected} refused)` +
+        `, ${Math.round(run.ms / 1000)}s`
     )
     return {
       ok: true,

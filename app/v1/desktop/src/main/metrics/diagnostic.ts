@@ -221,6 +221,22 @@ export function formatMeeting(meeting: MeetingRecord, tasks: number): string {
           ? `ok - ${run.chunks} chunk(s), ${run.gaps} gap(s), ${run.tasks} task(s), ${Math.round(run.ms / 1000)}s`
           : `FAILED - ${run.message ?? 'no reason recorded'}`)
     )
+    if (run.totalLines) {
+      const pct = Math.round(((run.coveredLines ?? 0) / run.totalLines) * 100)
+      lines.push(
+        `      covered   ${run.coveredLines}/${run.totalLines} lines (${pct}%)` +
+          (pct < 100 ? '  <- the summary did NOT read the whole meeting' : '')
+      )
+    }
+    for (const gap of run.gapsAt ?? []) {
+      lines.push(`      not read  ${Math.round(gap.fromMs / 60_000)}-${Math.round(gap.toMs / 60_000)} min`)
+    }
+    if (run.candidates !== undefined) {
+      lines.push(
+        `      tasks     ${run.candidates} proposed, ${run.filtered ?? 0} filtered as refusal/maybe,` +
+          ` ${run.rejected ?? 0} refused on checking, ${run.tasks} kept`
+      )
+    }
   }
   if ((d.notes ?? []).length === 0) lines.push('  (never run)')
 
