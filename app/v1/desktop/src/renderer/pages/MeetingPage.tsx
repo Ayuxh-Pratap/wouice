@@ -8,6 +8,7 @@ import type {
   RepassProgressView,
 } from '../../shared/ipc.js'
 import { kindOf } from '../../shared/meeting-kind.js'
+import { enhancementOf, type Enhancement } from '../meetings/enhanced.js'
 import { Notes } from '../meetings/Notes.js'
 import { Transcript } from '../meetings/Transcript.js'
 import { Icon } from '../shell/Icon.js'
@@ -196,6 +197,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   /* ------------------------------------------------------------- finished -- */
 
   const aura = repass ? '#fb923c' : working ? '#34d399' : null
+  const enhanced = enhancementOf(meeting)
 
   return (
     <div className="relative space-y-4">
@@ -225,11 +227,14 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
           <h1 className="mt-1 truncate text-[19px] font-semibold tracking-tight text-neutral-50">
             {meeting.title ?? formatWhen(meeting.startedAt)}
           </h1>
-          <p className="mt-0.5 text-[12px] text-neutral-500">
-            {formatDuration(meeting.durationMs)} · {meeting.segments} line
-            {meeting.segments === 1 ? '' : 's'} · {kind.label}
-            {meeting.endedAt === null ? ' · never finished' : ''}
-          </p>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-neutral-500">
+            <span>
+              {formatDuration(meeting.durationMs)} · {meeting.segments} line
+              {meeting.segments === 1 ? '' : 's'} · {kind.label}
+              {meeting.endedAt === null ? ' · never finished' : ''}
+            </span>
+            <PassBadge enhanced={enhanced} firstModel={meeting.diagnostics.asrModel} />
+          </div>
         </div>
 
         {/*
@@ -248,7 +253,11 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
           <Menu
             items={[
               {
-                label: 'Improve accuracy',
+                // Still offered once improved, for when a better model arrives;
+                // the dialog says that running it again on the same model gives
+                // the same transcript. Worded differently so it cannot be read
+                // as the first pass never having run.
+                label: enhanced ? 'Improve accuracy again' : 'Improve accuracy',
                 onClick: () => setConfirming(true),
                 disabled: working || !meeting.audioPath,
               },
@@ -313,6 +322,15 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
           onChange={setTab}
         />
 
+        {enhanced && (shown === 'summary' || shown === 'tasks') && meeting.notesMd ? (
+          <Provenance
+            state={enhanced.summary}
+            what={shown === 'summary' ? 'This summary' : 'These tasks'}
+            enhanced={enhanced}
+            redo={{ label: 'Redo summary', onClick: () => void redo('notes') }}
+            busy={working}
+          />
+        ) : null}
         {shown === 'summary' ? <Coverage meeting={meeting} /> : null}
 
         {shown === 'summary' ? (
@@ -377,6 +395,16 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
           )
         ) : null}
 
+        {enhanced && shown === 'transcript' && segments.length > 0 ? (
+          <Provenance
+            state={english && hasEnglish && enhanced.english === 'stale' ? 'stale' : 'improved'}
+            what="This English"
+            improvedText="Transcribed a second time, with the more accurate model."
+            enhanced={enhanced}
+            redo={{ label: 'Redo English', onClick: () => void redo('english') }}
+            busy={working}
+          />
+        ) : null}
         {shown === 'transcript' ? (
           <section className="lift flex max-h-[62vh] flex-col rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
             {hasEnglish ? (
@@ -532,9 +560,20 @@ function ImproveDialog({
 }): React.JSX.Element {
   // Measured at roughly 2.7x turbo, over both channels.
   const minutes = Math.max(1, Math.round((meeting.durationMs / 1000 / 60) * 0.75))
+  const already = enhancementOf(meeting)
 
   return (
     <Dialog title="Transcribe this meeting again?" onClose={onCancel}>
+      {/* The careful pass does not read your notes, and on the same model and
+          the same audio it lands on essentially the same transcript - so a
+          second run mostly buys twenty minutes without dictation. */}
+      {already ? (
+        <p className="mb-3 rounded-lg bg-sky-500/10 px-3 py-2 text-[12.5px] leading-snug text-sky-200 ring-1 ring-sky-400/20">
+          This meeting was already transcribed with {already.model} on {formatWhen(already.at)}.
+          The same model will give essentially the same transcript. To use notes you have added since, Redo
+          English or Redo summary instead — neither transcribes again.
+        </p>
+      ) : null}
       <p className="text-[13px] leading-relaxed text-neutral-300">
         This runs the larger speech model over the saved audio. On a Hindi meeting it recovers
         sentences the fast model loses entirely — measured against Google&apos;s own captions, it
@@ -926,5 +965,92 @@ function Coverage({ meeting }: { meeting: MeetingRecord }): React.JSX.Element | 
       This summary covers {pct}% of the meeting. {where} could not be read, so anything
       said then is missing from the summary and the tasks. Redo summary to try again.
     </div>
+  )
+}
+
+/**
+ * Which transcript this meeting is showing: the quick one made live, or the
+ * careful one made afterwards.
+ *
+ * SHOWN BOTH WAYS. An improved meeting and one that was not look the same line
+ * by line, and the difference decides how far a name or a number in it can be
+ * trusted. Saying only "improved" would leave "not improved" to be inferred
+ * from an absence.
+ */
+function PassBadge({
+  enhanced,
+  firstModel,
+}: {
+  enhanced: Enhancement | null
+  firstModel: string | undefined
+}): React.JSX.Element {
+  return enhanced ? (
+    <span
+      title={`Transcribed a second time with ${enhanced.model}, ${formatWhen(enhanced.at)}.`}
+      className="rounded-full bg-sky-500/10 px-2 py-px text-[11px] text-sky-300 ring-1 ring-sky-400/25"
+    >
+      ✦ Improved transcript
+    </span>
+  ) : (
+    <span
+      title={`Transcribed live with ${firstModel ?? 'the fast model'}. Improve accuracy, in the ⋯ menu, runs the more accurate model over the saved audio.`}
+      className="rounded-full px-2 py-px text-[11px] text-neutral-500 ring-1 ring-white/10"
+    >
+      Quick transcript
+    </span>
+  )
+}
+
+/**
+ * Where what is under a tab came from, once there are two transcripts it could
+ * have come from.
+ *
+ * Quiet when it is the improved one. Amber, with the button that fixes it, when
+ * it was built from the first transcript because the rebuild after the careful
+ * pass failed - the one case where the page would otherwise show an improved
+ * transcript above an unimproved summary and say nothing.
+ */
+function Provenance({
+  state,
+  what,
+  improvedText,
+  enhanced,
+  redo,
+  busy,
+}: {
+  state: Enhancement['summary']
+  what: string
+  improvedText?: string
+  enhanced: Enhancement
+  redo: { label: string; onClick(): void }
+  busy: boolean
+}): React.JSX.Element | null {
+  if (state === 'none') return null
+  const were = what.startsWith('These') ? 'were' : 'was'
+
+  if (state === 'stale') {
+    return (
+      <div className="flex items-center gap-3 rounded-lg bg-amber-500/10 px-3 py-2 text-[12px] leading-snug text-amber-200 ring-1 ring-amber-500/20">
+        <span className="min-w-0 flex-1">
+          {what} {were} built from the first transcript, before it was improved.
+        </span>
+        <button
+          onClick={redo.onClick}
+          disabled={busy}
+          className="shrink-0 rounded-md bg-amber-500/15 px-2 py-0.5 text-[11.5px] text-amber-100 ring-1 ring-amber-400/30 transition hover:bg-amber-500/25 disabled:opacity-40"
+        >
+          {redo.label}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <p
+      className="text-[11.5px] text-sky-300/80"
+      title={`Transcribed a second time with ${enhanced.model}, ${formatWhen(enhanced.at)}.`}
+    >
+      ✦ {improvedText ?? `${what} ${were} built from the improved transcript.`}
+    </p>
   )
 }
