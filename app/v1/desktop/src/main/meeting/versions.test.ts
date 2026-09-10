@@ -28,6 +28,9 @@ const old = (over: Partial<TaskRecord>): TaskRecord => ({
   quote: 'leader board on vote page users are seeing old data',
   quoteAtMs: 3_201_008,
   carriedFrom: null,
+  description: 'Users on the web leaderboard are seeing old data.',
+  evidence: [{ segmentId: 603, quote: 'seeing old data', atMs: 3_201_008, line: null }],
+  status: 'agreed',
   ...over,
 })
 
