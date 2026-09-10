@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { WhisperCppClient } from '@wouice/asr'
-import type { Meetings } from '@wouice/store'
+import { LIVE_SOURCE, type Meetings, type SegmentInput } from '@wouice/store'
 import { rms } from '../capture/silence-policy.js'
 import type { SidecarSupervisor } from '../sidecars/supervisor.js'
 import { kindOf } from '../../shared/meeting-kind.js'
+import { heardIn, languageForChunk } from './language.js'
 import { Segmenter } from './segmenter.js'
 import { MEETING_SAMPLE_RATE, type Channel } from './session.js'
 
@@ -26,6 +27,11 @@ import { MEETING_SAMPLE_RATE, type Channel } from './session.js'
  * something to do on every meeting automatically. It is a button you press
  * about the meetings you care about.
  *
+ * THE LANGUAGE IS CHOSEN PER CHUNK, from what the first pass wrote there. The
+ * large model obeys a language setting literally: told a mostly-English
+ * meeting was Hindi, it wrote English speech as Hindi-script nonsense. See
+ * `languageForChunk`.
+ *
  * THE ORDER MATTERS AND IS THE WHOLE DESIGN:
  *
  *   1. stop the language model            free ~3.1 GB
@@ -33,23 +39,32 @@ import { MEETING_SAMPLE_RATE, type Channel } from './session.js'
  *   3. re-transcribe from audio.wav       nothing is live, no latency budget
  *   4. put both back the way they were
  *
- * If anything fails, step 4 still runs and the previous transcript is left
- * exactly where it was. A re-pass that could destroy the transcript it was
- * trying to improve would not be worth offering.
+ * If anything fails, step 4 still runs and nothing is stored. The caller makes
+ * the result a new version beside the first pass, so a careful pass can only
+ * ever add a transcript, never destroy one.
  */
 
 export interface RepassProgress {
   meetingId: number
   stage: 'loading' | 'transcribing' | 'restoring'
-  /** Seconds of audio done, and in total. Both channels counted. */
+  /** The side of the call being transcribed: yours first, then theirs. */
+  side?: Channel
+  /**
+   * How far through this side, in meeting time, and how long the meeting is.
+   * One side at a time: adding the two together once called a two-minute
+   * meeting "4 min".
+   */
   doneSec: number
   totalSec: number
 }
 
 export interface RepassResult {
-  segments: number
+  /** The new transcript, in time order. Not stored: the caller makes it a version. */
+  segments: SegmentInput[]
   /** Seconds of wall clock the whole thing took. */
   seconds: number
+  /** How many chunks were sent as each language, so a wrong choice can be seen. */
+  languages: Record<string, number>
 }
 
 export interface RepassDeps {
@@ -88,11 +103,16 @@ export async function repassMeeting(meetingId: number, deps: RepassDeps): Promis
     throw new RepassUnavailable('the audio file could not be read')
   }
 
-  const language = kindOf(meeting.kind).language
+  const meetingLanguage = kindOf(meeting.kind).language
   const before = deps.supervisor.snapshot('whisper').modelId
-  const totalSec = Math.floor((wav.byteLength - 44) / 4 / MEETING_SAMPLE_RATE) * 2
+  const meetingSec = Math.floor((wav.byteLength - 44) / 4 / MEETING_SAMPLE_RATE)
 
-  deps.onProgress({ meetingId, stage: 'loading', doneSec: 0, totalSec })
+  // What the first pass heard, to choose each chunk's language from.
+  const live = meeting.versions.find((v) => v.source === LIVE_SOURCE)
+  const heard = live ? deps.meetings.segments(meetingId, live.id) : []
+  const languages: Record<string, number> = {}
+
+  deps.onProgress({ meetingId, stage: 'loading', doneSec: 0, totalSec: meetingSec })
 
   // The language model has to go first: large-v3 and a 4B will not both fit
   // alongside the desktop on this card, and finding that out as a CUDA
@@ -101,7 +121,7 @@ export async function repassMeeting(meetingId: number, deps: RepassDeps): Promis
   await deps.supervisor.stop('llama')
   await deps.supervisor.switchModel('whisper', deps.modelId)
 
-  const segments: { channel: Channel; startMs: number; endMs: number; text: string; echo: boolean }[] = []
+  const segments: SegmentInput[] = []
 
   try {
     const client = new WhisperCppClient({
@@ -125,20 +145,28 @@ export async function repassMeeting(meetingId: number, deps: RepassDeps): Promis
     }
     const segmenter = new Segmenter()
     const chunk = CHUNK_SECONDS * MEETING_SAMPLE_RATE
-    let done = 0
 
     for (const side of ['me', 'them'] as const) {
       const pcm = channelOf(wav, side)
       for (let at = 0; at < pcm.length; at += chunk) {
         const slice = pcm.subarray(at, Math.min(at + chunk, pcm.length))
-        done += slice.length / MEETING_SAMPLE_RATE
+        const fromMs = (at / MEETING_SAMPLE_RATE) * 1000
+        const toMs = ((at + slice.length) / MEETING_SAMPLE_RATE) * 1000
         deps.onProgress({
           meetingId,
           stage: 'transcribing',
-          doneSec: Math.round(done),
-          totalSec,
+          side,
+          doneSec: Math.round(toMs / 1000),
+          totalSec: meetingSec,
         })
         if (rms(slice) < SILENCE_RMS) continue
+
+        const language = languageForChunk(
+          meetingLanguage,
+          heardIn(heard, side, fromMs, toMs),
+          meeting.diagnostics.language
+        )
+        languages[language] = (languages[language] ?? 0) + 1
 
         try {
           const result = await client.transcribe(slice, { language, wantTimings: true })
@@ -146,14 +174,14 @@ export async function repassMeeting(meetingId: number, deps: RepassDeps): Promis
             ...segmenter.push(
               side,
               { segments: result.segments ?? [], words: result.tokens ?? [] },
-              (at / MEETING_SAMPLE_RATE) * 1000
+              fromMs
             )
           )
         } catch (err) {
           // One lost chunk, as in the live path. The words are on disk and can
           // be tried again; ending the run would throw away everything before.
           console.warn(
-            `[repass] ${side} at ${Math.round(at / MEETING_SAMPLE_RATE)}s failed:`,
+            `[repass] ${side} at ${Math.round(fromMs / 1000)}s failed:`,
             err instanceof Error ? err.message : err
           )
         }
@@ -163,7 +191,7 @@ export async function repassMeeting(meetingId: number, deps: RepassDeps): Promis
   } finally {
     // Both, always, even when the pass threw. Leaving the card holding a model
     // nothing is going to use is how the next dictation fails.
-    deps.onProgress({ meetingId, stage: 'restoring', doneSec: totalSec, totalSec })
+    deps.onProgress({ meetingId, stage: 'restoring', doneSec: meetingSec, totalSec: meetingSec })
     try {
       await deps.supervisor.switchModel('whisper', before)
       await deps.supervisor.start('llama')
@@ -177,10 +205,9 @@ export async function repassMeeting(meetingId: number, deps: RepassDeps): Promis
   }
 
   segments.sort((a, b) => a.startMs - b.startMs)
-  // Only now, once there is something to replace it with.
-  deps.meetings.replaceSegments(meetingId, segments)
-
-  return { segments: segments.length, seconds: Math.round((Date.now() - started) / 1000) }
+  // Handed back rather than written: the caller stores them as a new version,
+  // beside the transcript this was made from and never over it.
+  return { segments, seconds: Math.round((Date.now() - started) / 1000), languages }
 }
 
 /**
