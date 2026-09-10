@@ -3,7 +3,9 @@ import { LIVE_SOURCE, TASK_AREAS, TASK_KINDS } from './types.js'
 import type {
   MeetingDiagnostics,
   TaskArea,
+  TaskEvidence,
   TaskKind,
+  TaskStatus,
   MeetingRecord,
   SegmentInput,
   SegmentRecord,
@@ -167,6 +169,26 @@ interface TaskRow {
   note_quote: string | null
   reason: string
   carried_from: string | null
+  description: string
+  evidence: string
+  status: string
+}
+
+/** The lines a task cites, as stored: before the when and the words are joined in. */
+function readEvidence(raw: string | null): { segmentId: number; quote: string }[] {
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter(
+        (e): e is { segmentId: number; quote?: unknown } =>
+          typeof e === 'object' && e !== null && Number.isInteger((e as { segmentId?: unknown }).segmentId)
+      )
+      .map((e) => ({ segmentId: e.segmentId, quote: typeof e.quote === 'string' ? e.quote : '' }))
+  } catch {
+    return []
+  }
 }
 
 function toTask(r: TaskRow): TaskRecord {
@@ -192,6 +214,16 @@ function toTask(r: TaskRow): TaskRecord {
     noteQuote: r.note_quote,
     reason: r.reason,
     carriedFrom: r.carried_from,
+    description: r.description ?? '',
+    // A task from before evidence existed still has its one line.
+    evidence: (() => {
+      const cited = readEvidence(r.evidence)
+      if (cited.length > 0) return cited.map((e) => ({ ...e, atMs: null, line: null }))
+      return r.segment_id !== null
+        ? [{ segmentId: r.segment_id, quote: '', atMs: r.quote_at, line: r.quote }]
+        : []
+    })(),
+    status: r.status === 'agreed' || r.status === 'proposed' ? (r.status as TaskStatus) : '',
   }
 }
 
@@ -556,8 +588,9 @@ export class Meetings {
       this.db.raw.prepare('DELETE FROM tasks WHERE version_id = ?').run(versionId)
       const insert = this.db.raw.prepare(
         `INSERT INTO tasks (meeting_id, version_id, text, owner, due, segment_id, state, created_at,
-                            area, kind, mine, source, note_quote, reason, carried_from)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                            area, kind, mine, source, note_quote, reason, carried_from,
+                            description, evidence, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       for (const task of tasks) {
         insert.run(
@@ -575,7 +608,12 @@ export class Meetings {
           task.source ?? 'transcript',
           task.noteQuote ?? null,
           task.reason ?? '',
-          task.carriedFrom ?? null
+          task.carriedFrom ?? null,
+          task.description ?? '',
+          JSON.stringify(
+            (task.evidence ?? []).map((e) => ({ segmentId: e.segmentId, quote: e.quote }))
+          ),
+          task.status ?? ''
         )
       }
     })
@@ -590,7 +628,7 @@ export class Meetings {
    * checks is one nobody trusts.
    */
   tasksFor(meetingId: number, versionId?: number): TaskRecord[] {
-    return rows<TaskRow>(
+    const tasks = rows<TaskRow>(
       this.db.raw
         .prepare(
           `SELECT t.*, s.text AS quote, s.start_ms AS quote_at
@@ -599,24 +637,59 @@ export class Meetings {
         )
         .all(meetingId, versionId ?? null, meetingId)
     ).map(toTask)
+    return this.withEvidence(tasks)
+  }
+
+  /**
+   * Fill in when each cited line was said, and what it says.
+   *
+   * One query for every line every task cites, rather than a join per task: an
+   * hour's tasks cite a hundred lines between them. The line is given in
+   * English where there is one, because that is what the task was found in.
+   */
+  private withEvidence(tasks: TaskRecord[]): TaskRecord[] {
+    const ids = [
+      ...new Set(tasks.flatMap((t) => t.evidence.filter((e) => e.line === null).map((e) => e.segmentId))),
+    ]
+    if (ids.length === 0) return tasks
+    const found = new Map(
+      rows<{ id: number; start_ms: number; line: string }>(
+        this.db.raw
+          .prepare(
+            `SELECT id, start_ms, COALESCE(text_en, text) AS line FROM segments
+             WHERE id IN (${ids.map(() => '?').join(', ')})`
+          )
+          .all(...ids)
+      ).map((s) => [s.id, s] as const)
+    )
+    for (const task of tasks) {
+      task.evidence = task.evidence.map((e): TaskEvidence => {
+        if (e.line !== null) return e
+        const s = found.get(e.segmentId)
+        return s ? { ...e, atMs: s.start_ms, line: s.line } : e
+      })
+    }
+    return tasks
   }
 
   /** Every version's tasks, for carrying what you ticked from one to the next. */
   allTasks(meetingId: number): TaskRecord[] {
-    return rows<TaskRow>(
-      this.db.raw
-        .prepare(
-          `SELECT t.*, s.text AS quote, s.start_ms AS quote_at
-           FROM tasks t LEFT JOIN segments s ON s.id = t.segment_id
-           WHERE t.meeting_id = ? ORDER BY t.id`
-        )
-        .all(meetingId)
-    ).map(toTask)
+    return this.withEvidence(
+      rows<TaskRow>(
+        this.db.raw
+          .prepare(
+            `SELECT t.*, s.text AS quote, s.start_ms AS quote_at
+             FROM tasks t LEFT JOIN segments s ON s.id = t.segment_id
+             WHERE t.meeting_id = ? ORDER BY t.id`
+          )
+          .all(meetingId)
+      ).map(toTask)
+    )
   }
 
   /** Everything still open on each meeting's main version, newest meeting first. */
   openTasks(limit = 200): TaskRecord[] {
-    return rows<TaskRow>(
+    const tasks = rows<TaskRow>(
       this.db.raw
         .prepare(
           `SELECT t.*, s.text AS quote, s.start_ms AS quote_at
@@ -627,6 +700,7 @@ export class Meetings {
         )
         .all(limit)
     ).map(toTask)
+    return this.withEvidence(tasks)
   }
 
   setTaskState(id: number, state: TaskState): void {
