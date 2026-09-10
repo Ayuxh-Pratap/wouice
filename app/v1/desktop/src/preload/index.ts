@@ -10,6 +10,7 @@ import {
   type EnglishProgressView,
   type RepassProgressView,
   type NotesProgressView,
+  type BotStatusView,
   type MeetingJobsView,
   type MeetingState,
   type MetricsSnapshot,
@@ -84,6 +85,10 @@ const api: WouiceApi = {
   getMeetingTasks: (meetingId: number, versionId?: number) =>
     ipcRenderer.invoke(IPC.getMeetingTasks, meetingId, versionId),
   getMeetingJobs: () => ipcRenderer.invoke(IPC.getMeetingJobs),
+  getBotStatus: () => ipcRenderer.invoke(IPC.getBotStatus),
+  checkBot: () => ipcRenderer.invoke(IPC.checkBot),
+  openBotSignIn: () => ipcRenderer.invoke(IPC.openBotSignIn),
+  onBotStatus: (cb) => subscribe<BotStatusView>(IPC.botStatus, cb),
   setMainVersion: (meetingId: number, versionId: number) =>
     ipcRenderer.invoke(IPC.setMainVersion, meetingId, versionId),
   onMeetingJobs: (cb) => subscribe<MeetingJobsView>(IPC.meetingJobs, cb),

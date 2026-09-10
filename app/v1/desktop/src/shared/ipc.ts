@@ -77,6 +77,10 @@ export const IPC = {
   repassMeeting: 'meeting:repass',
   getMeetingJobs: 'meeting:jobs',
   setMainVersion: 'meeting:setMainVersion',
+  // The meeting bot's identity: its Chrome profile and who it is signed in as.
+  getBotStatus: 'bot:status',
+  checkBot: 'bot:check',
+  openBotSignIn: 'bot:signIn',
   setMeetingKind: 'meeting:setKind',
   getMeeting: 'meeting:one',
   meetingFrame: 'meeting:frame',
@@ -110,6 +114,7 @@ export const IPC = {
   repassProgress: 'meeting:repassProgress',
   meetingOffer: 'meeting:offered',
   meetingJobs: 'meeting:jobsChanged',
+  botStatus: 'bot:statusChanged',
   // One step of a job stored its result, partway through the job.
   meetingUpdated: 'meeting:updated',
 } as const
@@ -388,6 +393,36 @@ export interface MeetingSegment {
   echo: boolean
 }
 
+/**
+ * Where the meeting bot's Chrome profile stands.
+ *
+ * `checking` and `signing-in` are what is happening now; the rest are what the
+ * last check found. See docs/design/07-meeting-bot.md §3.4.
+ */
+export type BotAccountState =
+  | 'unknown'
+  | 'checking'
+  | 'signing-in'
+  | 'signed-in'
+  | 'wrong-account'
+  | 'signed-out'
+  | 'no-chrome'
+  | 'profile-busy'
+  | 'failed'
+
+export interface BotStatusView {
+  state: BotAccountState
+  /** The account the profile is signed in to, when it could be read. */
+  email: string | null
+  /** The account settings say the bot should be. */
+  expected: string
+  chromeVersion: string | null
+  /** When the profile was last read. Null until it has been. */
+  checkedAt: number | null
+  /** What to do about it, in a sentence. Empty when nothing needs doing. */
+  message: string
+}
+
 export interface WouiceApi {
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Settings>): Promise<Settings>
@@ -443,6 +478,13 @@ export interface WouiceApi {
   getMeetingSegments(meetingId: number, versionId?: number): Promise<MeetingSegment[]>
   /** What is running on meetings and what is waiting. See `MeetingJobsView`. */
   getMeetingJobs(): Promise<MeetingJobsView>
+  /** Where the bot's Chrome profile stands. Does not launch anything. */
+  getBotStatus(): Promise<BotStatusView>
+  /** Open the profile without a window and read who it is signed in as. A few seconds. */
+  checkBot(): Promise<BotStatusView>
+  /** Open ordinary Chrome on the bot's profile to sign in by hand. Returns why not, or null. */
+  openBotSignIn(): Promise<string | null>
+  onBotStatus(cb: (status: BotStatusView) => void): () => void
   /**
    * Make another version the main one - for when the careful pass came out
    * worse than the first. Returns why it could not, or null.

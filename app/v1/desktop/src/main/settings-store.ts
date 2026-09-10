@@ -92,6 +92,7 @@ export class SettingsStore {
           ...DEFAULT_SETTINGS.meetings,
           ...raw.meetings,
           me: { ...DEFAULT_SETTINGS.meetings.me, ...raw.meetings?.me },
+          bot: { ...DEFAULT_SETTINGS.meetings.bot, ...raw.meetings?.bot },
         },
       }
     } catch {

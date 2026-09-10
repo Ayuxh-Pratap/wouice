@@ -32,6 +32,8 @@ import { analyseCalibration, applyCalibration, describeLanguages, frameLevels } 
 import { enableSystemAudioCapture } from './meeting/display-media.js'
 import { MeetingController } from './meeting/controller.js'
 import { MeetingJobs } from './meeting/jobs.js'
+import { BotIdentity } from './bot/identity.js'
+import { findChrome } from './bot/chrome.js'
 import { carryOver } from './meeting/versions.js'
 import { finishedSessions } from './meeting/merge.js'
 import { discardRecording } from './meeting/remove.js'
@@ -105,6 +107,18 @@ const meetings = new MeetingController(MEETING_ROOT, {
  */
 const jobs = new MeetingJobs()
 jobs.on('change', (view: unknown) => broadcast(IPC.meetingJobs, view))
+
+/**
+ * The meeting bot's identity: its own Chrome profile, signed in by hand once,
+ * and the check that says which account it holds. Nothing joins a meeting yet;
+ * that is stage B1. See docs/design/07-meeting-bot.md.
+ */
+const botIdentity = new BotIdentity({
+  profileDir: path.join(app.getPath('userData'), 'bot', 'chrome-profile'),
+  expected: () => settings.get().meetings.bot.email,
+  chromePath: () => findChrome(),
+})
+botIdentity.on('status', (view: unknown) => broadcast(IPC.botStatus, view))
 
 /**
  * Notes and tasks, after the meeting.
@@ -1144,6 +1158,9 @@ function registerIpc(): void {
     recordings.remove(file)
   })
   ipcMain.handle(IPC.clearRecordings, () => recordings.clear())
+  ipcMain.handle(IPC.getBotStatus, () => botIdentity.view())
+  ipcMain.handle(IPC.checkBot, () => botIdentity.check())
+  ipcMain.handle(IPC.openBotSignIn, () => botIdentity.openSignIn())
   ipcMain.handle(IPC.startMeeting, () => meetings.start())
   ipcMain.handle(IPC.stopMeeting, () => {
     // Asks; the merge runs once the window says its streams are shut, or after
@@ -1509,6 +1526,7 @@ if (!app.requestSingleInstanceLock()) {
     destroyTray()
     // Sidecars are children, but killing them explicitly avoids orphaned
     // processes holding the GPU if Electron exits uncleanly.
+    botIdentity.dispose()
     await supervisor.stopAll()
     store.close()
   })

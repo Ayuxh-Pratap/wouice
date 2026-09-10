@@ -150,6 +150,14 @@ export interface MeetingConfig {
    * Both empty or 'other' simply means no filter is applied.
    */
   me: { name: string; area: TaskArea }
+  /**
+   * The meeting bot's own Google account.
+   *
+   * Never yours: an account that is also in the meeting as a person confuses
+   * Meet. What the bot's Chrome profile is actually signed in to is checked
+   * against this. See docs/design/07-meeting-bot.md.
+   */
+  bot: { email: string }
 }
 
 /**
@@ -264,6 +272,7 @@ export const DEFAULT_MEETINGS: MeetingConfig = {
   autoDetect: true,
   defaultKind: DEFAULT_MEETING_KIND,
   me: { name: '', area: 'frontend' },
+  bot: { email: '' },
 }
 
 export const DEFAULT_SETTINGS: Settings = {

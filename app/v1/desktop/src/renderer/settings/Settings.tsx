@@ -11,6 +11,7 @@ import {
 import { listInputs } from '../capture/mic.js'
 import { CHARACTER_LIST, posterStyle } from '../hud/sprite.js'
 import { PET_SIZE_LABELS, type PetSize } from '../../shared/pet.js'
+import { BotAccountSection } from './BotAccount.js'
 import { DictionaryEditor } from './DictionaryEditor.js'
 import { ConfirmButton, Choice, Row, Section, Toggle } from './Field.js'
 import { Tabs } from '../shell/Tabs.js'
@@ -455,6 +456,7 @@ export function SettingsPanel({
           />
         </Row>
       </Section>
+      <BotAccountSection settings={settings} save={save} />
       </div>}
 
       {tab === 'storage' && <div className="space-y-4">
