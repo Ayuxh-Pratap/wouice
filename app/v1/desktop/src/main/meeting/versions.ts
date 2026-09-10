@@ -107,6 +107,9 @@ export function carryOver(
       // the version holding its line is ever replaced.
       noteQuote: old.noteQuote ?? old.quote,
       reason: old.reason,
+      description: old.description,
+      evidence: old.evidence.map((e) => ({ segmentId: e.segmentId, quote: e.quote })),
+      status: old.status,
       state: old.state,
       carriedFrom: old.carriedFrom ?? sourceOf(old.versionId),
       atMs: old.quoteAtMs,
