@@ -524,7 +524,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
             <Empty
               text={
                 working
-                  ? 'Looking for commitments.'
+                  ? 'Looking for tasks.'
                   : notesMd === null && segments.length > 0
                     ? summaryFailed
                       ? `The summary and tasks could not be written: ${summaryFailed}.`
@@ -901,9 +901,9 @@ function describeNotes(progress: NotesProgressView): string {
     case 'condensing':
       return `Reading part${where}…`
     case 'extracting':
-      return `Finding commitments in part${where}…`
+      return `Finding the work in part${where}…`
     case 'checking':
-      return `Checking task${where}…`
+      return progress.chunks > 0 ? `Writing up task${where}…` : 'Grouping what was found…'
     default:
       return 'Writing the summary…'
   }
