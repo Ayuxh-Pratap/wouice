@@ -6,12 +6,20 @@ import {
   contextAround,
   isDuplicate,
   isMine,
-  looksLikeCommitment,
+  jobGroups,
+  keepEnds,
+  linesFor,
+  mergeOverlapping,
   parseNoteTasks,
-  parseTasks,
-  parseVerdict,
+  parsePlacement,
+  parseWorkItems,
+  parseWriteUp,
+  placeByWording,
+  placeInput,
+  placeItem,
   resolveOwner,
-  sentenceWith,
+  sameTitle,
+  type WorkItem,
   reduceInput,
   renderChunk,
   CHUNK_TOKEN_BUDGET,
@@ -99,96 +107,341 @@ describe('what the model sees', () => {
   })
 })
 
-describe('reading tasks back', () => {
+describe('reading work items back', () => {
+  // From a real engineering call.
   const lines = [
-    line(10, 'okay I will book the follow-up for next week'),
-    line(11, 'yes I will send Priya the SSO timeline on Monday'),
+    line(10, 'We still have not fixed the capitalization stuff in the carousel guys.'),
+    line(11, 'Yeah, we are doing it right now.'),
     line(12, 'his salary is 1500 and he is also doing his masters'),
   ]
 
-  const task = (over: Record<string, unknown>): string =>
-    JSON.stringify({ text: 'do it', owner: null, due: null, line: 11, quote: 'I will send Priya', ...over })
+  const item = (over: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      title: 'Fix capitalization in the carousel',
+      description: 'Raised on several calls. The team said it is being fixed now.',
+      type: 'bug',
+      area: 'frontend',
+      owner: null,
+      status: 'agreed',
+      lines: [10, 11],
+      quote: 'fixed the capitalization stuff in the carousel',
+      ...over,
+    })
 
-  it('takes a well-formed, quoted task', () => {
-    const raw = task({ text: 'send Priya the SSO timeline', owner: 'You', due: '2026-09-15' })
-    expect(parseTasks(raw, lines)).toEqual([
-      { text: 'send Priya the SSO timeline', owner: 'You', due: '2026-09-15', segmentId: 11 },
+  it('takes an item with its story and every line it cites', () => {
+    const { items, dropped } = parseWorkItems(item(), lines)
+    expect(dropped).toBe(0)
+    expect(items).toEqual([
+      {
+        title: 'Fix capitalization in the carousel',
+        story: 'Raised on several calls. The team said it is being fixed now.',
+        kind: 'bug',
+        area: 'frontend',
+        owner: null,
+        status: 'agreed',
+        evidence: [
+          { segmentId: 10, quote: 'fixed the capitalization stuff in the carousel' },
+          { segmentId: 11, quote: '' },
+        ],
+        atMs: 50_000,
+        source: 'transcript',
+      },
     ])
   })
 
-  it('drops a task whose quote is not in the line it cites', () => {
-    // The guard that matters. A model handed a chat about salaries will cite a
-    // real line and report "assume salary of fifteen hundred rupees" as a task;
-    // it cannot quote a commitment out of a sentence that contains none.
-    const raw = task({
-      text: 'assume salary of fifteen hundred rupees',
-      line: 12,
-      quote: 'I will assume the salary',
+  it('drops an item whose quote is in no line it was shown', () => {
+    // A model that cannot copy words about a piece of work out of the
+    // transcript is describing work nobody discussed.
+    const raw = item({ title: 'Assume a salary of 1500 rupees', lines: [12], quote: 'we will assume the salary' })
+    expect(parseWorkItems(raw, lines)).toEqual({ items: [], dropped: 1 })
+  })
+
+  it('cites the line its quote is in, even if the model forgot to list it', () => {
+    const { items } = parseWorkItems(item({ lines: [11] }), lines)
+    expect(items[0]!.evidence.map((e) => e.segmentId)).toEqual([10, 11])
+  })
+
+  it('drops cited lines it was never shown', () => {
+    const { items } = parseWorkItems(item({ lines: [10, 99] }), lines)
+    expect(items[0]!.evidence.map((e) => e.segmentId)).toEqual([10])
+  })
+
+  it('drops an item that does not say what', () => {
+    // "Fix it" is not something anybody can pick up.
+    expect(parseWorkItems(item({ title: 'Fix it' }), lines)).toEqual({ items: [], dropped: 1 })
+  })
+
+  it('reads objects fenced, pretty-printed and wrapped in prose', () => {
+    const pretty = JSON.stringify(JSON.parse(item()), null, 2)
+    const raw = ['Here is the work:', '```json', pretty, '```', 'That is all.'].join('\n')
+    expect(parseWorkItems(raw, lines).items).toHaveLength(1)
+  })
+
+  it('never invents a type, an area or an owner', () => {
+    const { items } = parseWorkItems(item({ type: 'epic', area: 'galaxy', owner: 'null', status: 'maybe' }), lines)
+    expect(items[0]).toMatchObject({ kind: 'other', area: 'other', owner: null, status: 'proposed' })
+  })
+
+  it('understands the words models use for types and areas', () => {
+    const { items } = parseWorkItems(item({ type: 'enhancement', area: 'UI' }), lines)
+    expect(items[0]).toMatchObject({ kind: 'feature', area: 'frontend' })
+  })
+
+  it('lists the same work once, with all of its lines', () => {
+    const raw = [item({ lines: [10] }), item({ lines: [11], quote: 'we are doing it right now' })].join('\n')
+    const { items } = parseWorkItems(raw, lines)
+    expect(items).toHaveLength(1)
+    expect(items[0]!.evidence.map((e) => e.segmentId)).toEqual([10, 11])
+  })
+
+  it('finds a quote spread over two lines, and cites both', () => {
+    // The transcript is cut at pauses, not at the ends of sentences.
+    const split = [
+      line(20, 'no i mean finchy maybe we can oh we gotta change the name of the of'),
+      line(21, 'Finchy sounds transmissible.'),
+    ]
+    const raw = item({
+      title: 'Rename the chatbot from Finchy',
+      lines: [20],
+      quote: 'change the name of the of Finchy sounds transmissible',
     })
-    expect(parseTasks(raw, lines)).toEqual([])
+    expect(parseWorkItems(raw, split).items[0]!.evidence.map((e) => e.segmentId)).toEqual([20, 21])
   })
 
-  it('drops a task with no quote at all', () => {
-    expect(parseTasks(task({ quote: undefined }), lines)).toEqual([])
-    expect(parseTasks(task({ quote: '' }), lines)).toEqual([])
+  it('accepts a reordered quote beside the line it cited', () => {
+    const naming = [line(30, 'Fincha, yes. Finally, you came right back around. Yeah, I like Fincha. Fincha.')]
+    const raw = item({
+      title: 'Call the chatbot Fincha',
+      lines: [30],
+      quote: 'I like Fincha. Finally, you came right back around',
+    })
+    expect(parseWorkItems(raw, naming).items).toHaveLength(1)
   })
 
-  it('refuses a quote too short to prove anything', () => {
-    // Two words appear in half the transcript. A citation has to be specific
-    // enough that it could have been wrong.
-    expect(parseTasks(task({ quote: 'I will' }), lines)).toEqual([])
+  it('does not accept a reordered quote from lines it never cited', () => {
+    const naming = [line(30, 'Fincha, yes. Finally, you came right back around. Yeah, I like Fincha. Fincha.')]
+    const raw = item({
+      title: 'Call the chatbot Fincha',
+      lines: [],
+      quote: 'I like Fincha. Finally, you came right back around',
+    })
+    expect(parseWorkItems(raw, naming)).toEqual({ items: [], dropped: 1 })
   })
 
-  it('ignores punctuation and case when checking the quote', () => {
-    const raw = task({ quote: 'i will send priya,' })
-    expect(parseTasks(raw, lines)).toHaveLength(1)
+  it('keeps only cited lines beside the quote or about the same work', () => {
+    const stretch = [
+      line(40, 'We still have not fixed the capitalization stuff in the carousel guys.'),
+      line(41, 'Swap, can you hear me? Am I audible?'),
+      line(42, 'my laptop is about to die'),
+      line(43, 'okay okay okay'),
+      line(44, 'anyway, how does the showcase work'),
+      line(45, 'third, the carousel capitalization is driving me crazy'),
+    ]
+    const raw = item({ lines: [40, 41, 42, 43, 44, 45] })
+    expect(parseWorkItems(raw, stretch).items[0]!.evidence.map((e) => e.segmentId)).toEqual([
+      40, 41, 42, 45,
+    ])
   })
 
-  it('drops a task citing a line that was never shown', () => {
-    expect(parseTasks(task({ line: 99 }), lines)).toEqual([])
+  it('reads parked work as parked', () => {
+    expect(parseWorkItems(item({ status: 'parked' }), lines).items[0]!.status).toBe('parked')
   })
 
-  it('drops a task with no citation at all', () => {
-    expect(parseTasks(task({ line: undefined }), lines)).toEqual([])
+  it('returns nothing for nothing', () => {
+    expect(parseWorkItems('', lines)).toEqual({ items: [], dropped: 0 })
+    expect(parseWorkItems('No work came out of this part.', lines)).toEqual({ items: [], dropped: 0 })
+  })
+})
+
+describe('sorting work items into jobs, one at a time', () => {
+  const found = (title: string, status: WorkItem['status'], atMs: number | null, story = ''): WorkItem => ({
+    title,
+    story,
+    kind: 'change',
+    area: 'frontend',
+    owner: null,
+    status,
+    evidence: [],
+    atMs,
+    source: atMs === null ? 'notes' : 'transcript',
+  })
+  const items = [
+    found('Rename the chatbot from Finchy', 'proposed', 218_000),
+    found('Clip answers into the FAQ page', 'agreed', 843_000, 'Instead of a history tab, answers are clipped into the FAQ.'),
+    found('Rename the chatbot to Finch Bot', 'agreed', 2_647_000),
+  ]
+  const jobs = (...members: number[][]) => members.map((m) => ({ members: m, replaced: false }))
+
+  it('shows the jobs so far, one short line each, then the item to place', () => {
+    const { text, shown } = placeInput(jobs([0], [1]), items, 2)
+    expect(shown).toEqual([0, 1])
+    expect(text.split('\n')).toEqual([
+      'Jobs so far:',
+      'g1 [3:38] Rename the chatbot from Finchy',
+      'g2 [14:03] Clip answers into the FAQ page - Instead of a history tab, answers are clipped into the FAQ.',
+      '',
+      'New item:',
+      '[44:07] Rename the chatbot to Finch Bot',
+    ])
   })
 
-  it('survives a fence and prose around the JSON', () => {
-    const raw = [
-      'Here are the tasks:',
-      '```json',
-      task({ text: 'book the follow-up', line: 10, quote: 'I will book the follow-up' }),
-      '```',
-      'Let me know if you need more.',
-    ].join('\n')
-    expect(parseTasks(raw, lines).map((t) => t.text)).toEqual(['book the follow-up'])
+  it('shows only the closest jobs when there are too many', () => {
+    expect(placeInput(jobs([0], [1]), items, 2, 1).shown).toEqual([0])
   })
 
-  it('never guesses an owner or a date', () => {
-    const raw = task({ owner: 'null', due: 'next Friday' })
-    const [only] = parseTasks(raw, lines)
-    expect(only!.owner).toBeNull()
-    expect(only!.due).toBeNull()
+  it('reads a placement back', () => {
+    expect(parsePlacement('{"job":2,"relation":"same"}', 2)).toEqual({ job: 1, relation: 'same' })
+    expect(parsePlacement('{"job":"g1","relation":"replaces"}', 2)).toEqual({ job: 0, relation: 'replaces' })
+    expect(parsePlacement('{"job":null,"relation":"new"}', 2)).toEqual({ job: null, relation: 'new' })
   })
 
-  it('drops empty and absurdly long text', () => {
-    expect(parseTasks(task({ text: '   ' }), lines)).toEqual([])
-    expect(parseTasks(task({ text: 'x'.repeat(500) }), lines)).toEqual([])
+  it('makes a job it was not shown a new one, and an unreadable answer nothing', () => {
+    expect(parsePlacement('{"job":7,"relation":"same"}', 2)).toEqual({ job: null, relation: 'new' })
+    expect(parsePlacement('the model rambled', 2)).toBeNull()
   })
 
-  it('does not emit the same commitment twice', () => {
-    const raw = [task({ text: 'send the deck' }), task({ text: 'Send the deck' })].join('\n')
-    expect(parseTasks(raw, lines)).toHaveLength(1)
+  it('adds the same work to its job, and starts a new one otherwise', () => {
+    expect(placeItem(jobs([0], [1]), items, 2, 0, 'same').map((j) => j.members)).toEqual([[0, 2], [1]])
+    expect(placeItem(jobs([0], [1]), items, 2, null, 'new').map((j) => j.members)).toEqual([[0], [1], [2]])
   })
 
-  it('keeps two different commitments from one line', () => {
-    const raw = [task({ text: 'send the deck' }), task({ text: 'book the room' })].join('\n')
-    expect(parseTasks(raw, lines)).toHaveLength(2)
+  it('drops the job a later decision replaces', () => {
+    expect(jobGroups(placeItem(jobs([0], [1]), items, 2, 0, 'replaces'), items)).toEqual([
+      { members: [0], status: 'rejected' },
+      { members: [1], status: 'agreed' },
+      { members: [2], status: 'agreed' },
+    ])
   })
 
-  it('returns nothing for nothing, which is the usual answer', () => {
-    // Most conversations contain no commitments at all.
-    expect(parseTasks('', lines)).toEqual([])
-    expect(parseTasks('No commitments were made.', lines)).toEqual([])
+  it('keeps agreed work, joining the item said to replace it', () => {
+    // "Finch Bot, done" was agreed; a later name tried is the rename changing.
+    expect(placeItem(jobs([2], [1]), items, 0, 0, 'replaces').map((j) => j.members)).toEqual([[2, 0], [1]])
+  })
+
+  it('leaves alone a job about something else that it was said to replace', () => {
+    const placed = placeItem(jobs([0], [1]), items, 2, 1, 'replaces')
+    expect(jobGroups(placed, items).map((g) => g.status)).toEqual(['proposed', 'agreed', 'agreed'])
+  })
+
+  it('takes the last word on a job as where it landed', () => {
+    expect(jobGroups(jobs([0, 2], [1]), items)[0]!.status).toBe('agreed')
+  })
+
+  it('can place by wording alone when the model cannot be asked', () => {
+    expect(placeByWording(jobs([0], [1]), items, 2)).toBe(0)
+    expect(placeByWording(jobs([1]), items, 0)).toBeNull()
+  })
+})
+
+describe('work found in the same lines', () => {
+  const at = (
+    title: string,
+    status: WorkItem['status'],
+    ids: number[],
+    atMs = ids[0]! * 5_000
+  ): WorkItem => ({
+    title,
+    story: '',
+    kind: 'feature',
+    area: 'frontend',
+    owner: null,
+    status,
+    evidence: ids.map((segmentId) => ({ segmentId, quote: '' })),
+    atMs,
+    source: 'transcript',
+  })
+  const apart = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({ members: [i], status: 'agreed' as const }))
+
+  it('merges a feature with its plumbing when one sits inside the other', () => {
+    const items = [
+      at('Add follow-up question chips under each reply', 'agreed', [70, 72, 76, 77, 78]),
+      at('Add a backend call that pulls questions out of replies', 'agreed', [76, 77, 78]),
+    ]
+    expect(mergeOverlapping(apart(2), items)).toEqual([{ members: [0, 1], status: 'agreed' }])
+  })
+
+  it('keeps work apart that only shares a line or two', () => {
+    const items = [
+      at('Let the bot change settings that do not touch money', 'agreed', [40, 41, 42, 45]),
+      at('Let the bot read back past bets and results', 'agreed', [42, 43, 44, 45]),
+    ]
+    expect(mergeOverlapping(apart(2), items)).toHaveLength(2)
+  })
+
+  it('never merges on one line', () => {
+    const items = [at('Fix carousel capitalization', 'agreed', [10]), at('Add a glossary', 'agreed', [10, 11])]
+    expect(mergeOverlapping(apart(2), items)).toHaveLength(2)
+  })
+
+  it('takes the later word on what it merges', () => {
+    const items = [
+      at('Let the bot make playlists', 'proposed', [50, 51, 52]),
+      at('Have the bot build playlists', 'parked', [50, 51, 52, 53], 290_000),
+    ]
+    const groups = [
+      { members: [0], status: 'proposed' as const },
+      { members: [1], status: 'parked' as const },
+    ]
+    expect(mergeOverlapping(groups, items)).toEqual([{ members: [0, 1], status: 'parked' }])
+  })
+})
+
+describe('reading a write-up', () => {
+  it('reads the task with its story', () => {
+    const raw =
+      '{"title":"Add follow-up question chips under each bot reply","description":"After each answer, a backend call pulls follow-up questions out of the reply and shows them as chips.","type":"feature","area":"frontend","owner":null}'
+    expect(parseWriteUp(raw)).toEqual({
+      title: 'Add follow-up question chips under each bot reply',
+      description:
+        'After each answer, a backend call pulls follow-up questions out of the reply and shows them as chips.',
+      kind: 'feature',
+      area: 'frontend',
+      owner: null,
+      status: null,
+    })
+  })
+
+  it('reads where the lines left it', () => {
+    expect(parseWriteUp('{"title":"Gate artist data behind tiers","status":"Parked"}')?.status).toBe('parked')
+  })
+
+  it('reads a pretty-printed answer inside prose', () => {
+    const raw = 'Sure:\n{\n  "title": "Make the tutorial videos",\n  "description": "x",\n  "type": "content"\n}'
+    expect(parseWriteUp(raw)?.kind).toBe('content')
+  })
+
+  it('refuses one that does not say what', () => {
+    expect(parseWriteUp('{"title":"Do it"}')).toBeNull()
+    expect(parseWriteUp('I could not write this up.')).toBeNull()
+  })
+})
+
+describe('the lines a write-up reads', () => {
+  const lines = [1, 2, 3, 4, 5, 6, 7, 8].map((id) => line(id, `line ${id}`))
+
+  it('gives each cited line and the answer after it, in order', () => {
+    expect(linesFor(lines, [5, 2]).map((l) => l.id)).toEqual([2, 3, 5, 6])
+  })
+
+  it('stops at the end, and at the cap', () => {
+    expect(linesFor(lines, [8]).map((l) => l.id)).toEqual([8])
+    expect(linesFor(lines, [1, 3, 5, 7], 3).map((l) => l.id)).toEqual([1, 2, 3])
+  })
+
+  it('keeps the latest lines too when over the cap, where the last word is', () => {
+    expect(linesFor(lines, [1, 3, 5, 7], 6).map((l) => l.id)).toEqual([1, 2, 3, 4, 7, 8])
+  })
+})
+
+describe('keeping the ends of a list', () => {
+  it('keeps everything under the cap', () => {
+    expect(keepEnds([1, 2, 3], 5)).toEqual([1, 2, 3])
+  })
+
+  it('keeps the first few and the latest over it', () => {
+    expect(keepEnds([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 6)).toEqual([1, 2, 3, 4, 9, 10])
+    expect(keepEnds([1, 2, 3, 4, 5], 2)).toEqual([1, 2])
   })
 })
 
@@ -261,49 +514,7 @@ describe('chunking against real token counts', () => {
   })
 })
 
-describe('the commitment filter', () => {
-  it('drops a refusal', () => {
-    // A real meeting reported "go to the largest platforms" as a task, from a
-    // line that ended "I'm not doing it".
-    expect(looksLikeCommitment("This image issue, go to the largest platforms, I'm not doing it")).toBe(false)
-    expect(looksLikeCommitment('no need to change the pricing page')).toBe(false)
-    expect(looksLikeCommitment("let's not ship the banner this week")).toBe(false)
-  })
-
-  it('drops a first-person maybe', () => {
-    expect(looksLikeCommitment('Or maybe I need to handle it')).toBe(false)
-    expect(looksLikeCommitment('should we move the button to the header')).toBe(false)
-  })
-
-  it('keeps a bug report, negatives and all', () => {
-    // The whole reason this is not a "contains not" check.
-    expect(looksLikeCommitment('the sign in dialog is not closing after Google sign-in')).toBe(true)
-    expect(looksLikeCommitment("images don't load on the profile page, I'll fix it")).toBe(true)
-  })
-
-  it('keeps a request phrased as a question', () => {
-    // An assignment, not a musing. The verifier decides questions.
-    expect(looksLikeCommitment('Ayush, can you fix the login bug?')).toBe(true)
-  })
-
-  it('keeps a plain commitment', () => {
-    expect(looksLikeCommitment('I will send the SSO timeline on Monday')).toBe(true)
-  })
-})
-
-describe('the sentence a quote came from', () => {
-  it('judges the commitment, not its neighbour', () => {
-    const text = "We'll fix the login bug today. I'm not doing the Instagram thing."
-    expect(sentenceWith(text, 'fix the login bug')).toBe("We'll fix the login bug today.")
-    expect(sentenceWith(text, 'the Instagram thing')).toBe("I'm not doing the Instagram thing.")
-  })
-
-  it('falls back to the whole line when the quote spans sentences', () => {
-    expect(sentenceWith('one. two.', 'nothing like it')).toBe('one. two.')
-  })
-})
-
-describe('what the verifier reads', () => {
+describe('a line and what was said around it', () => {
   const lines = [1, 2, 3, 4, 5, 6, 7].map((id) => line(id, `line ${id}`))
 
   it('marks the cited line and shows two either side', () => {
@@ -321,42 +532,6 @@ describe('what the verifier reads', () => {
   })
 })
 
-describe("reading the verifier's answer", () => {
-  it('reads a yes with its classification', () => {
-    const v = parseVerdict(
-      '{"task": true, "reason": "Ayush agreed to fix it", "area": "frontend", "kind": "bug", "owner": "Ayush"}'
-    )
-    expect(v).toEqual({
-      task: true,
-      reason: 'Ayush agreed to fix it',
-      area: 'frontend',
-      kind: 'bug',
-      owner: 'Ayush',
-    })
-  })
-
-  it('reads a no', () => {
-    expect(parseVerdict('{"task": false, "reason": "a refusal"}')?.task).toBe(false)
-  })
-
-  it('finds the object inside prose', () => {
-    const v = parseVerdict('Sure. Here is my answer:\n{"task": true, "reason": "x", "area": "backend", "kind": "chore", "owner": null}\nThanks')
-    expect(v?.area).toBe('backend')
-  })
-
-  it('treats an unreadable answer as no answer', () => {
-    // Unreadable is null, and the caller counts null as not a task.
-    expect(parseVerdict('yes it is a task')).toBeNull()
-    expect(parseVerdict('{"task": "yes"}')).toBeNull()
-  })
-
-  it('never invents an area or a kind', () => {
-    const v = parseVerdict('{"task": true, "reason": "", "area": "mobile", "kind": "epic", "owner": "null"}')
-    expect(v?.area).toBe('other')
-    expect(v?.kind).toBe('other')
-    expect(v?.owner).toBeNull()
-  })
-})
 
 describe('whose task it is', () => {
   it('counts the person who recorded the meeting', () => {
@@ -434,6 +609,18 @@ describe('who a task belongs to', () => {
   it('is nobody when nothing was given', () => {
     expect(resolveOwner(null, 'me', 'anything')).toBeNull()
     expect(resolveOwner('   ', 'me', 'anything')).toBeNull()
+  })
+})
+
+describe('the same task written up twice', () => {
+  it('knows two titles for one job, however far apart', () => {
+    expect(sameTitle('Rename bot to Finch Bot', 'Rename chatbot to Finch Bot')).toBe(true)
+  })
+
+  it('keeps apart titles that only share a subject', () => {
+    expect(sameTitle('Replace the tutorial section with a video library', 'Make the tutorial videos')).toBe(
+      false
+    )
   })
 })
 
