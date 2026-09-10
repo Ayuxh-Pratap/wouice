@@ -60,6 +60,9 @@ export class EnglishUnavailable extends Error {}
 const STALL_MS = 20_000
 
 export class MeetingEnglishEngine {
+  /** Why the last call failed, so "could not render any of it" can say why. */
+  private lastFailure: string | null = null
+
   constructor(private readonly llm: () => LlmClient) {}
 
   async render(input: EnglishInput): Promise<EnglishRun> {
@@ -71,6 +74,7 @@ export class MeetingEnglishEngine {
 
     const rendered: Rendered[] = []
     let failedBatches = 0
+    this.lastFailure = null
 
     for (const [index, batch] of batches.entries()) {
       input.signal?.throwIfAborted()
@@ -97,7 +101,10 @@ export class MeetingEnglishEngine {
     }
 
     if (rendered.length === 0) {
-      throw new EnglishUnavailable('the model could not render any of this transcript')
+      throw new EnglishUnavailable(
+        'the model could not render any of this transcript' +
+          (this.lastFailure ? ` (${this.lastFailure})` : '')
+      )
     }
 
     return {
@@ -129,7 +136,8 @@ export class MeetingEnglishEngine {
       return result.text
     } catch (err) {
       if (signal?.aborted) throw err
-      console.warn('[meeting] english pass failed:', err instanceof Error ? err.message : err)
+      this.lastFailure = err instanceof Error ? err.message : String(err)
+      console.warn('[meeting] english pass failed:', this.lastFailure)
       return null
     }
   }
