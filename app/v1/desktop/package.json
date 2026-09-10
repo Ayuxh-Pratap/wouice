@@ -15,7 +15,8 @@
     "@wouice/dictionary": "*",
     "@wouice/llm": "*",
     "@wouice/store": "*",
-    "koffi": "^3.2.1"
+    "koffi": "^3.2.1",
+    "playwright-core": "^1.63.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

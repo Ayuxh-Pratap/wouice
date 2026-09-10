@@ -7,6 +7,7 @@ import { describeJob, jobColour, useMeetingJobs } from '../meetings/jobs.js'
 import { isImproved, mainVersion } from '../meetings/versions.js'
 import { hashForMeeting } from '../shell/routes.js'
 import { Transcript } from '../meetings/Transcript.js'
+import { BotPanel } from '../meetings/BotPanel.js'
 
 /**
  * Meetings: the overview.
@@ -161,6 +162,8 @@ export function MeetingsPage(): React.JSX.Element {
           </select>
         </div>
       </section>
+
+      <BotPanel />
 
       <section>
         <div className="mb-2 flex items-center gap-3 px-0.5">

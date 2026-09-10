@@ -34,6 +34,8 @@ import { MeetingController } from './meeting/controller.js'
 import { MeetingJobs } from './meeting/jobs.js'
 import { BotIdentity } from './bot/identity.js'
 import { findChrome } from './bot/chrome.js'
+import { launchBotBrowser } from './bot/browser.js'
+import { MeetingBot } from './bot/runner.js'
 import { carryOver } from './meeting/versions.js'
 import { finishedSessions } from './meeting/merge.js'
 import { discardRecording } from './meeting/remove.js'
@@ -108,17 +110,42 @@ const meetings = new MeetingController(MEETING_ROOT, {
 const jobs = new MeetingJobs()
 jobs.on('change', (view: unknown) => broadcast(IPC.meetingJobs, view))
 
+/** The bot's own Chrome profile: signed in by hand once, used by every run. */
+const BOT_PROFILE = path.join(app.getPath('userData'), 'bot', 'chrome-profile')
+
 /**
  * The meeting bot's identity: its own Chrome profile, signed in by hand once,
  * and the check that says which account it holds. Nothing joins a meeting yet;
  * that is stage B1. See docs/design/07-meeting-bot.md.
  */
 const botIdentity = new BotIdentity({
-  profileDir: path.join(app.getPath('userData'), 'bot', 'chrome-profile'),
+  profileDir: BOT_PROFILE,
   expected: () => settings.get().meetings.bot.email,
   chromePath: () => findChrome(),
 })
 botIdentity.on('status', (view: unknown) => broadcast(IPC.botStatus, view))
+
+/**
+ * The meeting bot: joins a Meet link in the bot's Chrome, waits to be let in,
+ * and leaves by itself, saying why. Stage B1 - it keeps nothing yet.
+ */
+const meetingBot = new MeetingBot({
+  runsDir: path.join(app.getPath('userData'), 'bot', 'runs'),
+  launch: () => {
+    const chromePath = findChrome()
+    if (!chromePath) return Promise.reject(new Error('Chrome is not installed'))
+    return launchBotBrowser({ chromePath, profileDir: BOT_PROFILE })
+  },
+  // Before every run. A bot that finds out on Meet's own page that it is
+  // signed out has already become an anonymous guest in the risky queue.
+  ensureSignedIn: async () => {
+    const status = await botIdentity.check()
+    const right = !status.expected || status.email === status.expected
+    if (status.state === 'signed-in' && status.email && right) return null
+    return status.message || "The bot's Chrome profile is not signed in."
+  },
+})
+meetingBot.on('run', (view: unknown) => broadcast(IPC.botRun, view))
 
 /**
  * Notes and tasks, after the meeting.
@@ -1161,6 +1188,14 @@ function registerIpc(): void {
   ipcMain.handle(IPC.getBotStatus, () => botIdentity.view())
   ipcMain.handle(IPC.checkBot, () => botIdentity.check())
   ipcMain.handle(IPC.openBotSignIn, () => botIdentity.openSignIn())
+  ipcMain.handle(IPC.sendBot, (_e, url: unknown) => meetingBot.send(typeof url === 'string' ? url : ''))
+  ipcMain.handle(IPC.leaveBot, () => meetingBot.leave())
+  ipcMain.handle(IPC.getBotRun, () => meetingBot.view())
+  // No path from the window: only ever the folder of the bot's own last run.
+  ipcMain.on(IPC.revealBotRun, () => {
+    const dir = meetingBot.view()?.dir
+    if (dir) void shell.openPath(dir)
+  })
   ipcMain.handle(IPC.startMeeting, () => meetings.start())
   ipcMain.handle(IPC.stopMeeting, () => {
     // Asks; the merge runs once the window says its streams are shut, or after
@@ -1526,6 +1561,7 @@ if (!app.requestSingleInstanceLock()) {
     destroyTray()
     // Sidecars are children, but killing them explicitly avoids orphaned
     // processes holding the GPU if Electron exits uncleanly.
+    await meetingBot.dispose()
     botIdentity.dispose()
     await supervisor.stopAll()
     store.close()

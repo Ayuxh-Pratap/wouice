@@ -81,6 +81,10 @@ export const IPC = {
   getBotStatus: 'bot:status',
   checkBot: 'bot:check',
   openBotSignIn: 'bot:signIn',
+  sendBot: 'bot:send',
+  leaveBot: 'bot:leave',
+  getBotRun: 'bot:run',
+  revealBotRun: 'bot:revealRun',
   setMeetingKind: 'meeting:setKind',
   getMeeting: 'meeting:one',
   meetingFrame: 'meeting:frame',
@@ -115,6 +119,7 @@ export const IPC = {
   meetingOffer: 'meeting:offered',
   meetingJobs: 'meeting:jobsChanged',
   botStatus: 'bot:statusChanged',
+  botRun: 'bot:runChanged',
   // One step of a job stored its result, partway through the job.
   meetingUpdated: 'meeting:updated',
 } as const
@@ -423,6 +428,60 @@ export interface BotStatusView {
   message: string
 }
 
+/**
+ * Where a run of the meeting bot stands. `ended` and `failed` are final, and
+ * `reason` says why. See docs/design/07-meeting-bot.md §2.4.
+ */
+export type BotRunState =
+  | 'checking'
+  | 'launching'
+  | 'joining'
+  | 'waiting-room'
+  | 'waiting-for-host'
+  | 'in-meeting'
+  | 'leaving'
+  | 'ended'
+  | 'failed'
+
+export type BotRunReason =
+  // Could not join.
+  | 'login-required'
+  | 'not-found'
+  | 'blocked'
+  | 'denied'
+  | 'waiting-room-timeout'
+  | 'host-never-came'
+  | 'could-not-connect'
+  | 'ui-not-found'
+  // Broke.
+  | 'browser-died'
+  | 'lost-meeting'
+  // Left.
+  | 'asked'
+  | 'alone'
+  | 'removed'
+  | 'meeting-ended'
+  | 'max-duration'
+
+export interface BotRunView {
+  /** The run's folder name: when it started. */
+  id: string
+  url: string
+  state: BotRunState
+  reason: BotRunReason | null
+  /** What happened, in a sentence, once the run is over. */
+  message: string
+  startedAt: number
+  /** When the current state began. */
+  since: number
+  /** Which attempt, 1 to 3. */
+  attempt: number
+  /** Where the run's log, screenshots and page snapshots are kept. */
+  dir: string
+  /** Other people in the call, read from the page. Approximate until stage B2. */
+  participants: number
+}
+
 export interface WouiceApi {
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Settings>): Promise<Settings>
@@ -485,6 +544,15 @@ export interface WouiceApi {
   /** Open ordinary Chrome on the bot's profile to sign in by hand. Returns why not, or null. */
   openBotSignIn(): Promise<string | null>
   onBotStatus(cb: (status: BotStatusView) => void): () => void
+  /** Send the bot to a Meet link. Returns why it cannot go, or null. */
+  sendBot(url: string): Promise<string | null>
+  /** Ask the bot to leave the meeting it is in or on its way to. */
+  leaveBot(): Promise<void>
+  /** The current or most recent run, or null if there has not been one. */
+  getBotRun(): Promise<BotRunView | null>
+  onBotRun(cb: (run: BotRunView) => void): () => void
+  /** Open the most recent run's folder: its log, screenshots and page snapshots. */
+  revealBotRun(): void
   /**
    * Make another version the main one - for when the careful pass came out
    * worse than the first. Returns why it could not, or null.
