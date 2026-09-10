@@ -323,6 +323,58 @@ describe('tasks', () => {
     expect(meetings.allTasks(id)).toHaveLength(2)
   })
 
+  it('keeps a task’s story and every line it came from, with when each was said', () => {
+    const id = meetings.start('/sessions/a', 1_000)
+    meetings.addSegments(id, [
+      said('them', 7_000, 'We still have not fixed the capitalization in the carousel'),
+      said('them', 9_000, 'Yeah, we are doing it right now'),
+    ])
+    const [first, second] = meetings.segments(id)
+    meetings.replaceTasks(mainOf(id), [
+      {
+        text: 'Fix capitalization in the carousel',
+        description: 'Raised on several calls; the team is fixing it now.',
+        owner: null,
+        due: null,
+        segmentId: first!.id,
+        evidence: [
+          { segmentId: first!.id, quote: 'fixed the capitalization' },
+          { segmentId: second!.id, quote: '' },
+        ],
+        status: 'agreed',
+        kind: 'bug',
+      },
+    ])
+
+    const [task] = meetings.tasksFor(id)
+    expect(task).toMatchObject({
+      description: 'Raised on several calls; the team is fixing it now.',
+      status: 'agreed',
+      kind: 'bug',
+    })
+    expect(task!.evidence).toEqual([
+      {
+        segmentId: first!.id,
+        quote: 'fixed the capitalization',
+        atMs: 7_000,
+        line: 'We still have not fixed the capitalization in the carousel',
+      },
+      { segmentId: second!.id, quote: '', atMs: 9_000, line: 'Yeah, we are doing it right now' },
+    ])
+  })
+
+  it('gives a task from before evidence existed its one line', () => {
+    const id = meetings.start('/sessions/a', 1_000)
+    meetings.addSegments(id, [said('me', 3_000, 'I will send the report')])
+    const segment = meetings.segments(id)[0]!
+    meetings.replaceTasks(mainOf(id), [
+      { text: 'send the report', owner: 'You', due: null, segmentId: segment.id },
+    ])
+    expect(meetings.tasksFor(id)[0]!.evidence).toEqual([
+      { segmentId: segment.id, quote: '', atMs: 3_000, line: 'I will send the report' },
+    ])
+  })
+
   it('lists what is still open on main versions, newest meeting first', () => {
     const older = meetings.start('/sessions/older', 1_000)
     const newer = meetings.start('/sessions/newer', 9_000)
