@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { TaskRecord, TaskState } from '@wouice/store'
 import { formatStamp } from './Transcript.js'
 import { versionLabel } from './versions.js'
@@ -5,10 +6,16 @@ import { versionLabel } from './versions.js'
 /**
  * Notes and tasks for one meeting.
  *
- * EVERY TASK SHOWS WHAT IT CAME FROM. The line it was extracted from sits
- * underneath it, with its timestamp. That is the difference between a list you
- * work from and a list you have to take on faith - and the first wrong task in
- * a list you cannot check teaches you to distrust all of them.
+ * A TASK IS A CARD YOU OPEN. The list shows what each task is, in one line, and
+ * just enough to sort by at a glance: its type, its area, whose it is, when it
+ * came up. The story, where the meeting landed on it and every line it came
+ * from are in the task itself, one click away. A list carrying all of that on
+ * every row is a list nobody can scan.
+ *
+ * EVERY TASK SHOWS WHAT IT CAME FROM. Open one and the lines of the transcript
+ * it was found in are there, with their times and the quoted words marked.
+ * That is the difference between a list you work from and a list you have to
+ * take on faith.
  *
  * DONE AND DROPPED ARE DIFFERENT. A task the model invented, or one that turned
  * out not to be yours, is not "done" - dropping it says so, and keeps the
@@ -30,6 +37,10 @@ export function Notes({
   onTaskState(id: number, state: TaskState): void
   readOnly?: boolean
 }): React.JSX.Element | null {
+  // By id, so the open task follows the list when a tick changes it.
+  const [openId, setOpenId] = useState<number | null>(null)
+  const open = tasks.find((task) => task.id === openId) ?? null
+
   if (!markdown && tasks.length === 0) return null
 
   return (
@@ -41,7 +52,13 @@ export function Notes({
           </h3>
           <ul className="space-y-1">
             {tasks.map((task) => (
-              <TaskRow key={task.id} task={task} onState={onTaskState} readOnly={readOnly} />
+              <TaskCard
+                key={task.id}
+                task={task}
+                readOnly={readOnly}
+                onState={onTaskState}
+                onOpen={() => setOpenId(task.id)}
+              />
             ))}
           </ul>
         </section>
@@ -55,92 +72,265 @@ export function Notes({
           <Markdown text={markdown} />
         </section>
       ) : null}
+
+      {open ? (
+        <TaskDialog
+          task={open}
+          readOnly={readOnly}
+          onState={onTaskState}
+          onClose={() => setOpenId(null)}
+        />
+      ) : null}
     </div>
   )
 }
 
-function TaskRow({
+/** When a task first came up in the meeting, if it came from the transcript. */
+function firstSaid(task: TaskRecord): number | null {
+  return task.evidence.find((e) => e.atMs !== null)?.atMs ?? task.quoteAtMs
+}
+
+function TaskCard({
   task,
-  onState,
   readOnly,
+  onState,
+  onOpen,
 }: {
   task: TaskRecord
-  onState(id: number, state: TaskState): void
   readOnly: boolean
+  onState(id: number, state: TaskState): void
+  onOpen(): void
 }): React.JSX.Element {
   const done = task.state === 'done'
   const dropped = task.state === 'dropped'
+  const at = firstSaid(task)
 
   return (
-    <li className="rounded-lg bg-black/20 px-3 py-2 ring-1 ring-white/[0.06]">
-      <div className="flex items-start gap-2.5">
-        <input
-          type="checkbox"
-          checked={done}
-          onChange={() => onState(task.id, done ? 'open' : 'done')}
-          disabled={dropped || readOnly}
-          className="mt-0.5 size-3.5 shrink-0 accent-emerald-500 disabled:opacity-30"
-        />
-        <div className="min-w-0 flex-1">
-          <p
+    <li className="flex items-center gap-2.5 rounded-lg bg-black/20 px-3 py-2 ring-1 ring-white/[0.06] transition hover:bg-white/[0.04] hover:ring-white/[0.12]">
+      <input
+        type="checkbox"
+        checked={done}
+        onChange={() => onState(task.id, done ? 'open' : 'done')}
+        disabled={dropped || readOnly}
+        aria-label={done ? 'Mark as not done' : 'Mark as done'}
+        className="size-3.5 shrink-0 accent-emerald-500 disabled:opacity-30"
+      />
+      <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left" title="Open this task">
+        <p
+          className={
+            'truncate text-[13px] leading-snug ' +
+            (dropped
+              ? 'text-neutral-600 line-through'
+              : done
+                ? 'text-neutral-500 line-through'
+                : 'text-neutral-200')
+          }
+        >
+          {task.text}
+        </p>
+        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10.5px]">
+          <TaskBadges task={task} />
+          <span className={task.owner ? 'text-neutral-400' : 'text-neutral-600'}>
+            {task.owner ?? 'unassigned'}
+          </span>
+          {at !== null ? <span className="text-neutral-600 tabular-nums">{formatStamp(at)}</span> : null}
+        </div>
+      </button>
+      <span aria-hidden className="shrink-0 text-[13px] text-neutral-600">
+        ›
+      </span>
+    </li>
+  )
+}
+
+/**
+ * Everything about one task: the story, where the meeting landed, whose it is,
+ * and every line it came from, with the quoted words marked.
+ */
+function TaskDialog({
+  task,
+  readOnly,
+  onState,
+  onClose,
+}: {
+  task: TaskRecord
+  readOnly: boolean
+  onState(id: number, state: TaskState): void
+  onClose(): void
+}): React.JSX.Element {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const done = task.state === 'done'
+  const dropped = task.state === 'dropped'
+  const at = firstSaid(task)
+  // A task carried from another version keeps its words as a note; those are
+  // its line, not something you typed.
+  const fromNotes = task.noteQuote && !task.carriedFrom ? task.noteQuote : null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-6"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-label={task.text}
+        onClick={(e) => e.stopPropagation()}
+        className="lift flex max-h-[85vh] w-full max-w-xl flex-col rounded-xl bg-neutral-900 ring-1 ring-white/[0.12]"
+      >
+        <header className="shrink-0 px-5 pt-4 pb-3">
+          <div className="flex flex-wrap items-center gap-1.5 text-[10.5px]">
+            <TaskBadges task={task} full />
+            {done ? <Badge tone="mine">done</Badge> : null}
+            {dropped ? <Badge tone="quiet">not a task</Badge> : null}
+          </div>
+          <h2
             className={
-              'text-[13px] leading-snug ' +
-              (dropped
-                ? 'text-neutral-600 line-through'
-                : done
-                  ? 'text-neutral-500 line-through'
-                  : 'text-neutral-200')
+              'mt-2 text-[15px] leading-snug font-medium ' +
+              (dropped ? 'text-neutral-500 line-through' : 'text-neutral-50')
             }
           >
             {task.text}
-          </p>
-          {/* Why it was judged a real commitment. A task list you cannot
-              question is one you stop trusting. */}
-          {task.reason ? (
-            <p className="mt-0.5 text-[11px] leading-snug text-neutral-600">{task.reason}</p>
-          ) : null}
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
-            {task.area !== 'other' ? <Badge>{task.area}</Badge> : null}
-            {task.kind !== 'other' ? (
-              <Badge tone={task.kind === 'bug' ? 'bug' : undefined}>{task.kind}</Badge>
+          </h2>
+          <dl className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[12px]">
+            <div>
+              <dt className="inline text-neutral-500">Owner </dt>
+              <dd className="inline text-neutral-200">{task.owner ?? 'not assigned'}</dd>
+            </div>
+            {task.due ? (
+              <div>
+                <dt className="inline text-neutral-500">Due </dt>
+                <dd className="inline text-amber-300/90">{task.due}</dd>
+              </div>
             ) : null}
-            {task.mine ? <Badge tone="mine">yours</Badge> : null}
-            {task.source === 'notes' ? <Badge>from your notes</Badge> : null}
-            {/* You had acted on it, and the newer transcript did not produce
-                it. Kept, and said, rather than silently dropped. */}
-            {task.carriedFrom ? (
-              <Badge tone="carried">from the {versionLabel(task.carriedFrom).toLowerCase()}</Badge>
+            {at !== null ? (
+              <div>
+                <dt className="inline text-neutral-500">Came up at </dt>
+                <dd className="inline text-neutral-200 tabular-nums">{formatStamp(at)}</dd>
+              </div>
             ) : null}
-            {task.owner ? (
-              <span className="text-neutral-400">{task.owner}</span>
-            ) : (
-              <span className="text-neutral-600">unassigned</span>
-            )}
-            {task.due ? <span className="text-amber-300/80">due {task.due}</span> : null}
-            {task.quote ? (
-              <span className="min-w-0 truncate text-neutral-600" title={task.quote}>
-                · {task.quoteAtMs !== null ? `${formatStamp(task.quoteAtMs)} ` : ''}“{task.quote}”
-              </span>
-            ) : (
-              <span className="text-red-400/70">· no line to trace this to</span>
-            )}
-          </div>
+          </dl>
+        </header>
+
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 pb-4">
+          <section>
+            <h3 className="mb-1 text-[11px] font-medium tracking-wide text-neutral-500 uppercase">
+              What and why
+            </h3>
+            <p className="text-[13px] leading-relaxed text-neutral-300">
+              {task.description || task.reason || 'No description was written for this task.'}
+            </p>
+          </section>
+
+          <section>
+            <h3 className="mb-1.5 text-[11px] font-medium tracking-wide text-neutral-500 uppercase">
+              Where it came from
+            </h3>
+            {task.evidence.length === 0 && !fromNotes ? (
+              <p className="text-[12px] text-red-400/70">There is no line to trace this to.</p>
+            ) : null}
+            <ol className="space-y-1.5">
+              {task.evidence.map((e) => (
+                <li key={e.segmentId} className="flex gap-2.5 text-[12.5px] leading-snug">
+                  <span className="w-10 shrink-0 pt-px text-right font-mono text-[11px] text-neutral-600 tabular-nums">
+                    {e.atMs !== null ? formatStamp(e.atMs) : ''}
+                  </span>
+                  <span className="min-w-0 text-neutral-300">
+                    {e.line ? (
+                      <Quoted line={e.line} quote={e.quote} />
+                    ) : (
+                      <span className="text-neutral-600">That line is no longer in this transcript.</span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ol>
+            {fromNotes ? (
+              <p className="mt-2 text-[12.5px] leading-snug text-neutral-400">
+                <span className="text-neutral-500">From your notes: </span>“{fromNotes}”
+              </p>
+            ) : null}
+          </section>
         </div>
-        {readOnly ? null : (
+
+        <footer className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-white/[0.06] px-5 py-3">
+          {readOnly ? (
+            <span className="mr-auto text-[11.5px] text-neutral-500">
+              Read-only: tasks are ticked on the version you work from.
+            </span>
+          ) : (
+            <>
+              <button
+                onClick={() => onState(task.id, dropped ? 'open' : 'dropped')}
+                title={
+                  dropped
+                    ? 'Put it back on the list.'
+                    : 'Not real work. Different from done, and kept visible.'
+                }
+                className="rounded-lg px-3 py-1.5 text-[12px] text-neutral-400 ring-1 ring-white/10 transition hover:bg-white/5 hover:text-neutral-200"
+              >
+                {dropped ? 'Restore' : 'Not a task'}
+              </button>
+              {!dropped ? (
+                <button
+                  onClick={() => onState(task.id, done ? 'open' : 'done')}
+                  className="rounded-lg bg-emerald-500/15 px-3 py-1.5 text-[12px] font-medium text-emerald-200 ring-1 ring-emerald-400/25 transition hover:bg-emerald-500/25"
+                >
+                  {done ? 'Reopen' : 'Mark done'}
+                </button>
+              ) : null}
+            </>
+          )}
           <button
-            onClick={() => onState(task.id, dropped ? 'open' : 'dropped')}
-            title={
-              dropped
-                ? 'Put it back on the list.'
-                : 'Not a real commitment. Different from done, and kept visible.'
-            }
-            className="shrink-0 rounded px-1.5 py-0.5 text-[10.5px] text-neutral-600 ring-1 ring-white/10 transition hover:bg-white/5 hover:text-neutral-300"
+            onClick={onClose}
+            className="rounded-lg bg-white/[0.09] px-3 py-1.5 text-[12px] font-medium text-neutral-100 ring-1 ring-white/20 transition hover:bg-white/[0.15]"
           >
-            {dropped ? 'Restore' : 'Not a task'}
+            Close
           </button>
-        )}
+        </footer>
       </div>
-    </li>
+    </div>
+  )
+}
+
+/** A line of the transcript, with the words the task quoted from it marked. */
+function Quoted({ line, quote }: { line: string; quote: string }): React.JSX.Element {
+  const at = quote ? line.toLowerCase().indexOf(quote.toLowerCase()) : -1
+  if (at < 0) return <>“{line}”</>
+  return (
+    <>
+      “{line.slice(0, at)}
+      <mark className="rounded-sm bg-amber-400/15 px-0.5 text-amber-100">
+        {line.slice(at, at + quote.length)}
+      </mark>
+      {line.slice(at + quote.length)}”
+    </>
+  )
+}
+
+/** What a task is, at a glance. The dialog also says where the meeting landed. */
+function TaskBadges({ task, full = false }: { task: TaskRecord; full?: boolean }): React.JSX.Element {
+  return (
+    <>
+      {task.kind !== 'other' ? (
+        <Badge tone={task.kind === 'bug' ? 'bug' : undefined}>{task.kind}</Badge>
+      ) : null}
+      {task.area !== 'other' ? <Badge>{task.area}</Badge> : null}
+      {task.mine ? <Badge tone="mine">yours</Badge> : null}
+      {task.status === 'proposed' ? <Badge tone="quiet">proposed</Badge> : null}
+      {full && task.status === 'agreed' ? <Badge>agreed</Badge> : null}
+      {task.source === 'notes' ? <Badge>from your notes</Badge> : null}
+      {task.carriedFrom ? (
+        <Badge tone="carried">from the {versionLabel(task.carriedFrom).toLowerCase()}</Badge>
+      ) : null}
+    </>
   )
 }
 
@@ -221,7 +411,7 @@ function Badge({
   tone,
 }: {
   children: React.ReactNode
-  tone?: 'bug' | 'mine' | 'carried'
+  tone?: 'bug' | 'mine' | 'carried' | 'quiet'
 }): React.JSX.Element {
   const colours =
     tone === 'bug'
@@ -230,7 +420,9 @@ function Badge({
         ? 'bg-emerald-500/10 text-emerald-300/90 ring-emerald-500/20'
         : tone === 'carried'
           ? 'bg-sky-500/10 text-sky-300/90 ring-sky-500/20'
-          : 'bg-white/[0.05] text-neutral-400 ring-white/10'
+          : tone === 'quiet'
+            ? 'text-neutral-500 ring-white/[0.08]'
+            : 'bg-white/[0.05] text-neutral-400 ring-white/10'
   return (
     <span className={`rounded px-1.5 py-px text-[10px] ring-1 ${colours}`}>{children}</span>
   )
