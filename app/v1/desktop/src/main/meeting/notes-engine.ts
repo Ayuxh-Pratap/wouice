@@ -3,32 +3,42 @@ import {
   MEETING_CHUNK_SYSTEM,
   MEETING_NOTES_SYSTEM,
   MEETING_NOTES_TASKS_SYSTEM,
-  MEETING_TASKS_SYSTEM,
-  MEETING_TASK_VERIFY_SYSTEM,
+  MEETING_TASK_PLACE_SYSTEM,
+  MEETING_TASK_WRITEUP_SYSTEM,
+  MEETING_WORK_ITEMS_SYSTEM,
   type LlmClient,
 } from '@wouice/llm'
 import {
   allFailed,
   assembleCondensed,
   chunkTranscript,
-  contextAround,
-  isDuplicate,
+  contentWords,
   isMine,
-  looksLikeCommitment,
-  parseCandidates,
+  jobGroups,
+  keepEnds,
+  linesFor,
+  mergeOverlapping,
   parseNoteTasks,
-  parseVerdict,
+  parsePlacement,
+  parseWorkItems,
+  parseWriteUp,
+  placeByWording,
+  placeInput,
+  placeItem,
   reduceInput,
   renderChunk,
   renderLine,
   resolveOwner,
-  sentenceWith,
+  sameTitle,
+  writeUpInput,
   type Chunk,
   type ChunkOutcome,
+  type Evidence,
+  type Group,
+  type Job,
   type ParsedTask,
-  type TaskProbe,
   type TranscriptLine,
-  type Verdict,
+  type WorkItem,
 } from './notes.js'
 
 /**
@@ -37,25 +47,32 @@ import {
  * NO LATENCY BUDGET, AND THAT CHANGES THE DESIGN. Dictation is a two second
  * interaction and every millisecond is argued over. This runs once, on a
  * transcript nobody is waiting on with their cursor in a text field, so it can
- * afford to be careful: separate calls for prose and for structured data, and a
- * second, narrower call to check every task the first one proposed.
+ * afford to be careful: separate calls for prose and for structured data, and
+ * several narrow calls rather than one broad one wherever a small model does
+ * better that way.
  *
  * IT MEASURES BEFORE IT SENDS. The first version estimated chunk sizes from a
  * character count calibrated on dictation. On a real hour-long meeting that
  * estimate was out by 1.5 to 1.8x, three of four chunks overflowed the model's
- * context, and the summary and every task came from the last six minutes -
- * while reporting success. The model's own tokenizer is now asked, and the
- * budget comes from the prompts that will actually be sent.
+ * context, and the summary came from the last six minutes - while reporting
+ * success. The model's own tokenizer is asked, and the budget comes from the
+ * prompts that will actually be sent.
+ *
+ * TASKS ARE WORK, FOUND IN THREE STEPS. Each part lists the work that came out
+ * of it, each item quoting a line it cites. One whole-meeting pass groups the
+ * same work found in different parts and says where the meeting landed on it,
+ * so an idea proposed early and replaced later is dropped rather than kept.
+ * Each surviving group is then written up on its own, from its own lines. See
+ * `notes.ts` for what a task is and why it changed.
  *
  * A FAILED CHUNK IS A GAP, NOT A FAILED RUN, AND THE GAP IS REPORTED. Only a run
  * where every chunk failed is a failure. Anything else produces notes with the
- * missing stretch marked, and returns exactly which minutes were not read, so
- * the interface can say so instead of presenting a partial summary as whole.
+ * missing stretch marked, and returns exactly which minutes were not read.
  */
 
 export interface NotesProgress {
   stage: 'condensing' | 'extracting' | 'checking' | 'writing'
-  /** 1-based, and 0 for the reduce step, which is not per-chunk. */
+  /** 1-based, and 0 when the step is not per-chunk. */
   chunk: number
   chunks: number
 }
@@ -71,8 +88,9 @@ export interface NotesRun {
   /** The stretches that could not be read, so the gap can be named. */
   gapsAt: { fromMs: number; toMs: number }[]
   /**
-   * Proposed by the extractor, dropped by the word filter, merged as the same
-   * task said twice, refused by the checker. Proposed is those three plus kept.
+   * Work items found, dropped for not being traceable to a line or not saying
+   * what, folded into another item as the same work, and dropped as turned
+   * down or already done. Found is those three plus the tasks kept.
    */
   candidates: number
   filtered: number
@@ -100,8 +118,12 @@ export class NotesUnavailable extends Error {}
 /** What the local model runs with. See `desktop/src/shared/models.ts`. */
 const CONTEXT_TOKENS = 4096
 const MAX_CHUNK_TOKENS = 700
+/** Work items carry a story each; a busy ten minutes can hold six of them. */
+const MAX_ITEMS_TOKENS = 1100
+/** One small JSON answer: which job, and how. */
+const MAX_PLACE_TOKENS = 40
+const MAX_WRITEUP_TOKENS = 450
 const MAX_NOTES_TOKENS = 900
-const MAX_VERDICT_TOKENS = 160
 /** Headroom for chat-template tokens the prompt text does not show. */
 const SAFETY_MARGIN = 150
 /** How many times condensed output may be condensed again before giving up. */
@@ -115,8 +137,13 @@ const STALL_MS = 20_000
 const FALLBACK_FACTOR = 1.9
 /** Parallel tokenizer calls. They are tiny, and there are hundreds of lines. */
 const TOKENIZE_WORKERS = 6
+/** Lines kept on a task as where it came from. */
+const MAX_EVIDENCE = 8
 
 export class MeetingNotesEngine {
+  /** Why the last model call failed, so a failed run can say why. */
+  private lastFailure: string | null = null
+
   constructor(
     private readonly llm: () => LlmClient,
     private readonly countTokens?: TokenCounter
@@ -124,24 +151,26 @@ export class MeetingNotesEngine {
 
   async generate(input: NotesInput): Promise<NotesRun> {
     const started = Date.now()
+    this.lastFailure = null
     const usable = input.lines.filter((line) => !line.echo && line.text.trim())
     if (usable.length === 0) {
       throw new NotesUnavailable('there is no transcript to write notes from')
     }
 
-    // The budget, from what will actually be sent. The tasks prompt is the
-    // larger of the two and is sent with the same chunk plus a dated header.
-    const system = Math.max(
-      await this.count(MEETING_CHUNK_SYSTEM),
-      (await this.count(MEETING_TASKS_SYSTEM)) + 24
+    // The budget, from what will actually be sent. Each chunk goes to two
+    // prompts; it has to fit beside the larger of them and its answer.
+    const reserved = Math.max(
+      (await this.count(MEETING_CHUNK_SYSTEM)) + MAX_CHUNK_TOKENS,
+      (await this.count(MEETING_WORK_ITEMS_SYSTEM)) + 24 + MAX_ITEMS_TOKENS
     )
-    const budget = CONTEXT_TOKENS - system - MAX_CHUNK_TOKENS - SAFETY_MARGIN
+    const budget = CONTEXT_TOKENS - reserved - SAFETY_MARGIN
 
     const costs = await this.costs(usable)
     const chunks = chunkTranscript(usable, budget, (text) => costs.get(text) ?? padded(text))
 
     const outcomes: ChunkOutcome[] = []
-    const proposed: { candidate: ReturnType<typeof parseCandidates>[number]; lines: readonly TranscriptLine[] }[] = []
+    const found: WorkItem[] = []
+    let dropped = 0
     const date = new Date(input.startedAt).toISOString().slice(0, 10)
 
     for (const [index, chunk] of chunks.entries()) {
@@ -156,25 +185,26 @@ export class MeetingNotesEngine {
 
       input.onProgress?.({ stage: 'extracting', chunk: index + 1, chunks: chunks.length })
       const raw = await this.tryComplete(
-        MEETING_TASKS_SYSTEM,
+        MEETING_WORK_ITEMS_SYSTEM,
         `Meeting date: ${date}\n\n${rendered}`,
-        MAX_CHUNK_TOKENS,
+        MAX_ITEMS_TOKENS,
         input.signal
       )
       if (raw !== null) {
-        // Only THIS chunk's lines: the model can only cite, and only quote
-        // from, what it was actually shown.
-        for (const candidate of parseCandidates(raw, chunk.lines)) {
-          proposed.push({ candidate, lines: chunk.lines })
-        }
+        // Only THIS chunk's lines: the model can only cite, and quote from,
+        // what it was actually shown.
+        const parsed = parseWorkItems(raw, chunk.lines)
+        found.push(...parsed.items)
+        dropped += parsed.dropped
       }
     }
 
     if (allFailed(outcomes)) {
-      throw new NotesUnavailable('the model could not summarise any part of this meeting')
+      throw new NotesUnavailable(this.explain('the model could not summarise any part of this meeting'))
     }
 
-    const checked = await this.checkTasks(proposed, input, date)
+    found.push(...(await this.fromNotes(input, date)))
+    const built = await this.buildTasks(found, usable, input, date)
 
     // The reduce step has to fit too: its own prompt, the person's notes and
     // room for the answer come out of the same 4096.
@@ -195,13 +225,13 @@ export class MeetingNotesEngine {
       input.signal
     )
     if (notes === null || !notes.trim()) {
-      throw new NotesUnavailable('the model could not write the final notes')
+      throw new NotesUnavailable(this.explain('the model could not write the final notes'))
     }
 
     const failed = outcomes.filter((o) => o.text === null)
     return {
       notesMd: notes.trim(),
-      tasks: checked.tasks,
+      tasks: built.tasks,
       chunks: chunks.length,
       failedChunks: failed.length,
       coveredLines: outcomes
@@ -209,180 +239,163 @@ export class MeetingNotesEngine {
         .reduce((n, o) => n + o.chunk.lines.length, 0),
       totalLines: usable.length,
       gapsAt: failed.map((o) => ({ fromMs: o.chunk.startMs, toMs: o.chunk.endMs })),
-      candidates: checked.candidates,
-      filtered: checked.filtered,
-      merged: checked.merged,
-      rejected: checked.rejected,
+      candidates: found.length + dropped,
+      filtered: dropped,
+      merged: found.length - built.groups,
+      rejected: built.rejected,
       ms: Date.now() - started,
     }
   }
 
   /**
-   * Find, filter, merge, verify.
+   * Work items from what the person typed during the call.
    *
-   * The extractor is asked to be generous; this is where generosity is paid
-   * for. A word filter removes what is plainly not a commitment - a refusal, a
-   * first-person maybe - for free. A task already kept, said again, is merged
-   * into it, also for free: the checker is never asked about the same thing
-   * twice. Every survivor is then judged on its own by a narrow yes-or-no call
-   * that can see the lines around it, and its owner is held to those same
-   * lines. Your own notes are a second source, checked the same way.
+   * Their notes often say what mattered in one line - "he reported the sign-in
+   * dialog sticks" - and they join the grouping like any other item, so the
+   * same work found in the transcript and in the notes becomes one task.
    */
-  private async checkTasks(
-    proposed: { candidate: ReturnType<typeof parseCandidates>[number]; lines: readonly TranscriptLine[] }[],
-    input: NotesInput,
-    date: string
-  ): Promise<{
-    tasks: ParsedTask[]
-    candidates: number
-    filtered: number
-    merged: number
-    rejected: number
-  }> {
-    const name = input.me?.name ?? ''
-    const tasks: ParsedTask[] = []
-    const kept: TaskProbe[] = []
-    let filtered = 0
-    let merged = 0
-    let rejected = 0
-
-    // Tasks from your notes, proposed first so they can be checked in the same
-    // loop and deduplicated against the transcript's.
-    const fromNotes = input.scratch.trim()
-      ? parseNoteTasks(
-          (await this.tryComplete(
-            MEETING_NOTES_TASKS_SYSTEM,
-            `Meeting date: ${date}\n\nNotes:\n${input.scratch}`,
-            MAX_CHUNK_TOKENS,
-            input.signal
-          )) ?? '',
-          input.scratch
-        )
-      : []
-
-    const total = proposed.length + fromNotes.length
-    let step = 0
-
-    for (const { candidate, lines } of proposed) {
-      input.signal?.throwIfAborted()
-      input.onProgress?.({ stage: 'checking', chunk: ++step, chunks: total })
-
-      const id = candidate.task.segmentId!
-      const line = lines.find((l) => l.id === id)
-      if (!line || !looksLikeCommitment(sentenceWith(line.text, candidate.quote))) {
-        filtered++
-        continue
-      }
-      const probe: TaskProbe = {
-        text: candidate.task.text,
-        segmentId: id,
-        quote: candidate.quote,
-        atMs: line.startMs,
-      }
-      if (kept.some((other) => isDuplicate(other, probe))) {
-        merged++
-        continue
-      }
-
-      const around = contextAround(lines, id)
-      const verdict = await this.verify(
-        name,
-        candidate.task.text,
-        `line [${id}]`,
-        candidate.quote,
-        `The lines around it:\n${around}`,
-        input.signal
-      )
-      if (!verdict?.task) {
-        rejected++
-        continue
-      }
-      // The checker's owner if it holds up against the lines it read, else the
-      // extractor's if that does, else nobody.
-      const owner =
-        resolveOwner(verdict.owner, line.channel, around) ??
-        resolveOwner(candidate.task.owner, line.channel, around)
-      kept.push(probe)
-      tasks.push({
-        ...candidate.task,
-        owner,
-        area: verdict.area,
-        kind: verdict.kind,
-        reason: verdict.reason,
-        source: 'transcript',
-        mine: isMine(owner, name),
-      })
-    }
-
-    for (const note of fromNotes) {
-      input.signal?.throwIfAborted()
-      input.onProgress?.({ stage: 'checking', chunk: ++step, chunks: total })
-
-      if (!looksLikeCommitment(sentenceWith(input.scratch, note.quote))) {
-        filtered++
-        continue
-      }
-      // Most often the transcript already has it: you wrote down what was said.
-      const probe: TaskProbe = { text: note.text, segmentId: null, quote: note.quote, atMs: null }
-      if (kept.some((other) => isDuplicate(other, probe))) {
-        merged++
-        continue
-      }
-      const verdict = await this.verify(
-        name,
-        note.text,
-        "the person's own notes",
-        note.quote,
-        `Their notes:\n${input.scratch.slice(0, 1_200)}`,
-        input.signal
-      )
-      if (!verdict?.task) {
-        rejected++
-        continue
-      }
-      const owner =
-        resolveOwner(verdict.owner, 'notes', input.scratch) ??
-        resolveOwner(note.owner, 'notes', input.scratch)
-      kept.push(probe)
-      tasks.push({
-        text: note.text,
-        owner,
-        due: note.due,
-        segmentId: null,
+  private async fromNotes(input: NotesInput, date: string): Promise<WorkItem[]> {
+    if (!input.scratch.trim()) return []
+    const raw = await this.tryComplete(
+      MEETING_NOTES_TASKS_SYSTEM,
+      `Meeting date: ${date}\n\nNotes:\n${input.scratch}`,
+      MAX_CHUNK_TOKENS,
+      input.signal
+    )
+    return parseNoteTasks(raw ?? '', input.scratch)
+      .filter((note) => contentWords(note.text).size >= 2)
+      .map((note) => ({
+        title: note.text,
+        story: '',
+        kind: 'other' as const,
+        area: 'other' as const,
+        owner: note.owner,
+        status: 'proposed' as const,
+        evidence: [],
+        atMs: null,
+        source: 'notes' as const,
         noteQuote: note.quote,
-        area: verdict.area,
-        kind: verdict.kind,
-        reason: verdict.reason,
-        source: 'notes',
-        mine: isMine(owner, name),
-      })
-    }
-
-    return { tasks, candidates: total, filtered, merged, rejected }
+      }))
   }
 
-  /** One candidate, one narrow question. Null - unreadable - counts as no. */
-  private async verify(
-    name: string,
-    text: string,
-    where: string,
-    quote: string,
-    context: string,
-    signal?: AbortSignal
-  ): Promise<Verdict | null> {
-    const raw = await this.tryComplete(
-      MEETING_TASK_VERIFY_SYSTEM,
-      [
-        `The person who recorded this meeting: ${name.trim() || 'not given'}`,
-        `Candidate task: ${text}`,
-        `Taken from ${where}, where it was quoted as: "${quote}"`,
-        '',
-        context,
-      ].join('\n'),
-      MAX_VERDICT_TOKENS,
-      signal
-    )
-    return raw === null ? null : parseVerdict(raw)
+  /**
+   * Group the items found, drop what the meeting turned down, write up the rest.
+   *
+   * Items are placed one at a time against the jobs found so far, in the order
+   * they came up - which is where an idea proposed in minute nine is seen being
+   * replaced in minute fourteen. Each task is then written up in its own call,
+   * from what was found and the transcript lines themselves.
+   */
+  private async buildTasks(
+    found: readonly WorkItem[],
+    lines: readonly TranscriptLine[],
+    input: NotesInput,
+    date: string
+  ): Promise<{ tasks: ParsedTask[]; groups: number; rejected: number }> {
+    if (found.length === 0) return { tasks: [], groups: 0, rejected: 0 }
+    const name = input.me?.name ?? ''
+    const byId = new Map(lines.map((line) => [line.id, line]))
+
+    input.onProgress?.({ stage: 'checking', chunk: 0, chunks: 0 })
+    const groups = mergeOverlapping(await this.group(found, input.signal), found)
+    const live = groups.filter((g) => g.status === 'agreed' || g.status === 'proposed')
+
+    const tasks: ParsedTask[] = []
+    let setAside = 0
+    for (const [index, group] of live.entries()) {
+      input.signal?.throwIfAborted()
+      input.onProgress?.({ stage: 'checking', chunk: index + 1, chunks: live.length })
+
+      const members = group.members.map((i) => found[i]!)
+      const evidence = mergedEvidence(members, byId)
+      const cited = linesFor(lines, evidence.map((e) => e.segmentId))
+      const raw = await this.tryComplete(
+        MEETING_TASK_WRITEUP_SYSTEM,
+        writeUpInput(members, cited, date),
+        MAX_WRITEUP_TOKENS,
+        input.signal
+      )
+      const written = raw === null ? null : parseWriteUp(raw)
+      // The write-up reads the lines themselves, and they can say what the
+      // items did not: "you're unleashed to talk about them, not on the
+      // engineering call". Work its own lines set aside is not a task.
+      if (written?.status === 'parked' || written?.status === 'rejected') {
+        setAside++
+        continue
+      }
+
+      // The item the meeting was clearest about stands in for anything the
+      // write-up did not manage: agreed over proposed, then the fullest story.
+      const lead = [...members].sort(
+        (a, b) =>
+          Number(b.status === 'agreed') - Number(a.status === 'agreed') ||
+          b.story.length - a.story.length
+      )[0]!
+
+      // An owner has to be somebody the lines name. See `resolveOwner`.
+      const first = evidence[0] ? byId.get(evidence[0].segmentId) : undefined
+      const speaker = first?.channel ?? 'notes'
+      const said = [...cited.map(renderLine), ...members.map((m) => m.noteQuote ?? '')].join('\n')
+      const owner =
+        resolveOwner(written?.owner ?? null, speaker, said) ??
+        resolveOwner(lead.owner, speaker, said)
+
+      tasks.push({
+        text: written?.title ?? lead.title,
+        description:
+          written?.description ||
+          lead.story ||
+          members
+            .map((m) => m.story)
+            .filter(Boolean)
+            .join(' '),
+        owner,
+        due: null,
+        segmentId: evidence[0]?.segmentId ?? null,
+        evidence: keepEnds(evidence, MAX_EVIDENCE),
+        status: group.status === 'agreed' ? 'agreed' : 'proposed',
+        kind: written && written.kind !== 'other' ? written.kind : lead.kind,
+        area: written && written.area !== 'other' ? written.area : lead.area,
+        source: evidence.length > 0 ? 'transcript' : 'notes',
+        noteQuote: members.find((m) => m.noteQuote)?.noteQuote ?? null,
+        reason: '',
+        mine: isMine(owner, name),
+      })
+    }
+
+    const folded = foldSameTitles(tasks, byId, name)
+    return {
+      tasks: folded,
+      groups: groups.length - (tasks.length - folded.length),
+      rejected: groups.length - live.length + setAside,
+    }
+  }
+
+  /**
+   * Sort the items into jobs, one at a time, in the order they came up: each
+   * placed by the model against the jobs found so far, or by wording when the
+   * model cannot be asked or its answer cannot be read.
+   */
+  private async group(found: readonly WorkItem[], signal?: AbortSignal): Promise<Group[]> {
+    let jobs: Job[] = []
+    for (const next of found.keys()) {
+      signal?.throwIfAborted()
+      if (jobs.length === 0) {
+        jobs = placeItem(jobs, found, next, null, 'new')
+        continue
+      }
+      const { text, shown } = placeInput(jobs, found, next)
+      const raw = await this.tryComplete(MEETING_TASK_PLACE_SYSTEM, text, MAX_PLACE_TOKENS, signal)
+      const placed = raw === null ? null : parsePlacement(raw, shown.length)
+      if (placed === null) {
+        const near = placeByWording(jobs, found, next)
+        jobs = placeItem(jobs, found, next, near, near === null ? 'new' : 'same')
+      } else {
+        const target = placed.job === null ? null : shown[placed.job]!
+        jobs = placeItem(jobs, found, next, target, placed.relation)
+      }
+    }
+    return jobGroups(jobs, found)
   }
 
   /**
@@ -438,12 +451,18 @@ export class MeetingNotesEngine {
     return out
   }
 
+  /** A failure message, with the reason the last call gave when there was one. */
+  private explain(message: string): string {
+    return this.lastFailure ? `${message} (${this.lastFailure})` : message
+  }
+
   /**
    * @returns the model's text, or null when the call failed.
    *
    * Failure is a value here rather than an exception because a single failed
    * chunk must not end the run - and a caller that has to remember to catch is
-   * a caller that will one day forget.
+   * a caller that will one day forget. Why it failed is kept, so a run that
+   * fails outright can say so instead of only that it failed.
    */
   private async tryComplete(
     system: string,
@@ -468,10 +487,71 @@ export class MeetingNotesEngine {
       return result.text
     } catch (err) {
       if (signal?.aborted) throw err
-      console.warn('[meeting] notes step failed:', err instanceof Error ? err.message : err)
+      this.lastFailure = err instanceof Error ? err.message : String(err)
+      console.warn('[meeting] notes step failed:', this.lastFailure)
       return null
     }
   }
+}
+
+/** Every line the members cite, once each, in the order they were said. */
+function mergedEvidence(
+  members: readonly { evidence?: readonly Evidence[] }[],
+  byId: ReadonlyMap<number, TranscriptLine>
+): Evidence[] {
+  const seen = new Map<number, Evidence>()
+  for (const member of members) {
+    for (const e of member.evidence ?? []) {
+      const known = seen.get(e.segmentId)
+      if (!known) seen.set(e.segmentId, { ...e })
+      else if (!known.quote && e.quote) known.quote = e.quote
+    }
+  }
+  return [...seen.values()].sort(
+    (a, b) => (byId.get(a.segmentId)?.startMs ?? 0) - (byId.get(b.segmentId)?.startMs ?? 0)
+  )
+}
+
+/**
+ * Written-up tasks that are one job, folded together.
+ *
+ * Two groups the model kept apart can still be the same work - a rename argued
+ * at minute four and again at minute seventeen. Once the write-up has named
+ * each, they look alike. The one whose lines reach later, closer to the last
+ * word on it, tells the story; the lines of both are kept, and it sits where
+ * the work first came up.
+ */
+function foldSameTitles(
+  tasks: readonly ParsedTask[],
+  byId: ReadonlyMap<number, TranscriptLine>,
+  name: string
+): ParsedTask[] {
+  const reach = (task: ParsedTask): number =>
+    Math.max(-1, ...(task.evidence ?? []).map((e) => byId.get(e.segmentId)?.startMs ?? -1))
+
+  const kept: ParsedTask[] = []
+  for (const task of tasks) {
+    const at = kept.findIndex((k) => sameTitle(k.text, task.text))
+    if (at < 0) {
+      kept.push(task)
+      continue
+    }
+    const other = kept[at]!
+    const [last, first] = reach(task) >= reach(other) ? [task, other] : [other, task]
+    const evidence = keepEnds(mergedEvidence([first, last], byId), MAX_EVIDENCE)
+    const owner = last.owner ?? first.owner
+    kept[at] = {
+      ...last,
+      owner,
+      evidence,
+      segmentId: evidence[0]?.segmentId ?? null,
+      status: first.status === 'agreed' || last.status === 'agreed' ? 'agreed' : 'proposed',
+      source: evidence.length > 0 ? 'transcript' : 'notes',
+      noteQuote: last.noteQuote ?? first.noteQuote ?? null,
+      mine: isMine(owner, name),
+    }
+  }
+  return kept
 }
 
 function padded(text: string): number {
