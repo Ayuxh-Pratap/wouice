@@ -24,13 +24,15 @@ import { IPC, type EnglishOutcome, type NotesOutcome, type RepassOutcome, type C
 import type { SidecarId } from '../shared/models.js'
 import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from './dictation/controller.js'
 import { sampleResources } from './metrics/sample.js'
-import { importJsonl, openStore, validateEntry, type DictationRecord, type TaskState } from '@wouice/store'
+import { importJsonl, openStore, validateEntry, type DictationRecord, type TaskRecord, type TaskState } from '@wouice/store'
 import { RecordingStore } from './metrics/recordings.js'
 import { Injector, type InjectionResult } from './injection/injector.js'
 import { injectionAvailable, injectionUnavailableReason } from './injection/win32.js'
 import { analyseCalibration, applyCalibration, describeLanguages, frameLevels } from './capture/calibrate.js'
 import { enableSystemAudioCapture } from './meeting/display-media.js'
 import { MeetingController } from './meeting/controller.js'
+import { MeetingJobs } from './meeting/jobs.js'
+import { carryOver } from './meeting/versions.js'
 import { finishedSessions } from './meeting/merge.js'
 import { discardRecording } from './meeting/remove.js'
 import { MeetingNotesEngine, NotesUnavailable } from './meeting/notes-engine.js'
@@ -96,6 +98,15 @@ const meetings = new MeetingController(MEETING_ROOT, {
 })
 
 /**
+ * The heavy work on meetings after the call - English, summary, the careful
+ * pass - one job at a time, and the one place that knows which meeting it is
+ * on. Every screen that shows "busy" reads this rather than guessing from
+ * progress messages. See `MeetingJobs`.
+ */
+const jobs = new MeetingJobs()
+jobs.on('change', (view: unknown) => broadcast(IPC.meetingJobs, view))
+
+/**
  * Notes and tasks, after the meeting.
  *
  * One at a time: the model has a single slot on a 6 GB card, and two runs at
@@ -134,7 +145,6 @@ async function countLlamaTokens(text: string): Promise<number | null> {
     return null
   }
 }
-let notesRunning = 0
 
 /**
  * The English rendering, which runs after the meeting rather than during it.
@@ -150,7 +160,20 @@ const englishEngine = new MeetingEnglishEngine(
       model: supervisor.snapshot('llama').modelId,
     })
 )
-let englishRunning = 0
+
+/**
+ * Wait for the language model to answer before asking it anything.
+ *
+ * A started sidecar is not a ready one: it spends seconds reading its weights.
+ * The careful pass restarts this model, and asked it for the English and the
+ * summary fifty milliseconds later - both failed against a server that was
+ * still loading, and the improved meeting was left with neither. Every job
+ * that needs the model waits here first, including one queued right after
+ * the app starts.
+ */
+function languageModelReady(): Promise<boolean> {
+  return supervisor.whenReady('llama')
+}
 
 /**
  * Write the summary and the tasks for one meeting.
@@ -160,21 +183,36 @@ let englishRunning = 0
  * an English rendering and a summary without pressing anything, and two copies
  * of this logic would be two things to keep in step.
  */
-async function writeNotes(id: number): Promise<NotesOutcome> {
+async function writeNotes(id: number, versionId?: number): Promise<NotesOutcome> {
   const empty = { notesMd: null, tasks: 0, gaps: 0 }
-  if (notesRunning === id) {
-    return { ok: false, message: 'already writing the notes for this meeting', ...empty }
-  }
   const meeting = store.meetings.byId(id)
   if (!meeting) return { ok: false, message: 'that meeting is gone', ...empty }
+  // The main version unless told otherwise. A summary belongs to the
+  // transcript it was written from, and is only ever stored on that one.
+  const version = meeting.versions.find((v) => v.id === (versionId ?? meeting.mainVersionId))
+  if (!version) return { ok: false, message: 'that transcript is gone', ...empty }
+  const segments = store.meetings.segments(id, version.id)
 
-  notesRunning = id
+  if (!(await languageModelReady())) {
+    const message = 'the language model did not start, so nothing could be written'
+    store.meetings.recordNotesRun(version.id, {
+      at: Date.now(),
+      ok: false,
+      chunks: 0,
+      gaps: 0,
+      tasks: 0,
+      ms: 0,
+      message,
+    })
+    return { ok: false, message, ...empty }
+  }
+
   try {
     const run = await notesEngine.generate({
       // The English rendering when there is one: notes written from
       // "स्थमाल" and "रंबाली" never had a chance, and a 4B model summarising
       // raw code-mixed recognition output is the weakest link in the chain.
-      lines: store.meetings.segments(id).map((s) => ({
+      lines: segments.map((s) => ({
         id: s.id,
         channel: s.channel,
         startMs: s.startMs,
@@ -187,9 +225,28 @@ async function writeNotes(id: number): Promise<NotesOutcome> {
       onProgress: (p) => broadcast(IPC.notesProgress, { meetingId: id, ...p }),
     })
 
-    store.meetings.setNotes(id, run.notesMd)
-    store.meetings.replaceTasks(id, run.tasks)
-    store.meetings.recordNotesRun(id, {
+    // What you had ticked or dropped - in this version or another - goes onto
+    // the new list; see `carryOver`. This version's own states first, then the
+    // newest, so the state you set last is the one that wins.
+    const startOf = new Map(segments.map((s) => [s.id, s.startMs]))
+    const sourceOf = new Map(meeting.versions.map((v) => [v.id, v.source]))
+    const own = (versionOf: number | null): number => (versionOf === version.id ? 0 : 1)
+    const acted = store.meetings
+      .allTasks(id)
+      .filter((t) => t.state !== 'open')
+      .sort((a, b) => own(a.versionId) - own(b.versionId) || b.createdAt - a.createdAt)
+    const { tasks, carried } = carryOver(
+      acted,
+      run.tasks.map((t) => ({
+        ...t,
+        atMs: t.segmentId === null ? null : (startOf.get(t.segmentId) ?? null),
+      })),
+      (from) => sourceOf.get(from ?? -1) ?? 'live'
+    )
+
+    store.meetings.setVersionNotes(version.id, run.notesMd)
+    store.meetings.replaceTasks(version.id, [...tasks, ...carried])
+    store.meetings.recordNotesRun(version.id, {
       at: Date.now(),
       ok: true,
       chunks: run.chunks,
@@ -227,7 +284,7 @@ async function writeNotes(id: number): Promise<NotesOutcome> {
     // Recorded as well as returned: a failure you can still read tomorrow is
     // the difference between diagnosing this and guessing at it.
     try {
-      store.meetings.recordNotesRun(id, {
+      store.meetings.recordNotesRun(version.id, {
         at: Date.now(),
         ok: false,
         chunks: 0,
@@ -240,29 +297,43 @@ async function writeNotes(id: number): Promise<NotesOutcome> {
       // Bookkeeping. Never worth turning into a second failure.
     }
     return { ok: false, message, ...empty }
-  } finally {
-    notesRunning = 0
   }
 }
 
-async function renderEnglish(id: number): Promise<EnglishOutcome> {
+async function renderEnglish(id: number, versionId?: number): Promise<EnglishOutcome> {
   const empty = { rendered: 0, missed: 0 }
-  if (englishRunning === id) {
-    return { ok: false, message: 'already rendering this meeting', ...empty }
-  }
   const meeting = store.meetings.byId(id)
   if (!meeting) return { ok: false, message: 'that meeting is gone', ...empty }
   if (!kindOf(meeting.kind).translate) {
     return { ok: false, message: 'this meeting is already in English', ...empty }
   }
+  // The main version unless told otherwise; its English is stored on its lines.
+  const version = meeting.versions.find((v) => v.id === (versionId ?? meeting.mainVersionId))
+  if (!version) return { ok: false, message: 'that transcript is gone', ...empty }
 
-  englishRunning = id
+  // A failure is recorded on the version, like a failed summary, so the page
+  // can say why its English is missing instead of silently showing none.
+  const failed = (message: string): EnglishOutcome => {
+    try {
+      store.meetings.setVersionDiagnostics(version.id, {
+        english: { at: Date.now(), rendered: 0, missed: 0, failedBatches: 0, ms: 0, ok: false, message },
+      })
+    } catch {
+      // Bookkeeping. Never worth turning into a second failure.
+    }
+    return { ok: false, message, ...empty }
+  }
+
+  if (!(await languageModelReady())) {
+    return failed('the language model did not start, so nothing could be rendered')
+  }
+
   try {
     const run = await englishEngine.render({
       // Echo lines are the far side heard twice; rendering them spends the
       // model on duplicates of lines that are already being rendered.
       lines: store.meetings
-        .segments(id)
+        .segments(id, version.id)
         .filter((seg) => !seg.echo)
         .map((seg) => ({ id: seg.id, text: seg.text })),
       // Read fresh on every call, so notes added AFTER the meeting are used by
@@ -271,8 +342,9 @@ async function renderEnglish(id: number): Promise<EnglishOutcome> {
       onProgress: (p) => broadcast(IPC.englishProgress, { meetingId: id, ...p }),
     })
     store.meetings.setEnglish(run.rendered.map((r) => ({ id: r.id, textEn: r.textEn })))
-    store.meetings.setDiagnostics(id, {
+    store.meetings.setVersionDiagnostics(version.id, {
       english: {
+        ok: true,
         at: Date.now(),
         rendered: run.rendered.length,
         missed: run.missed,
@@ -285,14 +357,58 @@ async function renderEnglish(id: number): Promise<EnglishOutcome> {
     )
     return { ok: true, message: '', rendered: run.rendered.length, missed: run.missed }
   } catch (err) {
-    const message =
+    return failed(
       err instanceof EnglishUnavailable
         ? err.message
         : `the model could not be reached: ${err instanceof Error ? err.message : String(err)}`
-    return { ok: false, message, ...empty }
-  } finally {
-    englishRunning = 0
+    )
   }
+}
+
+/**
+ * Bring what you ticked on a meeting's other versions onto this one's list.
+ *
+ * Used when you choose which version is main: the list you work from changes,
+ * and work you finished must not reappear as open on it. The same matching the
+ * summary uses - see `carryOver`. This version's own states win over anything
+ * carried in.
+ */
+function adoptTaskStates(meetingId: number, versionId: number): void {
+  const meeting = store.meetings.byId(meetingId)
+  if (!meeting) return
+  const acted = store.meetings
+    .allTasks(meetingId)
+    .filter((t) => t.versionId !== versionId && t.state !== 'open')
+    .sort((a, b) => b.createdAt - a.createdAt)
+  if (acted.length === 0) return
+
+  const own = store.meetings.tasksFor(meetingId, versionId)
+  const sourceOf = new Map(meeting.versions.map((v) => [v.id, v.source]))
+  const asInput = (t: TaskRecord) => ({
+    text: t.text,
+    owner: t.owner,
+    due: t.due,
+    segmentId: t.segmentId,
+    area: t.area,
+    kind: t.kind,
+    mine: t.mine,
+    source: t.source,
+    noteQuote: t.noteQuote ?? null,
+    reason: t.reason,
+    carriedFrom: t.carriedFrom,
+  })
+  const { tasks, carried } = carryOver(
+    acted,
+    own.map((t) => ({ ...asInput(t), atMs: t.quoteAtMs })),
+    (from) => sourceOf.get(from ?? -1) ?? 'live'
+  )
+  store.meetings.replaceTasks(versionId, [
+    ...tasks.map((t, i) => {
+      const mine = own[i]!.state
+      return { ...t, state: mine !== 'open' ? mine : (t.state ?? 'open') }
+    }),
+    ...carried,
+  ])
 }
 
 /**
@@ -499,7 +615,8 @@ meetings.on('finished', (summary: { meetingId: number } & Record<string, unknown
  * whose English pass failed still gets a summary from what was actually said,
  * which is worse than the alternative and much better than nothing.
  */
-let repassRunning = 0
+/** What the careful pass transcribes with, and so the source its version is filed under. */
+const IMPROVE_MODEL = 'large-v3'
 
 /**
  * The careful pass, end to end: re-transcribe, then redo everything built on it.
@@ -511,26 +628,43 @@ let repassRunning = 0
  */
 async function runRepass(meetingId: number): Promise<RepassOutcome> {
   const empty = { segments: 0, seconds: 0 }
-  if (repassRunning) {
-    return { ok: false, message: 'a careful pass is already running', ...empty }
-  }
+  // Checked when the job starts, not when it was asked for: it may have waited
+  // behind another, and a recording could have begun in between.
   if (meetings.state().phase !== 'idle') {
     return { ok: false, message: 'not while a meeting is recording', ...empty }
   }
 
-  repassRunning = meetingId
   const started = Date.now()
   try {
     const result = await repassMeeting(meetingId, {
       supervisor,
       meetings: store.meetings,
-      modelId: 'large-v3',
+      modelId: IMPROVE_MODEL,
       onProgress: (p) => broadcast(IPC.repassProgress, p),
     })
 
-    // Everything downstream was built from the old transcript, so it all has to
-    // be built again. Leaving yesterday's summary above today's transcript
-    // would be the kind of quiet wrongness nobody checks for.
+    // A new version, beside the first pass and never over it. It is the main
+    // version from the moment its transcript exists: if what follows fails,
+    // the page shows THIS transcript and says its summary is still to come,
+    // rather than the old summary above the new lines.
+    const versionId = store.meetings.createVersion(meetingId, IMPROVE_MODEL, result.segments)
+    store.meetings.setVersionDiagnostics(versionId, {
+      transcription: {
+        at: Date.now(),
+        model: IMPROVE_MODEL,
+        segments: result.segments.length,
+        ms: Date.now() - started,
+        languages: result.languages,
+      },
+    })
+    broadcast(IPC.meetingReady2, meetingId)
+
+    // The language model was unloaded to make room and is coming back now.
+    // Nothing that needs it starts until it answers.
+    broadcast(IPC.repassProgress, { meetingId, stage: 'warming', doneSec: 0, totalSec: 0 })
+    await languageModelReady()
+
+    // Everything built on a transcript is built again, from this one.
     const meeting = store.meetings.byId(meetingId)
     if (meeting && kindOf(meeting.kind).translate) {
       broadcast(IPC.repassProgress, {
@@ -539,19 +673,16 @@ async function runRepass(meetingId: number): Promise<RepassOutcome> {
         doneSec: 0,
         totalSec: 0,
       })
-      await renderEnglish(meetingId)
+      await renderEnglish(meetingId, versionId)
     }
     broadcast(IPC.repassProgress, { meetingId, stage: 'summarising', doneSec: 0, totalSec: 0 })
-    await writeNotes(meetingId)
+    await writeNotes(meetingId, versionId)
 
-    store.meetings.setDiagnostics(meetingId, {
-      repass: { at: Date.now(), model: 'large-v3', segments: result.segments, ms: Date.now() - started },
-    })
     notify(
       'Transcript improved',
-      `${result.segments} lines, ${Math.round((Date.now() - started) / 1000)}s.`
+      `${result.segments.length} lines, ${Math.round((Date.now() - started) / 1000)}s.`
     )
-    return { ok: true, message: '', segments: result.segments, seconds: result.seconds }
+    return { ok: true, message: '', segments: result.segments.length, seconds: result.seconds }
   } catch (err) {
     const message =
       err instanceof RepassUnavailable
@@ -560,7 +691,6 @@ async function runRepass(meetingId: number): Promise<RepassOutcome> {
     notify('Could not improve the transcript', message)
     return { ok: false, message, ...empty }
   } finally {
-    repassRunning = 0
     broadcast(IPC.meetingReady2, meetingId)
   }
 }
@@ -574,18 +704,42 @@ function notify(title: string, body: string): void {
   }
 }
 
-async function finishMeeting(meetingId: number): Promise<void> {
+/**
+ * English, then the summary and tasks, for the main version.
+ *
+ * What stopping a meeting does, and what "try again" does after either step
+ * failed. The English runs only when this transcript has none: the summary is
+ * written FROM the English, so a retry that wrote the summary first would
+ * build it from raw recognition output - which is what a manual retry of a
+ * failed summary did, a minute before the English arrived.
+ */
+async function processVersion(meetingId: number): Promise<NotesOutcome> {
+  const empty = { notesMd: null, tasks: 0, gaps: 0 }
   const meeting = store.meetings.byId(meetingId)
-  if (!meeting) return
-  if (store.meetings.segments(meetingId).length === 0) return
+  if (!meeting) return { ok: false, message: 'that meeting is gone', ...empty }
+  const segments = store.meetings.segments(meetingId)
+  if (segments.length === 0) {
+    return { ok: false, message: 'there is no transcript to write from', ...empty }
+  }
 
-  if (kindOf(meeting.kind).translate) {
+  if (kindOf(meeting.kind).translate && !segments.some((s) => s.textEn)) {
     const rendered = await renderEnglish(meetingId)
     if (!rendered.ok) console.warn(`[meeting] english pass: ${rendered.message}`)
   }
   const notes = await writeNotes(meetingId)
   if (!notes.ok) console.warn(`[meeting] notes: ${notes.message}`)
-  broadcast(IPC.meetingReady2, meetingId)
+  return notes
+}
+
+function finishMeeting(meetingId: number): Promise<void> {
+  // Queued like everything else: stopping one meeting while another is being
+  // improved must not put two models on the card at once.
+  return jobs
+    .run(meetingId, 'process', async () => {
+      await processVersion(meetingId)
+      broadcast(IPC.meetingReady2, meetingId)
+    })
+    .catch((err: unknown) => console.warn('[meeting] processing failed:', err))
 }
 
 /**
@@ -969,7 +1123,18 @@ function registerIpc(): void {
   })
   ipcMain.handle(IPC.getMeetingState, () => meetings.state())
   ipcMain.handle(IPC.listMeetings, () => store.meetings.list())
-  ipcMain.handle(IPC.getMeetingSegments, (_e, id: number) => store.meetings.segments(id))
+  ipcMain.handle(IPC.getMeetingSegments, (_e, id: number, versionId?: number) =>
+    store.meetings.segments(id, typeof versionId === 'number' ? versionId : undefined)
+  )
+  ipcMain.handle(IPC.getMeetingJobs, () => jobs.view())
+  ipcMain.handle(IPC.setMainVersion, (_e, id: number, versionId: number): string | null => {
+    // Not while something is writing to it: the list would change under the job.
+    if (jobs.involves(id)) return 'Wouice is still working on this meeting. Try again when it has finished.'
+    if (!store.meetings.setMain(id, versionId)) return 'That version is gone.'
+    adoptTaskStates(id, versionId)
+    broadcast(IPC.meetingReady2, id)
+    return null
+  })
   ipcMain.handle(IPC.searchMeetings, (_e, query: string) => store.meetings.search(query))
   ipcMain.handle(IPC.deleteMeeting, async (_e, id: number): Promise<string | null> => {
     // The recording goes to the Recycle Bin with the row. Left where it was,
@@ -977,7 +1142,7 @@ function registerIpc(): void {
     const meeting = store.meetings.byId(id)
     if (!meeting) return null
     if (meetings.state().meetingId === id) return 'This meeting is still recording. Stop it first.'
-    if ([notesRunning, englishRunning, repassRunning].includes(id)) {
+    if (jobs.involves(id)) {
       return 'Wouice is still working on this meeting. Remove it when that has finished.'
     }
     // The file first. If the bin refuses, the meeting stays listed, rather than
@@ -992,13 +1157,26 @@ function registerIpc(): void {
   ipcMain.handle(IPC.setMeetingScratch, (_e, id: number, markdown: string) =>
     store.meetings.setScratch(id, markdown)
   )
-  ipcMain.handle(IPC.getMeetingTasks, (_e, id: number) => store.meetings.tasksFor(id))
+  ipcMain.handle(IPC.getMeetingTasks, (_e, id: number, versionId?: number) =>
+    store.meetings.tasksFor(id, typeof versionId === 'number' ? versionId : undefined)
+  )
   ipcMain.handle(IPC.getMeeting, (_e, id: number) => store.meetings.byId(id))
   ipcMain.handle(IPC.setMeetingKind, (_e, id: number, kind: string) =>
     store.meetings.setKind(id, kind)
   )
-  ipcMain.handle(IPC.renderEnglish, (_e, id: number) => renderEnglish(id))
-  ipcMain.handle(IPC.repassMeeting, (_e, id: number) => runRepass(id))
+  // These queue behind whatever is running - the window has already asked
+  // whether you want to wait. Asking twice for the same thing is refused
+  // rather than queued twice.
+  ipcMain.handle(IPC.renderEnglish, (_e, id: number): Promise<EnglishOutcome> =>
+    jobs.has(id, 'english')
+      ? Promise.resolve({ ok: false, message: 'That is already running or waiting.', rendered: 0, missed: 0 })
+      : jobs.run(id, 'english', () => renderEnglish(id))
+  )
+  ipcMain.handle(IPC.repassMeeting, (_e, id: number): Promise<RepassOutcome> =>
+    jobs.has(id, 'improve')
+      ? Promise.resolve({ ok: false, message: 'That is already running or waiting.', segments: 0, seconds: 0 })
+      : jobs.run(id, 'improve', () => runRepass(id))
+  )
   ipcMain.handle(IPC.getMeetingOffer, () => pendingOffer)
   ipcMain.handle(IPC.dismissMeetingOffer, () => {
     micWatcher.dismissOffer()
@@ -1008,14 +1186,29 @@ function registerIpc(): void {
   ipcMain.handle(IPC.copyMeetingDiagnostic, async (_e, id: number) => {
     const meeting = store.meetings.byId(id)
     if (!meeting) return false
-    await clipboard.writeText(formatMeeting(meeting, store.meetings.tasksFor(id).length))
+    await clipboard.writeText(
+      formatMeeting(meeting, (versionId) => store.meetings.tasksFor(id, versionId).length)
+    )
     return true
   })
   ipcMain.handle(IPC.getOpenTasks, () => store.meetings.openTasks())
   ipcMain.handle(IPC.setTaskState, (_e, taskId: number, state: TaskState) =>
     store.meetings.setTaskState(taskId, state)
   )
-  ipcMain.handle(IPC.generateNotes, (_e, id: number) => writeNotes(id))
+  ipcMain.handle(IPC.generateNotes, (_e, id: number): Promise<NotesOutcome> =>
+    jobs.has(id, 'notes')
+      ? Promise.resolve({ ok: false, message: 'That is already running or waiting.', notesMd: null, tasks: 0, gaps: 0 })
+      : jobs.run(id, 'notes', () => writeNotes(id))
+  )
+  ipcMain.handle(IPC.processMeeting, (_e, id: number): Promise<NotesOutcome> =>
+    jobs.has(id, 'process')
+      ? Promise.resolve({ ok: false, message: 'That is already running or waiting.', notesMd: null, tasks: 0, gaps: 0 })
+      : jobs.run(id, 'process', async () => {
+          const outcome = await processVersion(id)
+          broadcast(IPC.meetingReady2, id)
+          return outcome
+        })
+  )
   ipcMain.on(IPC.revealMeeting, (_e, dir: string) => shell.showItemInFolder(path.join(dir, 'audio.wav')))
   ipcMain.on(
     IPC.meetingFrame,

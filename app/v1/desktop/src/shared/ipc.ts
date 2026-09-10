@@ -66,6 +66,7 @@ export const IPC = {
   deleteMeeting: 'meeting:delete',
   setMeetingScratch: 'meeting:scratch',
   generateNotes: 'meeting:writeNotes',
+  processMeeting: 'meeting:process',
   getMeetingTasks: 'meeting:tasks',
   setTaskState: 'meeting:taskState',
   getOpenTasks: 'meeting:openTasks',
@@ -74,6 +75,8 @@ export const IPC = {
   copyMeetingDiagnostic: 'meeting:copyDiagnostic',
   renderEnglish: 'meeting:renderEnglish',
   repassMeeting: 'meeting:repass',
+  getMeetingJobs: 'meeting:jobs',
+  setMainVersion: 'meeting:setMainVersion',
   setMeetingKind: 'meeting:setKind',
   getMeeting: 'meeting:one',
   meetingFrame: 'meeting:frame',
@@ -106,6 +109,7 @@ export const IPC = {
   meetingReady2: 'meeting:processed',
   repassProgress: 'meeting:repassProgress',
   meetingOffer: 'meeting:offered',
+  meetingJobs: 'meeting:jobsChanged',
 } as const
 
 /** Which way the capsule opens, and whether there is a pet to open it from. */
@@ -323,7 +327,10 @@ export interface EnglishOutcome {
 
 export interface RepassProgressView {
   meetingId: number
-  stage: 'loading' | 'transcribing' | 'restoring' | 'rendering' | 'summarising'
+  stage: 'loading' | 'transcribing' | 'restoring' | 'warming' | 'rendering' | 'summarising'
+  /** While transcribing: your side first, then theirs. */
+  side?: MeetingChannel
+  /** How far through the current side, and the meeting's length. In meeting time. */
   doneSec: number
   totalSec: number
 }
@@ -333,6 +340,26 @@ export interface RepassOutcome {
   message: string
   segments: number
   seconds: number
+}
+
+/**
+ * The heavy things done to a meeting after the call. `process` is the automatic
+ * English-then-summary run after you stop recording; `improve` is the careful
+ * pass and everything it rebuilds.
+ */
+export type MeetingJobKind = 'process' | 'english' | 'notes' | 'improve'
+
+export interface MeetingJobView {
+  meetingId: number
+  kind: MeetingJobKind
+  /** When it started, or when it was asked for if it is still waiting. */
+  since: number
+}
+
+/** What is running, and what is waiting behind it. One at a time: there is one card. */
+export interface MeetingJobsView {
+  running: MeetingJobView | null
+  queued: MeetingJobView[]
 }
 
 export interface NotesOutcome {
@@ -410,7 +437,16 @@ export interface WouiceApi {
   stopMeeting(): Promise<void>
   getMeetingState(): Promise<MeetingState>
   listMeetings(): Promise<MeetingRecord[]>
-  getMeetingSegments(meetingId: number): Promise<MeetingSegment[]>
+  /** One version's transcript; the main version when none is named. */
+  getMeetingSegments(meetingId: number, versionId?: number): Promise<MeetingSegment[]>
+  /** What is running on meetings and what is waiting. See `MeetingJobsView`. */
+  getMeetingJobs(): Promise<MeetingJobsView>
+  /**
+   * Make another version the main one - for when the careful pass came out
+   * worse than the first. Returns why it could not, or null.
+   */
+  setMainVersion(meetingId: number, versionId: number): Promise<string | null>
+  onMeetingJobs(cb: (jobs: MeetingJobsView) => void): () => void
   /** Full-text across every meeting. Empty query is no results, not an error. */
   searchMeetings(query: string): Promise<MeetingSegment[]>
   /**
@@ -427,7 +463,13 @@ export interface WouiceApi {
    * tens of seconds; progress arrives on `onNotesProgress`.
    */
   generateNotes(meetingId: number): Promise<NotesOutcome>
-  getMeetingTasks(meetingId: number): Promise<TaskRecord[]>
+  /**
+   * The English if the main version has none, then the summary and tasks: what
+   * stopping a meeting does, run again after either step failed.
+   */
+  processMeeting(meetingId: number): Promise<NotesOutcome>
+  /** One version's tasks; the main version when none is named. */
+  getMeetingTasks(meetingId: number, versionId?: number): Promise<TaskRecord[]>
   setTaskState(taskId: number, state: TaskState): Promise<void>
   getOpenTasks(): Promise<TaskRecord[]>
   onNotesProgress(cb: (p: NotesProgressView) => void): () => void

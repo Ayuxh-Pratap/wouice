@@ -10,6 +10,7 @@ import {
   type EnglishProgressView,
   type RepassProgressView,
   type NotesProgressView,
+  type MeetingJobsView,
   type MeetingState,
   type MetricsSnapshot,
   type SidecarView,
@@ -71,15 +72,21 @@ const api: WouiceApi = {
   stopMeeting: () => ipcRenderer.invoke(IPC.stopMeeting),
   getMeetingState: () => ipcRenderer.invoke(IPC.getMeetingState),
   listMeetings: () => ipcRenderer.invoke(IPC.listMeetings),
-  getMeetingSegments: (meetingId: number) =>
-    ipcRenderer.invoke(IPC.getMeetingSegments, meetingId),
+  getMeetingSegments: (meetingId: number, versionId?: number) =>
+    ipcRenderer.invoke(IPC.getMeetingSegments, meetingId, versionId),
   searchMeetings: (query: string) => ipcRenderer.invoke(IPC.searchMeetings, query),
   deleteMeeting: (meetingId: number) => ipcRenderer.invoke(IPC.deleteMeeting, meetingId),
   setMeetingScratch: (meetingId: number, markdown: string) =>
     ipcRenderer.invoke(IPC.setMeetingScratch, meetingId, markdown),
   onMeetingSegments: (cb) => subscribe<MeetingSegment[]>(IPC.meetingSegments, cb),
   generateNotes: (meetingId: number) => ipcRenderer.invoke(IPC.generateNotes, meetingId),
-  getMeetingTasks: (meetingId: number) => ipcRenderer.invoke(IPC.getMeetingTasks, meetingId),
+  processMeeting: (meetingId: number) => ipcRenderer.invoke(IPC.processMeeting, meetingId),
+  getMeetingTasks: (meetingId: number, versionId?: number) =>
+    ipcRenderer.invoke(IPC.getMeetingTasks, meetingId, versionId),
+  getMeetingJobs: () => ipcRenderer.invoke(IPC.getMeetingJobs),
+  setMainVersion: (meetingId: number, versionId: number) =>
+    ipcRenderer.invoke(IPC.setMainVersion, meetingId, versionId),
+  onMeetingJobs: (cb) => subscribe<MeetingJobsView>(IPC.meetingJobs, cb),
   setTaskState: (taskId: number, state: TaskState) =>
     ipcRenderer.invoke(IPC.setTaskState, taskId, state),
   getOpenTasks: () => ipcRenderer.invoke(IPC.getOpenTasks),

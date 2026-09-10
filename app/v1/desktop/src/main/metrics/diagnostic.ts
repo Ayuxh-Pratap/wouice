@@ -1,4 +1,4 @@
-import type { DictationRecord, MeetingRecord } from '@wouice/store'
+import type { DictationRecord, MeetingDiagnostics, MeetingRecord } from '@wouice/store'
 import type { Settings } from '../../shared/settings.js'
 
 /**
@@ -164,7 +164,10 @@ export function formatSession(dictations: DictationRecord[], meta: Record<string
  *
  * Ordered by how often it is the answer.
  */
-export function formatMeeting(meeting: MeetingRecord, tasks: number): string {
+export function formatMeeting(
+  meeting: MeetingRecord,
+  tasksIn: (versionId: number) => number
+): string {
   const d = meeting.diagnostics
   const lines: string[] = []
   const when = new Date(meeting.startedAt).toLocaleString()
@@ -211,10 +214,46 @@ export function formatMeeting(meeting: MeetingRecord, tasks: number): string {
 
   lines.push('notes')
   lines.push(`  model         ${d.llmModel ?? 'unknown'}`)
-  lines.push(`  written       ${meeting.notesMd ? `yes, ${meeting.notesMd.length} chars` : 'no'}`)
-  lines.push(`  tasks         ${tasks}`)
   lines.push(`  your notes    ${meeting.scratchMd ? `${meeting.scratchMd.length} chars` : 'none'}`)
-  for (const run of d.notes ?? []) {
+
+  // One block per transcript: each has its own English, summary and tasks, and
+  // "the summary is wrong" means nothing until you know which one it was built on.
+  for (const version of meeting.versions) {
+    const v = version.diagnostics
+    lines.push('')
+    lines.push(`version ${version.source}${version.main ? '  (main)' : ''}`)
+    lines.push(`  lines         ${version.segments}`)
+    if (v.transcription) {
+      // Which language each chunk was sent as: a wrong choice here is what
+      // turned English speech into Hindi-script nonsense.
+      const languages = Object.entries(v.transcription.languages ?? {})
+        .map(([language, n]) => `${language} ${n}`)
+        .join(', ')
+      lines.push(
+        `  transcribed   ${v.transcription.model}, ${v.transcription.segments} lines, ` +
+          `${Math.round(v.transcription.ms / 1000)}s, ${new Date(v.transcription.at).toLocaleString()}` +
+          (languages ? `, chunks sent as ${languages}` : '')
+      )
+    }
+    if (v.english) {
+      lines.push(
+        v.english.ok === false
+          ? `  english       FAILED - ${v.english.message ?? 'no reason recorded'}`
+          : `  english       ${v.english.rendered} rendered, ${v.english.missed} missed, ` +
+              `${v.english.failedBatches} failed batch(es)`
+      )
+    }
+    lines.push(`  summary       ${version.notesMd ? `yes, ${version.notesMd.length} chars` : 'not written'}`)
+    lines.push(`  tasks         ${tasksIn(version.id)}`)
+    formatNotesRuns(v.notes ?? [], lines)
+  }
+  if (meeting.versions.length === 0) lines.push('  (no transcript versions)')
+
+  return lines.join('\n')
+}
+
+function formatNotesRuns(runs: NonNullable<MeetingDiagnostics['notes']>, lines: string[]): void {
+  for (const run of runs) {
     lines.push(
       `  run ${new Date(run.at).toLocaleTimeString()}  ` +
         (run.ok
@@ -239,7 +278,5 @@ export function formatMeeting(meeting: MeetingRecord, tasks: number): string {
       )
     }
   }
-  if ((d.notes ?? []).length === 0) lines.push('  (never run)')
-
-  return lines.join('\n')
+  if (runs.length === 0) lines.push('  (never run)')
 }
