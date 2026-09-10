@@ -203,19 +203,45 @@ export interface SegmentRecord extends SegmentInput {
 
 export type TaskState = 'open' | 'done' | 'dropped'
 
+/** Which part of the work a task belongs to. */
+export type TaskArea = 'frontend' | 'backend' | 'design' | 'product' | 'business' | 'ops' | 'other'
+
+/** What sort of work it is. */
+export type TaskKind = 'feature' | 'bug' | 'chore' | 'followup' | 'other'
+
+export const TASK_AREAS: readonly TaskArea[] = [
+  'frontend',
+  'backend',
+  'design',
+  'product',
+  'business',
+  'ops',
+  'other',
+]
+export const TASK_KINDS: readonly TaskKind[] = ['feature', 'bug', 'chore', 'followup', 'other']
+
 export interface TaskInput {
   text: string
   owner: string | null
   /** ISO date, or null when none was said. Never guessed. */
   due: string | null
   /**
-   * The segment this was taken from.
+   * The segment this was taken from, or null for a task from your own notes.
    *
-   * Not optional by accident. A task you cannot trace back to the moment it was
-   * said is one you have to take on faith, and the first wrong one teaches you
-   * to distrust every other.
+   * A task you cannot trace back to something is one you have to take on
+   * faith, and the first wrong one teaches you to distrust every other - so a
+   * task with no segment must carry `noteQuote` instead.
    */
-  segmentId: number
+  segmentId: number | null
+  area?: TaskArea
+  kind?: TaskKind
+  /** Yours to do: assigned to the person recording, by role or by name. */
+  mine?: boolean
+  source?: 'transcript' | 'notes'
+  /** The words from your notes, when that is where it came from. */
+  noteQuote?: string | null
+  /** Why it was judged a real commitment. */
+  reason?: string
 }
 
 export interface TaskRecord extends TaskInput {
@@ -223,6 +249,11 @@ export interface TaskRecord extends TaskInput {
   meetingId: number
   state: TaskState
   createdAt: number
+  area: TaskArea
+  kind: TaskKind
+  mine: boolean
+  source: 'transcript' | 'notes'
+  reason: string
   /** What was actually said. Joined from the segment it cites. */
   quote: string | null
   quoteAtMs: number | null
@@ -268,6 +299,15 @@ export interface MeetingDiagnostics {
     tasks: number
     ms: number
     message?: string
+    /** How much of the transcript the summary was actually built from. */
+    coveredLines?: number
+    totalLines?: number
+    /** The stretches that could not be read. */
+    gapsAt?: { fromMs: number; toMs: number }[]
+    /** Proposed, dropped by the word filter, refused by the checker. */
+    candidates?: number
+    filtered?: number
+    rejected?: number
   }[]
   [key: string]: unknown
 }

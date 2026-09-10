@@ -358,6 +358,29 @@ export const MIGRATIONS: Migration[] = [
       END;
     `,
   },
+  {
+    id: 9,
+    name: 'what a task is about, and whose it is',
+    sql: `
+      -- A long meeting produces tasks for everybody in it. What one person
+      -- actually wants to see is their own, and the ones in their area of the
+      -- work: a frontend engineer does not open a meeting to read the
+      -- finance follow-ups. These are what the task list filters on.
+      ALTER TABLE tasks ADD COLUMN area TEXT NOT NULL DEFAULT 'other';
+      ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'other';
+      ALTER TABLE tasks ADD COLUMN mine INTEGER NOT NULL DEFAULT 0;
+
+      -- Where it came from: a line of the transcript, or what the person typed
+      -- during the call. A task from the notes has no segment to point at, so
+      -- it carries the words it came from instead.
+      ALTER TABLE tasks ADD COLUMN source TEXT NOT NULL DEFAULT 'transcript';
+      ALTER TABLE tasks ADD COLUMN note_quote TEXT;
+
+      -- Why the model decided this was a real commitment. Kept, because a task
+      -- list you cannot question is one you stop trusting.
+      ALTER TABLE tasks ADD COLUMN reason TEXT NOT NULL DEFAULT '';
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */

@@ -1,6 +1,9 @@
 import { rows, row, type Db } from './db.js'
+import { TASK_AREAS, TASK_KINDS } from './types.js'
 import type {
   MeetingDiagnostics,
+  TaskArea,
+  TaskKind,
   MeetingRecord,
   SegmentInput,
   SegmentRecord,
@@ -113,6 +116,12 @@ interface TaskRow {
   created_at: number
   quote: string | null
   quote_at: number | null
+  area: string
+  kind: string
+  mine: number
+  source: string
+  note_quote: string | null
+  reason: string
 }
 
 function toTask(r: TaskRow): TaskRecord {
@@ -124,11 +133,18 @@ function toTask(r: TaskRow): TaskRecord {
     text: r.text,
     owner: r.owner,
     due: r.due,
-    segmentId: r.segment_id ?? 0,
+    segmentId: r.segment_id,
     state,
     createdAt: r.created_at,
-    quote: r.quote,
+    // A task from your notes has no segment; the words it came from stand in.
+    quote: r.quote ?? r.note_quote,
     quoteAtMs: r.quote_at,
+    area: (TASK_AREAS as readonly string[]).includes(r.area) ? (r.area as TaskArea) : 'other',
+    kind: (TASK_KINDS as readonly string[]).includes(r.kind) ? (r.kind as TaskKind) : 'other',
+    mine: r.mine === 1,
+    source: r.source === 'notes' ? 'notes' : 'transcript',
+    noteQuote: r.note_quote,
+    reason: r.reason,
   }
 }
 
@@ -358,8 +374,9 @@ export class Meetings {
     try {
       this.db.raw.prepare('DELETE FROM tasks WHERE meeting_id = ?').run(meetingId)
       const insert = this.db.raw.prepare(
-        `INSERT INTO tasks (meeting_id, text, owner, due, segment_id, state, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (meeting_id, text, owner, due, segment_id, state, created_at,
+                            area, kind, mine, source, note_quote, reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       for (const task of tasks) {
         insert.run(
@@ -369,7 +386,13 @@ export class Meetings {
           task.due,
           task.segmentId,
           previous.get(task.text.toLowerCase()) ?? 'open',
-          at
+          at,
+          task.area ?? 'other',
+          task.kind ?? 'other',
+          task.mine ? 1 : 0,
+          task.source ?? 'transcript',
+          task.noteQuote ?? null,
+          task.reason ?? ''
         )
       }
       this.db.raw.exec('COMMIT')
