@@ -3,6 +3,7 @@ import type { MeetingSegment, MeetingState } from '../../shared/ipc.js'
 import type { MeetingRecord } from '@wouice/store'
 import type { Settings } from '../../shared/settings.js'
 import { MEETING_KINDS, type MeetingKind } from '../../shared/meeting-kind.js'
+import { enhancementOf } from '../meetings/enhanced.js'
 import { hashForMeeting } from '../shell/routes.js'
 import { Transcript } from '../meetings/Transcript.js'
 
@@ -29,6 +30,8 @@ export function MeetingsPage(): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<MeetingSegment[] | null>(null)
   const [busy, setBusy] = useState(false)
+  /** Why the last Remove did not happen: still recording, or the file is open. */
+  const [removeProblem, setRemoveProblem] = useState<string | null>(null)
   /** So a meeting that has already sent us to its page cannot do it twice. */
   const sentTo = useRef(0)
 
@@ -93,7 +96,7 @@ export function MeetingsPage(): React.JSX.Element {
   }
 
   const remove = async (meeting: MeetingRecord): Promise<void> => {
-    await window.wouice.deleteMeeting(meeting.id)
+    setRemoveProblem(await window.wouice.deleteMeeting(meeting.id))
     refresh()
   }
 
@@ -170,6 +173,10 @@ export function MeetingsPage(): React.JSX.Element {
           />
         </div>
 
+        {removeProblem ? (
+          <p className="mb-2 px-0.5 text-[11.5px] text-amber-400">{removeProblem}</p>
+        ) : null}
+
         {hits !== null ? (
           <div className="lift rounded-xl bg-white/[0.035] px-4 py-3.5 ring-1 ring-white/[0.08]">
             <p className="mb-2.5 text-[11.5px] text-neutral-500">
@@ -208,6 +215,9 @@ export function MeetingsPage(): React.JSX.Element {
                       {formatDuration(meeting.durationMs)} · {meeting.segments} line
                       {meeting.segments === 1 ? '' : 's'}
                       {meeting.notesMd ? ' · summarised' : ''}
+                      {enhancementOf(meeting) ? (
+                        <span className="text-sky-300/80"> · improved</span>
+                      ) : null}
                       {problemOf(meeting) ? (
                         <span className="text-amber-400"> · {problemOf(meeting)}</span>
                       ) : null}
@@ -218,7 +228,7 @@ export function MeetingsPage(): React.JSX.Element {
                       e.preventDefault()
                       void remove(meeting)
                     }}
-                    title="Removes it from this list. The audio file stays on disk."
+                    title="Removes it from Wouice and moves the recording to the Recycle Bin."
                     className="shrink-0 rounded-md px-2 py-1 text-[11px] text-neutral-600 ring-1 ring-white/10 transition hover:bg-red-500/10 hover:text-red-300"
                   >
                     Remove

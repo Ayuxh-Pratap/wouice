@@ -413,7 +413,11 @@ export interface WouiceApi {
   getMeetingSegments(meetingId: number): Promise<MeetingSegment[]>
   /** Full-text across every meeting. Empty query is no results, not an error. */
   searchMeetings(query: string): Promise<MeetingSegment[]>
-  deleteMeeting(meetingId: number): Promise<void>
+  /**
+   * Remove a meeting, and move its recording to the Recycle Bin so it is not
+   * adopted back at the next launch. Returns why it could not, or null.
+   */
+  deleteMeeting(meetingId: number): Promise<string | null>
   /** What you type during the call, saved as you type it. */
   setMeetingScratch(meetingId: number, markdown: string): Promise<void>
   revealMeeting(dir: string): void

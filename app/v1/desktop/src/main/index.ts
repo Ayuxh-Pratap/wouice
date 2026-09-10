@@ -32,6 +32,7 @@ import { analyseCalibration, applyCalibration, describeLanguages, frameLevels } 
 import { enableSystemAudioCapture } from './meeting/display-media.js'
 import { MeetingController } from './meeting/controller.js'
 import { finishedSessions } from './meeting/merge.js'
+import { discardRecording } from './meeting/remove.js'
 import { MeetingNotesEngine, NotesUnavailable } from './meeting/notes-engine.js'
 import { MicWatcher } from './meeting/mic-watcher.js'
 import { repassMeeting, RepassUnavailable } from './meeting/repass.js'
@@ -200,11 +201,13 @@ async function writeNotes(id: number): Promise<NotesOutcome> {
       gapsAt: run.gapsAt,
       candidates: run.candidates,
       filtered: run.filtered,
+      merged: run.merged,
       rejected: run.rejected,
     })
     console.log(
       `[meeting] notes for ${id}: ${run.chunks} chunk(s), covered ${run.coveredLines}/${run.totalLines} lines,` +
-        ` tasks ${run.tasks.length} kept of ${run.candidates} (${run.filtered} filtered, ${run.rejected} refused)` +
+        ` tasks ${run.tasks.length} kept of ${run.candidates}` +
+        ` (${run.filtered} filtered, ${run.merged} merged, ${run.rejected} refused)` +
         `, ${Math.round(run.ms / 1000)}s`
     )
     return {
@@ -593,6 +596,10 @@ async function finishMeeting(meetingId: number): Promise<void> {
  * down. Recordings made before the table existed, or recovered from a crash
  * that took the database write with it, would otherwise be invisible in an app
  * that is holding them.
+ *
+ * Which is why removing a meeting takes its directory to the Recycle Bin (see
+ * `discardRecording`). A removed row with its audio still here is, to this
+ * function, a recording nobody wrote down - and it adopts it straight back.
  */
 function reconcileMeetings(): void {
   try {
@@ -964,11 +971,23 @@ function registerIpc(): void {
   ipcMain.handle(IPC.listMeetings, () => store.meetings.list())
   ipcMain.handle(IPC.getMeetingSegments, (_e, id: number) => store.meetings.segments(id))
   ipcMain.handle(IPC.searchMeetings, (_e, query: string) => store.meetings.search(query))
-  ipcMain.handle(IPC.deleteMeeting, (_e, id: number) => {
-    // The row goes; the audio stays. Deleting a recording of other people is a
-    // separate decision from tidying a list, and the file is reachable from
-    // "Show file" until it is made deliberately.
+  ipcMain.handle(IPC.deleteMeeting, async (_e, id: number): Promise<string | null> => {
+    // The recording goes to the Recycle Bin with the row. Left where it was,
+    // `reconcileMeetings` adopts it straight back at the next launch.
+    const meeting = store.meetings.byId(id)
+    if (!meeting) return null
+    if (meetings.state().meetingId === id) return 'This meeting is still recording. Stop it first.'
+    if ([notesRunning, englishRunning, repassRunning].includes(id)) {
+      return 'Wouice is still working on this meeting. Remove it when that has finished.'
+    }
+    // The file first. If the bin refuses, the meeting stays listed, rather than
+    // vanishing now and coming back as a stranger tomorrow.
+    const problem = await discardRecording(MEETING_ROOT, meeting.dir, (target) =>
+      shell.trashItem(target)
+    )
+    if (problem) return problem
     store.meetings.remove(id)
+    return null
   })
   ipcMain.handle(IPC.setMeetingScratch, (_e, id: number, markdown: string) =>
     store.meetings.setScratch(id, markdown)
