@@ -84,6 +84,15 @@ export class SettingsStore {
             : DEFAULT_SETTINGS.pet.character,
           size: isPetSize(raw.pet?.size) ? raw.pet.size : DEFAULT_SETTINGS.pet.size,
         },
+        // Merged, not spread. `...raw` above replaces `meetings` wholesale, so a
+        // file written before a field existed never gained it: `defaultKind`
+        // was silently undefined on older files, masked only because `kindOf`
+        // falls back to the default. `me` has no such fallback and would crash.
+        meetings: {
+          ...DEFAULT_SETTINGS.meetings,
+          ...raw.meetings,
+          me: { ...DEFAULT_SETTINGS.meetings.me, ...raw.meetings?.me },
+        },
       }
     } catch {
       // A hand-edited file with a trailing comma must not brick the app.

@@ -1,5 +1,6 @@
 import type { SidecarId } from './models.js'
 import { DEFAULT_MEETING_KIND, type MeetingKind } from './meeting-kind.js'
+import type { TaskArea } from '@wouice/store'
 import {
   DEFAULT_CHARACTER,
   DEFAULT_PET_SIZE,
@@ -140,6 +141,15 @@ export interface MeetingConfig {
    * the team standup in Hindi are both normal weeks. See `MeetingKind`.
    */
   defaultKind: MeetingKind
+  /**
+   * Who you are, so the task list can show what is yours.
+   *
+   * A long meeting produces tasks for everybody in it. The name is how "Ayush,
+   * can you take the login bug" becomes one of YOURS rather than one of the
+   * room's, and the area is which part of the work you want surfaced first.
+   * Both empty or 'other' simply means no filter is applied.
+   */
+  me: { name: string; area: TaskArea }
 }
 
 /**
@@ -253,6 +263,7 @@ export interface InjectionConfig {
 export const DEFAULT_MEETINGS: MeetingConfig = {
   autoDetect: true,
   defaultKind: DEFAULT_MEETING_KIND,
+  me: { name: '', area: 'frontend' },
 }
 
 export const DEFAULT_SETTINGS: Settings = {
