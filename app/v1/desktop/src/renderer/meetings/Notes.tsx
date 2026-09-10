@@ -85,7 +85,18 @@ function TaskRow({
           >
             {task.text}
           </p>
+          {/* Why it was judged a real commitment. A task list you cannot
+              question is one you stop trusting. */}
+          {task.reason ? (
+            <p className="mt-0.5 text-[11px] leading-snug text-neutral-600">{task.reason}</p>
+          ) : null}
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+            {task.area !== 'other' ? <Badge>{task.area}</Badge> : null}
+            {task.kind !== 'other' ? (
+              <Badge tone={task.kind === 'bug' ? 'bug' : undefined}>{task.kind}</Badge>
+            ) : null}
+            {task.mine ? <Badge tone="mine">yours</Badge> : null}
+            {task.source === 'notes' ? <Badge>from your notes</Badge> : null}
             {task.owner ? (
               <span className="text-neutral-400">{task.owner}</span>
             ) : (
@@ -185,5 +196,24 @@ function inline(text: string): React.ReactNode {
     <span className="text-amber-300/80 italic" title="The model could not summarise this part.">
       {match[1]}
     </span>
+  )
+}
+
+/** A small label on a task: what it is about, what kind, whose. */
+function Badge({
+  children,
+  tone,
+}: {
+  children: React.ReactNode
+  tone?: 'bug' | 'mine'
+}): React.JSX.Element {
+  const colours =
+    tone === 'bug'
+      ? 'bg-red-500/10 text-red-300/90 ring-red-500/20'
+      : tone === 'mine'
+        ? 'bg-emerald-500/10 text-emerald-300/90 ring-emerald-500/20'
+        : 'bg-white/[0.05] text-neutral-400 ring-white/10'
+  return (
+    <span className={`rounded px-1.5 py-px text-[10px] ring-1 ${colours}`}>{children}</span>
   )
 }

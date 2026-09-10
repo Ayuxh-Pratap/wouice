@@ -14,6 +14,12 @@ import { PET_SIZE_LABELS, type PetSize } from '../../shared/pet.js'
 import { DictionaryEditor } from './DictionaryEditor.js'
 import { ConfirmButton, Choice, Row, Section, Toggle } from './Field.js'
 import { Tabs } from '../shell/Tabs.js'
+import { MEETING_KINDS, type MeetingKind } from '../../shared/meeting-kind.js'
+// The types entry, NOT the package root. The root pulls in `node:sqlite`, which
+// cannot exist in a renderer: importing a runtime value from it broke the
+// renderer bundle outright, and it failed silently enough that only a count of
+// "built in" lines caught it.
+import { TASK_AREAS, type TaskArea } from '@wouice/store/types'
 
 /**
  * Settings, grouped by what you came to change.
@@ -30,7 +36,6 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'storage', label: 'Recordings' },
   { id: 'advanced', label: 'Advanced' },
 ]
-import { MEETING_KINDS, type MeetingKind } from '../../shared/meeting-kind.js'
 
 /**
  * Everything a person can change, and nothing they cannot act on.
@@ -395,6 +400,48 @@ export function SettingsPanel({
               save({ meetings: { ...settings.meetings, defaultKind: kind as MeetingKind } })
             }
           />
+        </Row>
+
+        <Row
+          label="Your name"
+          hint="How people say it in your meetings. A task given to you by name — 'Ayush, can you take the login bug' — is marked as yours."
+        >
+          <input
+            defaultValue={settings.meetings.me.name}
+            placeholder="Ayush"
+            // On blur, not on every keystroke: each save rewrites the file and
+            // pushes new settings to every window.
+            onBlur={(e) => {
+              const name = e.target.value.trim()
+              if (name === settings.meetings.me.name) return
+              save({ meetings: { ...settings.meetings, me: { ...settings.meetings.me, name } } })
+            }}
+            className="w-40 rounded-md bg-neutral-950 px-2 py-1 text-[12px] text-neutral-200 ring-1 ring-white/10 outline-none placeholder:text-neutral-700 focus:ring-white/25"
+          />
+        </Row>
+
+        <Row
+          label="Your area"
+          hint="Which part of the work you want surfaced first. It becomes a filter on every meeting's task list."
+        >
+          <select
+            value={settings.meetings.me.area}
+            onChange={(e) =>
+              save({
+                meetings: {
+                  ...settings.meetings,
+                  me: { ...settings.meetings.me, area: e.target.value as TaskArea },
+                },
+              })
+            }
+            className="rounded-md bg-neutral-950 px-2 py-1 text-[12px] text-neutral-200 ring-1 ring-white/10 outline-none focus:ring-white/25"
+          >
+            {TASK_AREAS.map((area) => (
+              <option key={area} value={area}>
+                {area.charAt(0).toUpperCase() + area.slice(1)}
+              </option>
+            ))}
+          </select>
         </Row>
 
         <Row

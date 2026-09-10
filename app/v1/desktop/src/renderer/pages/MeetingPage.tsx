@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { MeetingRecord, TaskRecord, TaskState } from '@wouice/store'
+import type { MeetingRecord, TaskArea, TaskRecord, TaskState } from '@wouice/store'
 import type {
   EnglishProgressView,
   MeetingSegment,
@@ -53,6 +53,13 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   const [problem, setProblem] = useState('')
   const [copied, setCopied] = useState(false)
   const [tab, setTab] = useState<MeetingTab | null>(null)
+  const [taskFilter, setTaskFilter] = useState<'all' | 'mine' | 'area'>('all')
+  const [myArea, setMyArea] = useState<TaskArea>('frontend')
+
+  // Your area names the third filter. Read once; it changes in Settings.
+  useEffect(() => {
+    void window.wouice.getSettings().then((s) => setMyArea(s.meetings.me.area))
+  }, [])
 
   const load = useCallback(() => {
     void window.wouice.getMeeting(meetingId).then(setMeeting)
@@ -306,6 +313,8 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
           onChange={setTab}
         />
 
+        {shown === 'summary' ? <Coverage meeting={meeting} /> : null}
+
         {shown === 'summary' ? (
           meeting.notesMd ? (
             <Notes markdown={meeting.notesMd} tasks={[]} onTaskState={changeTask} />
@@ -327,9 +336,36 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
           )
         ) : null}
 
+        {shown === 'tasks' && tasks.length > 0 ? (
+          <TaskFilters
+            active={taskFilter}
+            onChange={setTaskFilter}
+            area={myArea}
+            counts={{
+              all: tasks.length,
+              mine: tasks.filter((t) => t.mine).length,
+              area: tasks.filter((t) => t.area === myArea).length,
+            }}
+          />
+        ) : null}
+
         {shown === 'tasks' ? (
           tasks.length > 0 ? (
-            <Notes markdown={null} tasks={tasks} onTaskState={changeTask} />
+            filterTasks(tasks, taskFilter, myArea).length > 0 ? (
+              <Notes
+                markdown={null}
+                tasks={filterTasks(tasks, taskFilter, myArea)}
+                onTaskState={changeTask}
+              />
+            ) : (
+              <Empty
+                text={
+                  taskFilter === 'mine'
+                    ? 'Nothing here is yours. Set your name in Settings → Meetings if something should be.'
+                    : `Nothing tagged ${myArea} in this meeting.`
+                }
+              />
+            )
           ) : (
             <Empty
               text={
@@ -645,6 +681,8 @@ function describeNotes(progress: NotesProgressView): string {
       return `Reading part${where}…`
     case 'extracting':
       return `Finding commitments in part${where}…`
+    case 'checking':
+      return `Checking task${where}…`
     default:
       return 'Writing the summary…'
   }
@@ -810,5 +848,83 @@ function LiveNotes({
         className="h-[72px] w-full resize-none rounded-md bg-black/25 px-3 py-2 text-[12.5px] leading-relaxed text-neutral-200 ring-1 ring-white/[0.06] outline-none placeholder:text-[11px] placeholder:text-neutral-700 focus:ring-white/20"
       />
     </section>
+  )
+}
+
+type TaskFilter = 'all' | 'mine' | 'area'
+
+function filterTasks(tasks: TaskRecord[], filter: TaskFilter, area: TaskArea): TaskRecord[] {
+  if (filter === 'mine') return tasks.filter((t) => t.mine)
+  if (filter === 'area') return tasks.filter((t) => t.area === area)
+  return tasks
+}
+
+/**
+ * All, yours, or your area.
+ *
+ * A long meeting produces tasks for everyone in it. What you open it for is
+ * usually the handful that are yours, or the ones in the part of the work you
+ * own - and a list you have to read end to end to find those is a list you
+ * stop opening.
+ */
+function TaskFilters({
+  active,
+  onChange,
+  area,
+  counts,
+}: {
+  active: TaskFilter
+  onChange(filter: TaskFilter): void
+  area: TaskArea
+  counts: Record<TaskFilter, number>
+}): React.JSX.Element {
+  const options: { id: TaskFilter; label: string }[] = [
+    { id: 'all', label: 'All' },
+    { id: 'mine', label: 'Yours' },
+    { id: 'area', label: area.charAt(0).toUpperCase() + area.slice(1) },
+  ]
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          onClick={() => onChange(option.id)}
+          aria-pressed={active === option.id}
+          className={
+            'rounded-full px-2.5 py-0.5 text-[11.5px] ring-1 transition ' +
+            (active === option.id
+              ? 'bg-white/[0.10] text-neutral-100 ring-white/25'
+              : 'text-neutral-500 ring-white/10 hover:bg-white/[0.05] hover:text-neutral-300')
+          }
+        >
+          {option.label}
+          <span className="ml-1.5 tabular-nums text-neutral-500">{counts[option.id]}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Said out loud when the summary did not read the whole meeting.
+ *
+ * WHY THIS IS A BANNER AND NOT A NUMBER IN A DIAGNOSTIC. A real hour-long
+ * meeting was summarised from its last six minutes, and the summary read
+ * perfectly well - it was built mostly from the notes typed during the call.
+ * The only sign was "3 gap(s)" in a panel nobody opens. A partial summary that
+ * looks whole is the worst possible outcome, because you would act on it.
+ */
+function Coverage({ meeting }: { meeting: MeetingRecord }): React.JSX.Element | null {
+  const run = (meeting.diagnostics.notes ?? []).at(-1)
+  if (!run?.ok || !run.totalLines || !run.gapsAt?.length) return null
+  const pct = Math.round(((run.coveredLines ?? 0) / run.totalLines) * 100)
+  const where = run.gapsAt
+    .map((g) => `${Math.round(g.fromMs / 60_000)}–${Math.round(g.toMs / 60_000)} min`)
+    .join(', ')
+  return (
+    <div className="rounded-lg bg-amber-500/10 px-3 py-2 text-[12px] leading-snug text-amber-200 ring-1 ring-amber-500/20">
+      This summary covers {pct}% of the meeting. {where} could not be read, so anything
+      said then is missing from the summary and the tasks. Redo summary to try again.
+    </div>
   )
 }
