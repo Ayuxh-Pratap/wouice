@@ -34,8 +34,10 @@ export type {
   TaskArea,
   TaskInput,
   TaskKind,
+  TaskEvidence,
   TaskRecord,
   TaskState,
+  TaskStatus,
   VersionDiagnostics,
   VersionRecord,
 } from './types.js'
