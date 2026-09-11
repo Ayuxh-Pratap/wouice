@@ -586,6 +586,12 @@ describe('who a task belongs to', () => {
     expect(resolveOwner('you', 'them', '')).toBe('You')
   })
 
+  it('reads "I" as the speaker by name, when the transcript names them', () => {
+    // Meet's captions name every line, so "I'll check the branch" is Rahul's.
+    expect(resolveOwner('I', 'them', '', 'Rahul Dhir')).toBe('Rahul Dhir')
+    expect(resolveOwner('I', 'me', '', 'Ayush Pratap Singh')).toBe('You')
+  })
+
   it('treats "we" and the team as nobody in particular', () => {
     expect(resolveOwner('we', 'me', '')).toBeNull()
     expect(resolveOwner('the team', 'them', '')).toBeNull()
