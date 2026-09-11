@@ -3,6 +3,7 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { BotRunReason, BotRunState, BotRunView } from '../../shared/ipc.js'
 import type { BotBrowser } from './browser.js'
+import { MeetFeed, type CaptionLine } from './captions.js'
 import { meetUrl, readPage, type PageSnapshot } from './meet-ui.js'
 
 /**
@@ -20,8 +21,11 @@ import { meetUrl, readPage, type PageSnapshot } from './meet-ui.js'
  * a refusal, a signed-out profile or a "no" from the host never does: another
  * attempt would get the same answer, a minute later.
  *
- * STAGE B1: no captions and no audio. The bot joins and leaves correctly and
- * says why; what it keeps comes in B2.
+ * WHAT IT KEEPS: Meet's captions, as lines with names on them, in a meeting of
+ * their own. The run hands them to a `CaptureSink` and knows nothing of the
+ * store. Something wrong with what it is keeping is a warning on the run, not
+ * a failure: a bot still in the call with its captions off is a bot you can
+ * see is keeping nothing, and can tell to leave.
  */
 
 export interface BotTimings {
@@ -41,6 +45,10 @@ export interface BotTimings {
   lostMs: number
   /** The longest a run is allowed to last. */
   maxMs: number
+  /** No heartbeat from the hook in Meet's page for this long: it is not running. */
+  silentPageMs: number
+  /** Between tries at turning the captions on. */
+  captionRetryMs: number
 }
 
 export const DEFAULT_TIMINGS: BotTimings = {
@@ -52,9 +60,15 @@ export const DEFAULT_TIMINGS: BotTimings = {
   aloneAtStartMs: 15 * 60_000,
   lostMs: 30_000,
   maxMs: 3 * 60 * 60_000,
+  // BOT7: a silent page is noticed within 30 seconds.
+  silentPageMs: 20_000,
+  captionRetryMs: 20_000,
 }
 
 const ATTEMPTS = 3
+const CAPTION_TRIES = 3
+/** Unreadable messages, with no caption read, before it is called a format change rather than noise. */
+const UNREADABLE_BEFORE_WARNING = 10
 const RETRYABLE = new Set<BotRunReason>(['could-not-connect', 'ui-not-found', 'browser-died'])
 /** Runs whose folders are kept; older ones are deleted when a new run starts. */
 const KEEP_RUNS = 20
@@ -86,11 +100,24 @@ export function describeRun(state: 'ended' | 'failed', reason: BotRunReason): st
   return (state === 'ended' ? LEFT[reason] : FAILED[reason]) ?? reason
 }
 
+/** Where what the bot hears goes. The run holds only the meeting's id. */
+export interface CaptureSink {
+  /** A meeting for this call, made when the bot gets in. Returns its id. */
+  open(startedAt: number): number
+  append(meetingId: number, lines: readonly CaptionLine[], startedAt: number): void
+  /** The call is over. `lines` is how many were kept. */
+  close(meetingId: number, detail: { endedAt: number; lines: number }): void
+}
+
 export interface MeetingBotDeps {
   runsDir: string
   launch(): Promise<BotBrowser>
   /** Null when the profile is signed in as the bot; otherwise why not. */
   ensureSignedIn(): Promise<string | null>
+  /** Where captions go. Without one the bot joins and leaves and keeps nothing. */
+  sink?: CaptureSink
+  /** The language to ask Meet to caption in, e.g. `hi-IN`. Null for Meet's default. */
+  captionLanguage?(): string | null
   timings?: Partial<BotTimings>
   now?(): number
   sleep?(ms: number): Promise<void>
@@ -120,6 +147,24 @@ interface Run {
   chromeVersion: string | null
   leaveRequested: boolean
   events: RunEvent[]
+  /** What the page is forwarding, for the attempt under way. */
+  feed: MeetFeed | null
+  meetingId: number | null
+  meetingStartedAt: number
+  meetingClosed: boolean
+  lines: number
+  warning: string | null
+  /** A failure to store captions. Sticky: the lines it failed on are gone. */
+  saveProblem: string | null
+}
+
+interface CaptionState {
+  on: boolean
+  onAt: number | null
+  tries: number
+  lastTry: number
+  /** The language asked for and not got, if any. */
+  languageMissed: string | null
 }
 
 type JoinOutcome = { joined: true } | { joined: false; reason: BotRunReason }
@@ -153,6 +198,9 @@ export class MeetingBot extends EventEmitter {
       attempt: run.attempt,
       dir: run.dir,
       participants: run.participants,
+      meetingId: run.meetingId,
+      lines: run.lines,
+      warning: run.warning,
     }
   }
 
@@ -191,6 +239,13 @@ export class MeetingBot extends EventEmitter {
       chromeVersion: null,
       leaveRequested: false,
       events: [{ at, state: 'checking' }],
+      feed: null,
+      meetingId: null,
+      meetingStartedAt: at,
+      meetingClosed: false,
+      lines: 0,
+      warning: null,
+      saveProblem: null,
     }
     this.current = run
     this.changed(run)
@@ -198,6 +253,7 @@ export class MeetingBot extends EventEmitter {
     this.task = this.execute(run)
       .catch(async (err: unknown) => {
         if (this.browser) await this.closeBrowser(this.browser)
+        this.closeMeeting(run)
         this.finish(run, 'failed', 'ui-not-found', `Something the bot did not expect: ${err instanceof Error ? err.message : String(err)}`)
       })
       .finally(() => {
@@ -245,10 +301,15 @@ export class MeetingBot extends EventEmitter {
       }
       this.browser = browser
       run.chromeVersion = browser.chromeVersion
+      // Listening from before the page loads: Meet fetches its participant
+      // list while the bot is still joining.
+      const feed = new MeetFeed()
+      run.feed = feed
+      browser.page.onMessage((raw) => feed.receive(raw, this.now()))
 
       const outcome = await this.join(run, browser)
       if (outcome.joined) {
-        const reason = await this.stay(run, browser)
+        const reason = await this.stay(run, browser, feed)
         return this.leaveMeeting(run, browser, reason)
       }
       if (outcome.reason === 'asked') {
@@ -339,10 +400,12 @@ export class MeetingBot extends EventEmitter {
     }
   }
 
-  /** In the meeting, until something ends it. Returns why. */
-  private async stay(run: Run, browser: BotBrowser): Promise<BotRunReason> {
+  /** In the meeting, keeping what is said, until something ends it. Returns why. */
+  private async stay(run: Run, browser: BotBrowser, feed: MeetFeed): Promise<BotRunReason> {
     this.move(run, 'in-meeting')
     const joinedAt = this.now()
+    this.openMeeting(run, joinedAt)
+    const captions: CaptionState = { on: false, onAt: null, tries: 0, lastTry: -Infinity, languageMissed: null }
     let seenOthers = false
     let aloneSince: number | null = null
     let lostSince: number | null = null
@@ -351,6 +414,11 @@ export class MeetingBot extends EventEmitter {
       if (run.leaveRequested) return 'asked'
       if (browser.closed) return 'browser-died'
       if (this.now() - joinedAt > this.t.maxMs) return 'max-duration'
+
+      if (!captions.on && captions.tries < CAPTION_TRIES && this.now() - captions.lastTry >= this.t.captionRetryMs) {
+        await this.turnOnCaptions(run, browser, captions)
+      }
+      this.keep(run, feed.captions.take(this.now(), (d) => feed.roster.nameOf(d)))
 
       const snapshot = await this.look(browser)
       if (snapshot) {
@@ -366,26 +434,33 @@ export class MeetingBot extends EventEmitter {
           if (this.now() - lostSince > this.t.lostMs) return 'lost-meeting'
         }
 
-        // Tiles include the bot's own. Zero means they could not be read at
-        // all, and an unreadable count must never make the bot leave.
-        const others = Math.max(0, snapshot.participants - 1)
+        // Who else is here: Meet's own list once it has sent one, the tiles
+        // until then. Tiles include the bot's own, and zero tiles means they
+        // could not be read at all - never that nobody is there.
+        const tiles = Math.max(0, snapshot.participants - 1)
+        const listed = feed.roster.others()
+        const others = listed ?? tiles
         if (others !== run.participants) {
           run.participants = others
           // Into the log as well as the view: leaving when alone rests on this
           // count, and a run that left too early or never left is diagnosed
           // from what the bot believed about who was there.
-          this.note(run, `participant tiles: ${snapshot.participants} (${others} other${others === 1 ? '' : 's'})`)
+          this.note(run, `others in the call: ${others} (Meet's list: ${listed ?? 'not yet'}, tiles: ${snapshot.participants})`)
           this.changed(run)
         }
-        if (others > 0) {
+        // Alone only when neither says otherwise: a list that missed somebody
+        // and tiles nobody could read must not add up to leaving a meeting
+        // people are still in.
+        if (Math.max(listed ?? 0, tiles) > 0) {
           seenOthers = true
           aloneSince = null
-        } else if (snapshot.participants > 0) {
+        } else if (listed !== null || snapshot.participants > 0) {
           aloneSince ??= this.now()
           const limit = seenOthers ? this.t.aloneMs : this.t.aloneAtStartMs
           if (this.now() - aloneSince > limit) return 'alone'
         }
       }
+      this.warn(run, this.warningFor(run, feed, joinedAt, captions))
       await this.sleep(this.t.pollMs * 2)
     }
   }
@@ -403,7 +478,112 @@ export class MeetingBot extends EventEmitter {
       }
     }
     await this.closeBrowser(browser)
-    this.finish(run, failed ? 'failed' : 'ended', reason)
+    this.closeMeeting(run)
+    const state = failed ? 'failed' : 'ended'
+    const kept =
+      run.meetingId === null ? '' : run.lines > 0 ? ` Kept ${run.lines} line${run.lines === 1 ? '' : 's'} of captions.` : ' No captions were kept.'
+    this.finish(run, state, reason, describeRun(state, reason) + kept)
+  }
+
+  /* ------------------------------------------------------------ captions -- */
+
+  private async turnOnCaptions(run: Run, browser: BotBrowser, captions: CaptionState): Promise<void> {
+    captions.tries++
+    captions.lastTry = this.now()
+    // The language once: going through Meet's settings every twenty seconds
+    // would be the bot fiddling with menus for the whole call.
+    const language = captions.tries === 1 ? (this.deps.captionLanguage?.() ?? null) : null
+    const result = await browser.page.enableCaptions(language)
+    if (language && result.languageSet === false) captions.languageMissed = language
+    if (result.on) {
+      captions.on = true
+      captions.onAt = this.now()
+    }
+    const chosen = language ? `, ${language} ${result.languageSet ? 'chosen' : 'not chosen'}` : ''
+    const open = result.settingsOpen ? ", and Meet's settings were left open over the call" : ''
+    this.note(run, `captions ${result.on ? 'on' : 'not on'}${chosen}${open} (try ${captions.tries})`)
+    if (!result.on || result.languageSet === false || result.settingsOpen) {
+      await this.capture(run, browser, `captions-try-${captions.tries}`, true)
+    }
+  }
+
+  /** What is wrong with what the bot is keeping, in a sentence. Null when nothing is. */
+  private warningFor(run: Run, feed: MeetFeed, joinedAt: number, captions: CaptionState): string | null {
+    const now = this.now()
+    if (run.saveProblem) return run.saveProblem
+    if (feed.lastHeartbeat === null) {
+      if (now - joinedAt > this.t.silentPageMs) return "The bot's hook is not running in Meet's page, so nothing is being kept."
+    } else if (now - feed.lastHeartbeat > this.t.silentPageMs) {
+      return "Meet's page has stopped answering the bot, so nothing is being kept."
+    }
+    if (feed.unreadable >= UNREADABLE_BEFORE_WARNING && feed.captionMessages === 0) {
+      // No running count in it: a sentence that changes every poll is a new
+      // warning every poll, and one run logged ninety of them.
+      return "Meet's messages could not be read, so nothing is being kept. Samples of them are in the run folder."
+    }
+    if (!captions.on && captions.tries >= CAPTION_TRIES) {
+      return "Could not turn on Meet's captions, so nothing is being kept. The run folder shows what the bot saw."
+    }
+    if (
+      captions.onAt !== null &&
+      now - captions.onAt > this.t.silentPageMs &&
+      feed.captionMessages === 0 &&
+      feed.channels.size > 0 &&
+      !feed.channels.has('captions') &&
+      !feed.channels.has('captions_v2')
+    ) {
+      return `Captions are on, but Meet opened no caption channel (only ${[...feed.channels].join(', ')}). Meet may have changed how it sends them.`
+    }
+    if (captions.languageMissed) {
+      return `Could not set the captions to ${captions.languageMissed}; they are in Meet's default language.`
+    }
+    return null
+  }
+
+  private openMeeting(run: Run, at: number): void {
+    if (!this.deps.sink) return
+    try {
+      run.meetingId = this.deps.sink.open(at)
+      run.meetingStartedAt = at
+      this.note(run, `keeping captions in meeting ${run.meetingId}`)
+      this.changed(run)
+    } catch (err) {
+      run.saveProblem = `No meeting could be made to keep the captions in: ${err instanceof Error ? err.message : String(err)}`
+      this.note(run, run.saveProblem)
+    }
+  }
+
+  private keep(run: Run, lines: CaptionLine[]): void {
+    if (lines.length === 0 || run.meetingId === null || !this.deps.sink) return
+    try {
+      this.deps.sink.append(run.meetingId, lines, run.meetingStartedAt)
+      run.lines += lines.length
+      this.changed(run)
+    } catch (err) {
+      run.saveProblem = `Some captions could not be saved: ${err instanceof Error ? err.message : String(err)}`
+      this.note(run, run.saveProblem)
+    }
+  }
+
+  /** Whatever is still open becomes lines, and the meeting is closed. Once. */
+  private closeMeeting(run: Run): void {
+    const feed = run.feed
+    if (feed) {
+      this.keep(run, feed.captions.flush((d) => feed.roster.nameOf(d)))
+      this.note(
+        run,
+        `captions: ${feed.captionMessages} read, ${feed.captions.lateRevisions} revised after being kept; ${feed.summary()}`
+      )
+      this.writeSamples(run, feed)
+      run.feed = null
+    }
+    if (run.meetingId === null || run.meetingClosed || !this.deps.sink) return
+    run.meetingClosed = true
+    try {
+      this.deps.sink.close(run.meetingId, { endedAt: this.now(), lines: run.lines })
+    } catch (err) {
+      this.note(run, `could not close meeting ${run.meetingId}: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   /* ------------------------------------------------------------- helpers -- */
@@ -454,6 +634,29 @@ export class MeetingBot extends EventEmitter {
     this.changed(run)
   }
 
+  private warn(run: Run, warning: string | null): void {
+    if (run.warning === warning) return
+    run.warning = warning
+    this.note(run, warning ? `warning: ${warning}` : 'warning cleared')
+    // What the page was sending when it went wrong, in case the run never ends cleanly.
+    if (warning && run.feed) this.writeSamples(run, run.feed)
+    this.changed(run)
+  }
+
+  /** The feed's raw samples, one JSON object per line, beside `run.json`. */
+  private writeSamples(run: Run, feed: MeetFeed): void {
+    if (feed.samples.length === 0) return
+    const lines = feed.samples.map((s) => JSON.stringify({ ...s, at: new Date(s.at).toISOString() }))
+    try {
+      ;(this.deps.writeFile ?? ((f, d) => writeFileSync(f, d, 'utf8')))(
+        path.join(run.dir, 'messages.jsonl'),
+        lines.join('\n') + '\n'
+      )
+    } catch {
+      // Evidence, not function: failing to write it must not stop the bot.
+    }
+  }
+
   private finish(run: Run, state: 'ended' | 'failed', reason: BotRunReason, message?: string): void {
     run.state = state
     run.reason = reason
@@ -482,6 +685,9 @@ export class MeetingBot extends EventEmitter {
       message: run.message,
       attempt: run.attempt,
       chromeVersion: run.chromeVersion,
+      meetingId: run.meetingId,
+      lines: run.lines,
+      warning: run.warning,
       events: run.events.map((e) => ({ ...e, at: new Date(e.at).toISOString() })),
     }
     try {
