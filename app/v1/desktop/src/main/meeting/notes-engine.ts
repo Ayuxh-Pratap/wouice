@@ -335,10 +335,11 @@ export class MeetingNotesEngine {
       // An owner has to be somebody the lines name. See `resolveOwner`.
       const first = evidence[0] ? byId.get(evidence[0].segmentId) : undefined
       const speaker = first?.channel ?? 'notes'
+      const speakerName = first?.speaker ?? null
       const said = [...cited.map(renderLine), ...members.map((m) => m.noteQuote ?? '')].join('\n')
       const owner =
-        resolveOwner(written?.owner ?? null, speaker, said) ??
-        resolveOwner(lead.owner, speaker, said)
+        resolveOwner(written?.owner ?? null, speaker, said, speakerName) ??
+        resolveOwner(lead.owner, speaker, said, speakerName)
 
       tasks.push({
         text: written?.title ?? lead.title,
