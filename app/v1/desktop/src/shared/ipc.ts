@@ -396,6 +396,8 @@ export interface MeetingSegment {
   /** The same line in English, or null when it has not been rendered. */
   textEn: string | null
   echo: boolean
+  /** Who said it, by name, when the transcript knows - Meet's captions do. */
+  speaker: string | null
 }
 
 /**
@@ -478,8 +480,14 @@ export interface BotRunView {
   attempt: number
   /** Where the run's log, screenshots and page snapshots are kept. */
   dir: string
-  /** Other people in the call, read from the page. Approximate until stage B2. */
+  /** Other people in the call: Meet's own list, or its tiles until that arrives. */
   participants: number
+  /** The meeting the bot is filling, once it is in one. */
+  meetingId: number | null
+  /** Caption lines kept so far. */
+  lines: number
+  /** Something wrong with what it is keeping, in a sentence. Null when all is well. */
+  warning: string | null
 }
 
 export interface WouiceApi {
