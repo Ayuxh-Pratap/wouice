@@ -188,6 +188,9 @@ export interface MeetingRecord {
 /** The source of the transcript written during the call. */
 export const LIVE_SOURCE = 'live'
 
+/** The source of a transcript taken from Google Meet's own captions, by the meeting bot. */
+export const MEET_CAPTIONS_SOURCE = 'meet-captions'
+
 /** What happened to one version: how it was transcribed, rendered and summarised. */
 export interface VersionDiagnostics {
   /** How a version made after the call was transcribed. Absent on the live one. */
@@ -235,6 +238,11 @@ export interface SegmentInput {
   /** What was said, as the recogniser heard it. Never rewritten. */
   text: string
   echo: boolean
+  /**
+   * Who said it, by name, when the transcript knows. Meet's captions do; two
+   * channels of local audio only know "you" and "them".
+   */
+  speaker?: string | null
 }
 
 export interface SegmentRecord extends SegmentInput {
@@ -247,6 +255,7 @@ export interface SegmentRecord extends SegmentInput {
    * disagreement about what was said; this is what makes it readable.
    */
   textEn: string | null
+  speaker: string | null
 }
 
 export type TaskState = 'open' | 'done' | 'dropped'
