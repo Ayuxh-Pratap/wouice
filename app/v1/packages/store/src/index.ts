@@ -13,7 +13,7 @@ export { Calibrations, Resources } from './resources.js'
 export { Dictionary, validateEntry, type EntryCheck } from './dictionary.js'
 export { Ratings, A4_SAMPLE_TARGET, A4_SHIP_TARGET } from './ratings.js'
 export { Meetings } from './meetings.js'
-export { LIVE_SOURCE, TASK_AREAS, TASK_KINDS } from './types.js'
+export { LIVE_SOURCE, MEET_CAPTIONS_SOURCE, TASK_AREAS, TASK_KINDS } from './types.js'
 export { importJsonl, type ImportResult } from './import.js'
 export { MIGRATIONS, LATEST_VERSION, type Migration } from './migrations.js'
 export type {
