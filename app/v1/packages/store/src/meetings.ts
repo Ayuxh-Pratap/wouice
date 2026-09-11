@@ -77,6 +77,7 @@ interface SegmentRow {
   text: string
   text_en: string | null
   echo: number
+  speaker: string | null
 }
 
 /** The main version's summary and line count, joined onto a meeting row. */
@@ -147,6 +148,7 @@ function toSegment(r: SegmentRow): SegmentRecord {
     text: r.text,
     textEn: r.text_en,
     echo: r.echo === 1,
+    speaker: r.speaker ?? null,
   }
 }
 
@@ -227,8 +229,12 @@ function toTask(r: TaskRow): TaskRecord {
   }
 }
 
-const INSERT_SEGMENT = `INSERT INTO segments (meeting_id, version_id, channel, start_ms, end_ms, text, echo)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)`
+const INSERT_SEGMENT = `INSERT INTO segments (meeting_id, version_id, channel, start_ms, end_ms, text, echo, speaker_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+
+/** A segment row with its speaker's name joined in. */
+const SEGMENT_WITH_SPEAKER = `SELECT s.*, sp.name AS speaker FROM segments s
+  LEFT JOIN speakers sp ON sp.id = s.speaker_id`
 
 /** A version id, or the meeting's main version when none is given. */
 const VERSION_OR_MAIN = 'COALESCE(?, (SELECT main_version_id FROM meetings WHERE id = ?))'
@@ -316,7 +322,7 @@ export class Meetings {
       const versionId = this.liveVersionId(meetingId)
       const insert = this.db.raw.prepare(INSERT_SEGMENT)
       for (const s of segments) {
-        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0)
+        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0, this.speakerId(s.speaker))
       }
     })
   }
@@ -377,7 +383,7 @@ export class Meetings {
 
       const insert = this.db.raw.prepare(INSERT_SEGMENT)
       for (const s of segments) {
-        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0)
+        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0, this.speakerId(s.speaker))
       }
       this.db.raw
         .prepare('UPDATE meetings SET main_version_id = ? WHERE id = ?')
@@ -435,6 +441,66 @@ export class Meetings {
       )
       .run(versionId, meetingId, versionId, meetingId)
     return Number(result.changes) > 0
+  }
+
+  /**
+   * Add lines to a version that grows while the meeting happens - Meet's
+   * captions, arriving through the bot a few at a time. Made on the first
+   * call. Never the live transcript: only the recording writes that.
+   *
+   * @returns the version's id.
+   */
+  appendToVersion(
+    meetingId: number,
+    source: string,
+    segments: readonly SegmentInput[],
+    at = Date.now()
+  ): number {
+    if (source === LIVE_SOURCE) {
+      throw new Error('the live transcript is written by the recording, not appended to')
+    }
+    return this.tx(() => {
+      const existing = row<{ id: number }>(
+        this.db.raw
+          .prepare('SELECT id FROM meeting_versions WHERE meeting_id = ? AND source = ?')
+          .get(meetingId, source)
+      )
+      const versionId =
+        existing?.id ??
+        Number(
+          this.db.raw
+            .prepare('INSERT INTO meeting_versions (meeting_id, source, created_at) VALUES (?, ?, ?)')
+            .run(meetingId, source, at).lastInsertRowid
+        )
+      const insert = this.db.raw.prepare(INSERT_SEGMENT)
+      for (const s of segments) {
+        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0, this.speakerId(s.speaker))
+      }
+      return versionId
+    })
+  }
+
+  /**
+   * A speaker's row, made the first time the name is heard.
+   *
+   * One row per name across every meeting: the Rahul in Monday's standup is
+   * the Rahul in Thursday's. The same table later holds a voice to recognise
+   * him by, when there are no captions to name him.
+   */
+  private speakerId(name: string | null | undefined): number | null {
+    const trimmed = name?.trim()
+    if (!trimmed) return null
+    const now = Date.now()
+    const found = row<{ id: number }>(
+      this.db.raw
+        .prepare(
+          `INSERT INTO speakers (name, created_at, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(name) DO UPDATE SET updated_at = excluded.updated_at
+           RETURNING id`
+        )
+        .get(trimmed, now, now)
+    )
+    return found?.id ?? null
   }
 
   setScratch(id: number, markdown: string): void {
@@ -530,8 +596,9 @@ export class Meetings {
     return rows<SegmentRow>(
       this.db.raw
         .prepare(
-          `SELECT * FROM segments WHERE meeting_id = ? AND version_id = ${VERSION_OR_MAIN}
-           ORDER BY start_ms, id`
+          `${SEGMENT_WITH_SPEAKER}
+           WHERE s.meeting_id = ? AND s.version_id = ${VERSION_OR_MAIN}
+           ORDER BY s.start_ms, s.id`
         )
         .all(meetingId, versionId ?? null, meetingId)
     ).map(toSegment)
@@ -550,8 +617,9 @@ export class Meetings {
       return rows<SegmentRow>(
         this.db.raw
           .prepare(
-            `SELECT s.* FROM segments_fts f
+            `SELECT s.*, sp.name AS speaker FROM segments_fts f
              JOIN segments s ON s.id = f.rowid
+             LEFT JOIN speakers sp ON sp.id = s.speaker_id
              JOIN meetings m ON m.id = s.meeting_id AND s.version_id = m.main_version_id
              WHERE segments_fts MATCH ? ORDER BY rank LIMIT ?`
           )
