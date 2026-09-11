@@ -1,6 +1,6 @@
 import type { VersionRecord } from '@wouice/store'
 import { describe, expect, it } from 'vitest'
-import { isImproved, mainVersion, versionLabel } from './versions.js'
+import { isImproved, mainVersion, versionLabel, visibleVersions } from './versions.js'
 
 const version = (over: Partial<VersionRecord>): VersionRecord => ({
   id: 1,
@@ -17,6 +17,7 @@ const version = (over: Partial<VersionRecord>): VersionRecord => ({
 describe('naming versions', () => {
   it('names them by where the transcript came from', () => {
     expect(versionLabel('live')).toBe('First pass')
+    expect(versionLabel('meet-captions')).toBe('Meet captions')
     expect(versionLabel('large-v3')).toBe('Improved')
   })
 
@@ -26,5 +27,15 @@ describe('naming versions', () => {
     expect(isImproved({ versions: improved })).toBe(true)
     expect(mainVersion({ versions: improved })?.id).toBe(2)
     expect(isImproved({ versions: [] })).toBe(false)
+  })
+
+  it('does not call Meet captions improved', () => {
+    const bot = [version({ main: false, segments: 0 }), version({ id: 2, source: 'meet-captions', main: true })]
+    expect(isImproved({ versions: bot })).toBe(false)
+  })
+
+  it('offers only versions with something in them, and the main one always', () => {
+    const bot = [version({ main: false, segments: 0 }), version({ id: 2, source: 'meet-captions', main: true, segments: 0 })]
+    expect(visibleVersions({ versions: bot }).map((v) => v.id)).toEqual([2])
   })
 })
