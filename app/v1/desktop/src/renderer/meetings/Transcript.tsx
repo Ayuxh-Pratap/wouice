@@ -44,7 +44,9 @@ export function Transcript({
                 className="text-[11px] font-medium"
                 style={{ color: segment.channel === 'me' ? '#34d399' : '#60a5fa' }}
               >
-                {segment.channel === 'me' ? 'You' : 'Them'}
+                {/* A name when the transcript has one: Meet's captions name
+                    everybody, where two channels of audio only know "them". */}
+                {segment.channel === 'me' ? 'You' : (segment.speaker ?? 'Them')}
               </span>
               {segment.echo ? (
                 <span
