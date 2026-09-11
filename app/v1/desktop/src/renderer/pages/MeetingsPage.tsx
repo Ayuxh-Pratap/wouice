@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MeetingJobsView, MeetingSegment, MeetingState } from '../../shared/ipc.js'
 import type { MeetingRecord } from '@wouice/store'
 import type { Settings } from '../../shared/settings.js'
-import { MEETING_KINDS, type MeetingKind } from '../../shared/meeting-kind.js'
+import { MEETING_KINDS, meetCaptionLanguage, type MeetingKind } from '../../shared/meeting-kind.js'
 import { describeJob, jobColour, useMeetingJobs } from '../meetings/jobs.js'
 import { isImproved, mainVersion } from '../meetings/versions.js'
 import { hashForMeeting } from '../shell/routes.js'
@@ -163,7 +163,7 @@ export function MeetingsPage(): React.JSX.Element {
         </div>
       </section>
 
-      <BotPanel />
+      <BotPanel captions={meetCaptionLanguage(settings?.meetings.defaultKind).label} />
 
       <section>
         <div className="mb-2 flex items-center gap-3 px-0.5">
