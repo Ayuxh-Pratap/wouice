@@ -70,3 +70,12 @@ export const DEFAULT_MEETING_KIND: MeetingKind = 'mixed'
 export function kindOf(id: string | null | undefined): KindDefinition {
   return MEETING_KINDS.find((k) => k.id === id) ?? MEETING_KINDS.find((k) => k.id === DEFAULT_MEETING_KIND)!
 }
+
+/**
+ * The language the meeting bot asks Google Meet to caption in: Hindi for a
+ * meeting expected in Hindi, otherwise Meet's own default, English. English
+ * captions of a Hindi conversation are not a transcript of it.
+ */
+export function meetCaptionLanguage(id: string | null | undefined): { code: string | null; label: string } {
+  return kindOf(id).language === 'hi' ? { code: 'hi-IN', label: 'Hindi' } : { code: null, label: 'English' }
+}
