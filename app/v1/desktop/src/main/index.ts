@@ -24,7 +24,15 @@ import { IPC, type EnglishOutcome, type NotesOutcome, type RepassOutcome, type C
 import type { SidecarId } from '../shared/models.js'
 import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from './dictation/controller.js'
 import { sampleResources } from './metrics/sample.js'
-import { importJsonl, openStore, validateEntry, type DictationRecord, type TaskRecord, type TaskState } from '@wouice/store'
+import {
+  importJsonl,
+  openStore,
+  validateEntry,
+  MEET_CAPTIONS_SOURCE,
+  type DictationRecord,
+  type TaskRecord,
+  type TaskState,
+} from '@wouice/store'
 import { RecordingStore } from './metrics/recordings.js'
 import { Injector, type InjectionResult } from './injection/injector.js'
 import { injectionAvailable, injectionUnavailableReason } from './injection/win32.js'
@@ -35,7 +43,8 @@ import { MeetingJobs } from './meeting/jobs.js'
 import { BotIdentity } from './bot/identity.js'
 import { findChrome } from './bot/chrome.js'
 import { launchBotBrowser } from './bot/browser.js'
-import { MeetingBot } from './bot/runner.js'
+import { MeetingBot, type CaptureSink } from './bot/runner.js'
+import { captionSegment } from './bot/captions.js'
 import { carryOver } from './meeting/versions.js'
 import { finishedSessions } from './meeting/merge.js'
 import { discardRecording } from './meeting/remove.js'
@@ -43,7 +52,7 @@ import { MeetingNotesEngine, NotesUnavailable } from './meeting/notes-engine.js'
 import { MicWatcher } from './meeting/mic-watcher.js'
 import { repassMeeting, RepassUnavailable } from './meeting/repass.js'
 import { MeetingEnglishEngine, EnglishUnavailable } from './meeting/english-engine.js'
-import { kindOf } from '../shared/meeting-kind.js'
+import { kindOf, meetCaptionLanguage } from '../shared/meeting-kind.js'
 import { formatMeeting } from './metrics/diagnostic.js'
 import type { Channel as MeetingChannel } from './meeting/session.js'
 import { WhisperCppClient } from '@wouice/asr'
@@ -115,8 +124,7 @@ const BOT_PROFILE = path.join(app.getPath('userData'), 'bot', 'chrome-profile')
 
 /**
  * The meeting bot's identity: its own Chrome profile, signed in by hand once,
- * and the check that says which account it holds. Nothing joins a meeting yet;
- * that is stage B1. See docs/design/07-meeting-bot.md.
+ * and the check that says which account it holds. See docs/design/07-meeting-bot.md.
  */
 const botIdentity = new BotIdentity({
   profileDir: BOT_PROFILE,
@@ -126,10 +134,53 @@ const botIdentity = new BotIdentity({
 botIdentity.on('status', (view: unknown) => broadcast(IPC.botStatus, view))
 
 /**
+ * Where the bot's captions go: a meeting of their own, beside anything you
+ * record yourself. Its transcript is a "Meet captions" version, the main one
+ * from the start; the first-pass version beside it stays empty, because
+ * nothing was recorded. The folder is made without a checkpoints folder in it,
+ * which is what recovery reads as an abandoned recording.
+ */
+const botCapture: CaptureSink = {
+  open(startedAt) {
+    const dir = path.join(MEETING_ROOT, `${new Date(startedAt).toISOString().replace(/[:.]/g, '-')}-bot`)
+    mkdirSync(dir, { recursive: true })
+    const id = store.meetings.start(dir, startedAt, settings.get().meetings.defaultKind)
+    store.meetings.setMain(id, store.meetings.appendToVersion(id, MEET_CAPTIONS_SOURCE, [], startedAt))
+    broadcast(IPC.meetingReady2, id)
+    return id
+  },
+  append(meetingId, lines, startedAt) {
+    const me = settings.get().meetings.me.name
+    store.meetings.appendToVersion(
+      meetingId,
+      MEET_CAPTIONS_SOURCE,
+      lines.map((line) => captionSegment(line, startedAt, me))
+    )
+    broadcast(IPC.meetingUpdated, meetingId)
+  },
+  close(meetingId, { endedAt, lines }) {
+    const meeting = store.meetings.byId(meetingId)
+    if (!meeting) return
+    store.meetings.finish(meetingId, { endedAt, audioPath: null, durationMs: endedAt - meeting.startedAt })
+    // Kept even when empty. A meeting that vanished when the bot left was a
+    // call with nowhere to look for what happened to it.
+    if (lines === 0) {
+      broadcast(IPC.meetingReady2, meetingId)
+      return
+    }
+    // English, then the summary and tasks, as after a recorded meeting.
+    void finishMeeting(meetingId)
+  },
+}
+
+/**
  * The meeting bot: joins a Meet link in the bot's Chrome, waits to be let in,
- * and leaves by itself, saying why. Stage B1 - it keeps nothing yet.
+ * keeps Meet's captions as a meeting, and leaves by itself, saying why.
  */
 const meetingBot = new MeetingBot({
+  sink: botCapture,
+  // Follows "Spoken in" on the Meetings page, which the bot panel says beside it.
+  captionLanguage: () => meetCaptionLanguage(settings.get().meetings.defaultKind).code,
   runsDir: path.join(app.getPath('userData'), 'bot', 'runs'),
   launch: () => {
     const chromePath = findChrome()
@@ -259,6 +310,8 @@ async function writeNotes(id: number, versionId?: number): Promise<NotesOutcome>
         startMs: s.startMs,
         text: s.textEn ?? s.text,
         echo: s.echo,
+        // The name Meet's captions gave the line, so a task finds its owner.
+        speaker: s.speaker,
       })),
       scratch: meeting.scratchMd,
       startedAt: meeting.startedAt,
