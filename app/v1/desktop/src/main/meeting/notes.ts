@@ -44,6 +44,8 @@ export interface TranscriptLine {
   startMs: number
   text: string
   echo: boolean
+  /** Who said it, when the transcript knows - Meet's captions name every speaker. */
+  speaker?: string | null
 }
 
 export interface Chunk {
@@ -120,7 +122,9 @@ function seal(lines: TranscriptLine[], tokens: number): Chunk {
  * one prompt that produced it.
  */
 export function renderLine(line: TranscriptLine): string {
-  const who = line.channel === 'me' ? 'You' : 'Them'
+  // A name when the transcript has one. "Them" is six people; "Rahul" is who
+  // said he would check the branch, and so who the task belongs to.
+  const who = line.channel === 'me' ? 'You' : (line.speaker ?? 'Them')
   return `[${line.id}] ${who} (${stamp(line.startMs)}): ${line.text}`
 }
 
@@ -854,13 +858,15 @@ const NOBODY_IN_PARTICULAR = new Set([
 export function resolveOwner(
   owner: string | null,
   speaker: MeetingChannel | 'notes',
-  said: string
+  said: string,
+  /** The name of whoever spoke the line, when the transcript knows it. */
+  speakerName: string | null = null
 ): string | null {
   const who = owner?.trim() ?? ''
   if (!who) return null
   const lower = who.toLowerCase()
   if (YOU.has(lower)) return 'You'
-  if (lower === 'i') return speaker === 'them' ? 'Them' : 'You'
+  if (lower === 'i') return speaker === 'them' ? (speakerName ?? 'Them') : 'You'
   if (FAR_SIDE.has(lower)) return speaker === 'notes' ? null : 'Them'
   if (NOBODY_IN_PARTICULAR.has(lower)) return null
 
