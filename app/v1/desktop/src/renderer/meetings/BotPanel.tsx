@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import type { BotRunView } from '../../shared/ipc.js'
+import { hashForMeeting } from '../shell/routes.js'
 
 /**
  * Send the bot to a meeting, and see where it is.
  *
- * STAGE B1: joining and leaving. The bot keeps nothing yet - captions come in
- * B2 - so this is where joining gets tried on real meetings: paste a link,
- * watch it go, and read why it stopped when it does.
+ * Paste a link, watch it go, and read why it stopped when it does. While it is
+ * in the call it keeps Meet's captions as a meeting of their own, which opens
+ * from here; anything wrong with what it is keeping shows under it in amber.
  */
 
 const ACTIVE = new Set<BotRunView['state']>([
@@ -31,10 +32,13 @@ function describe(run: BotRunView): string {
       return 'Asked to join — waiting to be let in'
     case 'waiting-for-host':
       return 'Waiting for the host to start the meeting'
-    case 'in-meeting':
-      return run.participants > 0
-        ? `In the meeting, with ${run.participants} other${run.participants === 1 ? '' : 's'}`
-        : 'In the meeting'
+    case 'in-meeting': {
+      const where =
+        run.participants > 0
+          ? `In the meeting, with ${run.participants} other${run.participants === 1 ? '' : 's'}`
+          : 'In the meeting'
+      return run.lines > 0 ? `${where} · ${run.lines} line${run.lines === 1 ? '' : 's'} kept` : where
+    }
     case 'leaving':
       return 'Leaving…'
     default:
@@ -49,7 +53,8 @@ function colour(run: BotRunView): string {
   return '#fbbf24'
 }
 
-export function BotPanel(): React.JSX.Element {
+/** @param captions the language Meet will caption in, as "Spoken in" above decides it. */
+export function BotPanel({ captions }: { captions: string }): React.JSX.Element {
   const [run, setRun] = useState<BotRunView | null>(null)
   const [link, setLink] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
@@ -82,6 +87,7 @@ export function BotPanel(): React.JSX.Element {
               />
               <span className="truncate">{describe(run)}</span>
             </span>
+            {run.meetingId !== null ? <MeetingLink meetingId={run.meetingId} /> : null}
             <button
               onClick={() => void window.wouice.leaveBot()}
               disabled={run.state === 'leaving'}
@@ -116,6 +122,7 @@ export function BotPanel(): React.JSX.Element {
       {run && !active ? (
         <p className="mt-1.5 flex flex-wrap items-center gap-x-2 text-[11.5px]">
           <span style={{ color: colour(run) }}>{run.message}</span>
+          {run.meetingId !== null ? <MeetingLink meetingId={run.meetingId} /> : null}
           <button
             onClick={() => window.wouice.revealBotRun()}
             className="text-neutral-500 underline-offset-2 transition hover:text-neutral-300 hover:underline"
@@ -124,7 +131,22 @@ export function BotPanel(): React.JSX.Element {
           </button>
         </p>
       ) : null}
+      {!active ? (
+        <p className="mt-1.5 text-[11px] text-neutral-500">Captions in {captions}, from “Spoken in” above.</p>
+      ) : null}
+      {run?.warning ? <p className="mt-1.5 text-[11.5px] text-amber-400">{run.warning}</p> : null}
       {problem ? <p className="mt-1.5 text-[11.5px] text-amber-400">{problem}</p> : null}
     </section>
+  )
+}
+
+function MeetingLink({ meetingId }: { meetingId: number }): React.JSX.Element {
+  return (
+    <a
+      href={hashForMeeting(meetingId)}
+      className="shrink-0 text-[11.5px] text-neutral-500 underline-offset-2 transition hover:text-neutral-300 hover:underline"
+    >
+      Open the meeting
+    </a>
   )
 }
