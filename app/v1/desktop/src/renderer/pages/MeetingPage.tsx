@@ -11,7 +11,7 @@ import type {
 import { kindOf } from '../../shared/meeting-kind.js'
 import { needsEnglish } from '../meetings/english.js'
 import { describeJob, jobColour, useMeetingJobs } from '../meetings/jobs.js'
-import { isImproved, mainVersion, versionLabel } from '../meetings/versions.js'
+import { isImproved, mainVersion, versionLabel, visibleVersions } from '../meetings/versions.js'
 import { Notes } from '../meetings/Notes.js'
 import { Transcript } from '../meetings/Transcript.js'
 import { Icon } from '../shell/Icon.js'
@@ -159,7 +159,10 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
       ? (version.diagnostics.english.message ?? 'it failed')
       : null
   // The version that is not main, when there are two: what the menu can switch to.
-  const other = meeting.versions.length > 1 ? (meeting.versions.find((v) => !v.main) ?? null) : null
+  // Only versions with something in them: a meeting the bot kept has an empty
+  // first pass, and offering to switch to it is offering nothing.
+  const shownVersions = visibleVersions(meeting)
+  const other = shownVersions.length > 1 ? (shownVersions.find((v) => !v.main) ?? null) : null
   // Tasks are written with the summary. A version with no summary yet has none
   // of its own to show, whatever an earlier run of it left behind.
   const listed = notesMd !== null ? tasks : []
@@ -343,7 +346,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
         */}
         <div className="flex shrink-0 items-center gap-1.5 self-center">
           <VersionSwitch
-            versions={meeting.versions}
+            versions={shownVersions}
             shown={version?.id ?? null}
             onShow={setViewing}
             improving={running?.kind === 'improve' ? describeImproving(repass) : null}
@@ -357,7 +360,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
                 label: meeting.scratchMd ? 'Your notes •' : 'Your notes',
                 onClick: () => setNotesOpen(true),
               },
-              ...(meeting.versions.length > 1
+              ...(shownVersions.length > 1
                 ? [
                     {
                       // Offered for when a better model arrives; the dialog says
@@ -574,7 +577,11 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
               <Transcript
                 segments={segments}
                 english={english && kind.translate}
-                emptyMessage="No transcript — it was recorded before transcription existed, or the speech model was not running."
+                emptyMessage={
+                  version && versionLabel(version.source) === 'Meet captions'
+                    ? "No captions were kept from this call. The meeting bot's run folder says why."
+                    : 'No transcript — it was recorded before transcription existed, or the speech model was not running.'
+                }
               />
             </div>
           </section>
