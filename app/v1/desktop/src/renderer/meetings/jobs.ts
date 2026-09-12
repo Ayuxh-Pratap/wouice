@@ -27,7 +27,7 @@ export function describeJob(kind: MeetingJobKind): string {
     case 'improve':
       return 'Improving accuracy'
     case 'english':
-      return 'Rendering into English'
+      return 'Rewriting the English, then the summary'
     case 'notes':
       return 'Writing the summary and tasks'
     default:
