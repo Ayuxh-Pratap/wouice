@@ -22,7 +22,7 @@ import {
   showHud,
   startPetDrag,
 } from './windows.js'
-import { IPC, type EnglishOutcome, type NotesOutcome, type RepassOutcome, type CalibrationInput, type CalibrationReport, type DictionaryPatch, type NewDictionaryEntry, type Diagnostics, type RatingSheet, type SidecarView } from '../shared/ipc.js'
+import { IPC, type EnglishOutcome, type NotesOutcome, type RepassOutcome, type CalibrationInput, type CalibrationReport, type VocabularyDraft, type VocabularyImport,type Diagnostics, type RatingSheet, type SidecarView } from '../shared/ipc.js'
 import type { SidecarId } from '../shared/models.js'
 import { DictationController, FRAME_MS, SAMPLE_RATE, type DictationResult } from './dictation/controller.js'
 import { sampleResources } from './metrics/sample.js'
@@ -34,6 +34,7 @@ import {
   type DictationRecord,
   type TaskRecord,
   type TaskState,
+  type VocabularyKind,
 } from '@wouice/store'
 import { RecordingStore } from './metrics/recordings.js'
 import { Injector, type InjectionResult } from './injection/injector.js'
@@ -51,7 +52,8 @@ import { carryOver } from './meeting/versions.js'
 import { finishedSessions } from './meeting/merge.js'
 import { discardRecording } from './meeting/remove.js'
 import { MeetingNotesEngine, NotesUnavailable, type NotesProgress } from './meeting/notes-engine.js'
-import { glossaryTerms } from './meeting/notes.js'
+import { appears, asDictionary, glossaryFor, mentionedIn, parseKinds, parseVocabularyList } from './meeting/vocabulary.js'
+import { VocabularyMiner } from './meeting/vocabulary-miner.js'
 import { MicWatcher } from './meeting/mic-watcher.js'
 import { repassMeeting, RepassUnavailable } from './meeting/repass.js'
 import { MeetingEnglishEngine, EnglishUnavailable } from './meeting/english-engine.js'
@@ -59,7 +61,7 @@ import { kindOf, meetCaptionLanguage } from '../shared/meeting-kind.js'
 import { formatMeeting } from './metrics/diagnostic.js'
 import type { Channel as MeetingChannel } from './meeting/session.js'
 import { WhisperCppClient } from '@wouice/asr'
-import { OpenAiCompatClient } from '@wouice/llm'
+import { OpenAiCompatClient, VOCABULARY_KINDS_SYSTEM } from '@wouice/llm'
 import { describeCalibration, formatDiagnostic, formatSession } from './metrics/diagnostic.js'
 import { writeFileSync, mkdirSync, copyFileSync } from 'node:fs'
 
@@ -211,7 +213,17 @@ const botCapture: CaptureSink = {
     )
     broadcast(IPC.meetingUpdated, meetingId)
   },
-  close(meetingId, { endedAt, lines }) {
+  close(meetingId, { endedAt, lines, people }) {
+    // The people on the call, spelled by Google: into your vocabulary on their
+    // own - the one source trusted enough for that. Never over one you changed
+    // or said is not a word.
+    try {
+      const added = store.vocabulary.addPeople(people)
+      store.vocabulary.markSeen(people.flatMap((name) => store.vocabulary.byTerm(name)?.id ?? []), meetingId)
+      if (added.length > 0) broadcast(IPC.vocabularyChanged, null)
+    } catch (err) {
+      console.warn('[vocabulary] could not add the people on the call:', err)
+    }
     const meeting = store.meetings.byId(meetingId)
     if (!meeting) return
     store.meetings.finish(meetingId, { endedAt, audioPath: null, durationMs: endedAt - meeting.startedAt })
@@ -324,6 +336,15 @@ const englishEngine = new MeetingEnglishEngine(
     })
 )
 
+/** After a meeting, on the model that wrote its notes: names and words to suggest for your vocabulary. */
+const vocabularyMiner = new VocabularyMiner(
+  () =>
+    new OpenAiCompatClient({
+      baseUrl: supervisor.baseUrl('llama'),
+      model: supervisor.snapshot('llama').modelId,
+    })
+)
+
 /**
  * Wait for the language model to answer before asking it anything.
  *
@@ -394,7 +415,11 @@ async function writeNotes(
       scratch: meeting.scratchMd,
       startedAt: meeting.startedAt,
       me: { name: settings.get().meetings.me.name },
-      glossary: glossaryTerms(settings.get().meetings.glossary),
+      // With meanings here: "Bible" is the team's knowledge base, not scripture.
+      glossary: glossaryFor(store.vocabulary.active(), {
+        meanings: true,
+        people: [...new Set(segments.flatMap((s) => (s.speaker ? [s.speaker] : [])))],
+      }),
       onProgress: (p) => {
         broadcast(IPC.notesProgress, { meetingId: id, ...p })
         opts.onStep?.(p)
@@ -422,6 +447,15 @@ async function writeNotes(
     )
 
     store.meetings.setVersionNotes(version.id, run.notesMd)
+    // The entries this meeting used, counted once for it: how an entry shows
+    // on the Vocabulary page that it still earns its place.
+    try {
+      const said = segments.map((s) => s.textEn ?? s.text).join('\n')
+      store.vocabulary.markSeen(mentionedIn(said, store.vocabulary.active()).map((e) => e.id), id)
+      broadcast(IPC.vocabularyChanged, null)
+    } catch (err) {
+      console.warn('[vocabulary] could not count this meeting:', err)
+    }
     store.meetings.replaceTasks(version.id, [...tasks, ...carried])
     store.meetings.recordNotesRun(version.id, {
       at: Date.now(),
@@ -525,8 +559,11 @@ async function renderEnglish(
       // Read fresh on every call, so notes added AFTER the meeting are used by
       // the next render - which is the point of being able to add them later.
       context: meeting.scratchMd,
-      // Names and words your meetings use: how "Lord" becomes Claude.
-      glossary: glossaryTerms(settings.get().meetings.glossary),
+      // Your vocabulary, as much of it as each line calls for: how "Lord"
+      // becomes Claude. The people in this meeting are always in it.
+      glossary: glossaryFor(store.vocabulary.active(), {
+        people: [...new Set(heard.flatMap((seg) => (seg.speaker ? [seg.speaker] : [])))],
+      }),
       onProgress: (p) => {
         broadcast(IPC.englishProgress, { meetingId: id, ...p })
         opts.onLine?.(p.batch, p.batches)
@@ -691,15 +728,12 @@ const injector = new Injector({
 const dictation = new DictationController({
   supervisor,
   silence: () => settings.get().silence,
-  userDictionary: () =>
-    store.dictionary.active().map((e) =>
-      e.kind === 'term'
-        ? { kind: 'term' as const, hear: e.hear, enabled: true }
-        : { kind: 'correction' as const, hear: e.hear, write: e.write, enabled: true }
-    ),
+  // Your vocabulary, the same one meetings use: a hint for every entry, and a
+  // rewrite for each sound-alike marked always-rewrite. See `asDictionary`.
+  userDictionary: () => asDictionary(store.vocabulary.active()),
   onRulesFired: (applied) => {
     try {
-      store.dictionary.recordHits(applied.map((a) => ({ hear: a.from, count: a.count })))
+      store.vocabulary.recordHits(applied.map((a) => ({ text: a.from, count: a.count })))
     } catch {
       // Bookkeeping. Never worth interrupting a dictation for.
     }
@@ -1040,13 +1074,66 @@ async function notesStep(session: Session, meetingId: number, versionId?: number
     if (session.signal.aborted) throw err
     console.warn('[after-call] notes:', err instanceof Error ? err.message : err)
   }
-  return writeNotes(meetingId, versionId, {
+  const outcome = await writeNotes(meetingId, versionId, {
     signal: session.signal,
     onStep: (p) => {
       const step = describeNotesStep(p)
       session.progress(Math.round(step.share * 1000), 1000, `${label} · ${step.words}`)
     },
   })
+  // While the model that wrote them is still loaded. The notes are saved by
+  // now: whatever happens here costs the suggestions, never the notes.
+  if (outcome.ok) {
+    session.progress(999, 1000, `${label} · looking for new names`)
+    try {
+      await suggestVocabulary(meetingId, versionId, session.signal)
+    } catch (err) {
+      console.warn('[vocabulary] could not look for new names:', err instanceof Error ? err.message : err)
+    }
+  }
+  return outcome
+}
+
+/**
+ * What this meeting suggests for your vocabulary. Suggestions only: nothing is
+ * added until you say so on the Vocabulary page, and a new word is shown only
+ * once a second meeting or something outside the transcript backs it.
+ */
+async function suggestVocabulary(meetingId: number, versionId: number | undefined, signal?: AbortSignal): Promise<void> {
+  const meeting = store.meetings.byId(meetingId)
+  const version = meeting?.versions.find((v) => v.id === (versionId ?? meeting.mainVersionId))
+  if (!meeting || !version) return
+  const segments = store.meetings.segments(meetingId, version.id).filter((s) => !s.echo)
+  const speakers = segments.flatMap((s) => (s.speaker ? [s.speaker] : []))
+  const scratch = meeting.scratchMd ?? ''
+  const started = Date.now()
+  const found = await vocabularyMiner.mine({
+    lines: segments.map((s) => ({ id: s.id, text: s.textEn ?? s.text, speaker: s.speaker })),
+    known: store.vocabulary.all(),
+    signal,
+  })
+  let waiting = 0
+  for (const f of found) {
+    // Backed outside the transcript: a speaker Meet named, or your own notes.
+    const backed = f.type === 'new' && (speakers.some((s) => appears(f.term, s)) || appears(f.term, scratch))
+    const state = store.vocabulary.propose({ ...f, meetingId, corroborated: backed })
+    if (state === 'suggested') waiting++
+  }
+  console.log(`[vocabulary] meeting ${meetingId}: ${found.length} found, ${waiting} suggested, ${Date.now() - started}ms`)
+  if (found.length > 0) broadcast(IPC.vocabularyChanged, null)
+}
+
+/** A suggestion taken - as it stands, or as you edited it. Why it was refused, or null. */
+function acceptSuggestion(id: number, draft?: VocabularyDraft): string | null {
+  if (draft) {
+    const refused = saveVocabulary(draft)
+    if (refused) return refused
+    store.vocabulary.setSuggestionState(id, 'accepted')
+  } else if (store.vocabulary.accept(id) === null) {
+    return 'That suggestion is no longer there.'
+  }
+  broadcast(IPC.vocabularyChanged, null)
+  return null
 }
 
 function finishMeeting(meetingId: number): Promise<void> {
@@ -1317,6 +1404,92 @@ function registerHotkeys(): void {
   }
 }
 
+/**
+ * Add or change one vocabulary entry from its page. Why it was refused, or null.
+ *
+ * Checked here, not only in the form: an always-rewrite sound-alike changes
+ * every future dictation, and the rule that it must be more specific than the
+ * word it replaces ("cloud" for Claude would break "cloud storage") is main's
+ * to keep. An entry you change is yours from then on, whoever added it.
+ */
+function saveVocabulary(draft: VocabularyDraft): string | null {
+  const term = draft.term.trim()
+  if (!term) return 'Enter the name or word.'
+  if (term.length > 60) return 'That is too long for a name or a word.'
+  for (const alias of draft.aliases) {
+    if (!alias.rewrite) continue
+    const check = validateEntry({ kind: 'correction', hear: alias.text, write: term })
+    if (!check.ok) return check.reason
+  }
+  const fields = {
+    term,
+    kind: draft.kind,
+    aliases: draft.aliases,
+    meaning: draft.meaning,
+    pinned: draft.pinned,
+    source: 'you' as const,
+    state: 'active' as const,
+  }
+  const saved = draft.id === undefined ? store.vocabulary.add(fields) !== null : store.vocabulary.update(draft.id, fields)
+  if (!saved) return `${term} is already in your vocabulary.`
+  broadcast(IPC.vocabularyChanged, null)
+  return null
+}
+
+/**
+ * A pasted list, added as yours: each word sorted into a kind by the language
+ * model on the card, with its meaning when the line gave one. Words you already
+ * have are left exactly as they are.
+ */
+async function importVocabulary(text: string): Promise<VocabularyImport> {
+  const pasted = parseVocabularyList(text)
+  const fresh = pasted.filter((p) => !store.vocabulary.byTerm(p.term))
+  const kinds = await sortIntoKinds(fresh.map((p) => p.term))
+  for (const p of fresh) {
+    store.vocabulary.add({
+      term: p.term,
+      kind: kinds.get(p.term) ?? 'term',
+      aliases: [],
+      meaning: p.meaning,
+      pinned: false,
+      source: 'you',
+      state: 'active',
+    })
+  }
+  if (fresh.length > 0) broadcast(IPC.vocabularyChanged, null)
+  return { added: fresh.length, skipped: pasted.length - fresh.length }
+}
+
+/**
+ * Which kind each word is, asked of whichever language model is serving, in
+ * groups small enough for its context. Any word it could not place is a plain
+ * term, and a model that is not up is never a reason to refuse the paste.
+ */
+async function sortIntoKinds(terms: readonly string[]): Promise<Map<string, VocabularyKind>> {
+  const kinds = new Map<string, VocabularyKind>()
+  if (terms.length === 0 || !supervisor.canServe('llama')) return kinds
+  const client = new OpenAiCompatClient({
+    baseUrl: supervisor.baseUrl('llama'),
+    model: supervisor.snapshot('llama').modelId,
+    timeoutMs: 60_000,
+  })
+  for (let at = 0; at < terms.length; at += 60) {
+    const group = terms.slice(at, at + 60)
+    try {
+      const result = await client.complete({
+        system: VOCABULARY_KINDS_SYSTEM,
+        user: group.join('\n'),
+        maxTokens: 40 + group.length * 24,
+        temperature: 0,
+      })
+      for (const [term, kind] of parseKinds(result.text, group)) kinds.set(term, kind)
+    } catch (err) {
+      console.warn('[vocabulary] could not sort part of a pasted list:', err instanceof Error ? err.message : err)
+    }
+  }
+  return kinds
+}
+
 function registerIpc(): void {
   ipcMain.handle(IPC.getSettings, () => settings.get())
   ipcMain.handle(IPC.setSettings, (_e, patch) => {
@@ -1430,25 +1603,26 @@ function registerIpc(): void {
 
   ipcMain.handle(IPC.getStorage, () => store.stats())
 
-  ipcMain.handle(IPC.getDictionary, () => store.dictionary.all())
-  ipcMain.handle(IPC.addDictionaryEntry, (_e, entry: NewDictionaryEntry) => {
-    // Validated in main, not only in the form: the rule that a correction must
-    // be more specific than the word it replaces protects every future
-    // transcript, and a renderer is not the place to enforce it.
-    const check = validateEntry(entry)
-    if (!check.ok) return check.reason
-    const id = store.dictionary.add({
-      kind: entry.kind,
-      hear: entry.hear.trim(),
-      write: entry.kind === 'correction' ? entry.write.trim() : '',
-      enabled: entry.enabled,
-    })
-    return id === null ? 'You already have a rule for that.' : null
+  ipcMain.handle(IPC.getVocabulary, () => store.vocabulary.all())
+  ipcMain.handle(IPC.saveVocabulary, (_e, draft: VocabularyDraft) => saveVocabulary(draft))
+  ipcMain.handle(IPC.getVocabularySuggestions, () => store.vocabulary.suggestions(['suggested', 'rejected']))
+  ipcMain.handle(IPC.acceptSuggestion, (_e, id: number, draft?: VocabularyDraft) => acceptSuggestion(id, draft))
+  ipcMain.handle(IPC.rejectSuggestion, (_e, id: number) => {
+    store.vocabulary.reject(id)
+    broadcast(IPC.vocabularyChanged, null)
   })
-  ipcMain.handle(IPC.updateDictionaryEntry, (_e, id: number, patch: DictionaryPatch) => {
-    store.dictionary.update(id, patch)
+  ipcMain.handle(IPC.reviveSuggestion, (_e, id: number) => {
+    store.vocabulary.revive(id)
+    broadcast(IPC.vocabularyChanged, null)
   })
-  ipcMain.handle(IPC.removeDictionaryEntry, (_e, id: number) => store.dictionary.remove(id))
+  ipcMain.handle(IPC.removeVocabulary, (_e, id: number) => {
+    // A name from a Meet call is put aside as "not a word", not deleted:
+    // deleted, the next call with them in it would add it straight back.
+    if (store.vocabulary.byId(id)?.source === 'roster') store.vocabulary.update(id, { state: 'rejected' })
+    else store.vocabulary.remove(id)
+    broadcast(IPC.vocabularyChanged, null)
+  })
+  ipcMain.handle(IPC.importVocabulary, (_e, text: string) => importVocabulary(text))
 
   ipcMain.handle(IPC.getRecordings, () => recordings.list())
   ipcMain.handle(IPC.deleteRecording, (_e, file: string) => {
@@ -1809,6 +1983,20 @@ if (!app.requestSingleInstanceLock()) {
     const { models } = settings.get()
     supervisor.register('whisper', models.whisper)
     supervisor.register('llama', models.llama)
+
+    // What was in the old glossary box moves into the vocabulary - sorted into
+    // kinds once the language model answers - and the box is emptied only when
+    // that worked, so a launch that closes first simply tries again.
+    const boxed = settings.get().meetings.glossary
+    if (boxed.trim()) {
+      void languageModelReady()
+        .then(() => importVocabulary(boxed))
+        .then((moved) => {
+          settings.set({ meetings: { ...settings.get().meetings, glossary: '' } })
+          console.log(`[vocabulary] moved in from the glossary setting: ${moved.added} added, ${moved.skipped} already there`)
+        })
+        .catch((err: unknown) => console.warn('[vocabulary] could not move the glossary setting in:', err))
+    }
 
     // Must be installed before any renderer asks for system audio, and it costs
     // nothing when no meeting is ever started.
