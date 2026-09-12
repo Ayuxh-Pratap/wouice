@@ -279,7 +279,7 @@ export class SidecarSupervisor extends EventEmitter {
     m.stderr = []
     this.emitState(id)
 
-    const proc = spawn(exe, m.def.args(modelPath, m.port), {
+    const proc = spawn(exe, m.def.args(modelPath, m.port, model), {
       // Working directory matters: these binaries load sibling DLLs.
       cwd: path.dirname(exe),
       stdio: ['ignore', 'pipe', 'pipe'],
