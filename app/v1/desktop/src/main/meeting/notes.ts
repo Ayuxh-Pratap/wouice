@@ -779,13 +779,75 @@ export function allFailed(outcomes: readonly ChunkOutcome[]): boolean {
  * signal about what mattered, not a source of facts - a scribbled "priya =
  * decision maker" is a hint to weight, not a line to quote.
  */
-export function reduceInput(condensed: string, scratch: string, when: Date): string {
-  const parts = [`Meeting date: ${when.toISOString().slice(0, 10)}`, '', condensed]
+export function reduceInput(
+  condensed: string,
+  scratch: string,
+  when: Date,
+  glossary?: readonly string[]
+): string {
+  const parts = [`${glossaryReference(glossary)}Meeting date: ${when.toISOString().slice(0, 10)}`, '', condensed]
   const notes = scratch.trim()
   if (notes) {
     parts.push('', "The person's own notes, typed during the meeting:", notes)
   }
   return parts.join('\n')
+}
+
+/** At most this many glossary terms go with a request. */
+const MAX_GLOSSARY_TERMS = 60
+
+/**
+ * The glossary setting as terms: one per line or comma-separated, trimmed,
+ * each once. Capped, because it rides along with every request, and a pasted
+ * document would crowd out the transcript it is there to help with.
+ */
+export function glossaryTerms(text: string | undefined): string[] {
+  const seen = new Set<string>()
+  const terms: string[] = []
+  for (const raw of (text ?? '').split(/[\n,;]+/)) {
+    const term = raw.trim().slice(0, 40)
+    if (!term || seen.has(term.toLowerCase())) continue
+    seen.add(term.toLowerCase())
+    terms.push(term)
+    if (terms.length === MAX_GLOSSARY_TERMS) break
+  }
+  return terms
+}
+
+/** The glossary as it goes in front of a request: labelled as reference. Empty with no terms. */
+export function glossaryReference(terms: readonly string[] | undefined): string {
+  if (!terms?.length) return ''
+  return `Glossary - names and words these meetings use, spelled right (reference only, nothing here was said): ${terms.join(', ')}\n\n`
+}
+
+/**
+ * Each line once.
+ *
+ * A larger model still loops now and then: one run of meeting 10's notes wrote
+ * the same next step twenty times, until it hit the token cap and stopped
+ * mid-word. Repeats go; and where a loop was cut, a last bullet of one or two
+ * words with no full stop is the cap's stump, and goes too.
+ */
+export function dropRepeatedLines(text: string): { text: string; dropped: number } {
+  const seen = new Set<string>()
+  const kept: string[] = []
+  let dropped = 0
+  for (const line of text.split('\n')) {
+    const key = line.replace(/^\s*[-*•]\s*/, '').replace(/\s+/g, ' ').trim().toLowerCase()
+    if (key && seen.has(key)) {
+      dropped++
+      continue
+    }
+    if (key) seen.add(key)
+    kept.push(line)
+  }
+  if (dropped > 0) {
+    while (kept.length > 0 && !kept[kept.length - 1]!.trim()) kept.pop()
+    const last = kept[kept.length - 1]?.trim() ?? ''
+    const words = last.replace(/^[-*•]\s*/, '').split(/\s+/).filter(Boolean)
+    if (/^[-*•]\s/.test(last) && words.length <= 2 && !/[.!?]$/.test(last)) kept.pop()
+  }
+  return { text: kept.join('\n'), dropped }
 }
 
 /** A line with a little either side of it, the cited one marked. */
