@@ -455,6 +455,35 @@ export function SettingsPanel({
             onChange={(autoDetect) => save({ meetings: { ...settings.meetings, autoDetect } })}
           />
         </Row>
+
+        <Row
+          label="Larger models after a meeting"
+          hint="Writes the English, summary and tasks with bigger models than dictation uses — they find far more of the real work. Dictation pauses while they run: a few minutes after a short call, longer after an hour. The card at the bottom of the sidebar says when it is back."
+        >
+          <Toggle
+            label="Larger models after a meeting"
+            on={settings.meetings.largerModels}
+            onChange={(largerModels) => save({ meetings: { ...settings.meetings, largerModels } })}
+          />
+        </Row>
+
+        <Row
+          label="Names and words"
+          hint="The names, products and terms your meetings use, spelled right — one per line, or separated by commas. Only a spelling reference for the English and the notes: a misheard word that sounds like one of these is written as it. Meet's captions heard “Claude” as “Lord”; this is what fixes that."
+        >
+          <textarea
+            defaultValue={settings.meetings.glossary}
+            placeholder="Claude, Wouice, Google Meet"
+            rows={3}
+            // On blur, like your name: each save rewrites the file.
+            onBlur={(e) => {
+              const glossary = e.target.value
+              if (glossary === settings.meetings.glossary) return
+              save({ meetings: { ...settings.meetings, glossary } })
+            }}
+            className="w-56 resize-y rounded-md bg-neutral-950 px-2 py-1 text-[12px] text-neutral-200 ring-1 ring-white/10 outline-none placeholder:text-neutral-700 focus:ring-white/25"
+          />
+        </Row>
       </Section>
       <BotAccountSection settings={settings} save={save} />
       </div>}
