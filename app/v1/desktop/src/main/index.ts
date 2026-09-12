@@ -162,6 +162,9 @@ const botCapture: CaptureSink = {
     const meeting = store.meetings.byId(meetingId)
     if (!meeting) return
     store.meetings.finish(meetingId, { endedAt, audioPath: null, durationMs: endedAt - meeting.startedAt })
+    // Its length and "finished" now, not when the English and the summary are
+    // done minutes later: until then the list still said "never finished · 0s".
+    broadcast(IPC.meetingUpdated, meetingId)
     // Kept even when empty. A meeting that vanished when the bot left was a
     // call with nowhere to look for what happened to it.
     if (lines === 0) {
@@ -196,7 +199,22 @@ const meetingBot = new MeetingBot({
     return status.message || "The bot's Chrome profile is not signed in."
   },
 })
-meetingBot.on('run', (view: unknown) => broadcast(IPC.botRun, view))
+meetingBot.on('run', (view: unknown) => {
+  broadcast(IPC.botRun, view)
+  // The bot is capturing the call now. An offer to record a meeting, made
+  // because your own browser is using the microphone, is for this same call.
+  if ((view as { state?: string } | null)?.state === 'in-meeting' && pendingOffer) {
+    pendingOffer = null
+    broadcast(IPC.meetingOffer, null)
+    micWatcher.dismissOffer()
+  }
+})
+
+/** Whether the bot is in a call, which the microphone watcher would otherwise offer to record. */
+function botInCall(): boolean {
+  const state = meetingBot.view()?.state
+  return state === 'in-meeting' || state === 'leaving'
+}
 
 /**
  * Notes and tasks, after the meeting.
@@ -424,13 +442,14 @@ async function renderEnglish(id: number, versionId?: number): Promise<EnglishOut
   }
 
   try {
+    // Echo lines are the far side heard twice; rendering them spends the
+    // model on duplicates of lines that are already being rendered.
+    const heard = store.meetings.segments(id, version.id).filter((seg) => !seg.echo)
     const run = await englishEngine.render({
-      // Echo lines are the far side heard twice; rendering them spends the
-      // model on duplicates of lines that are already being rendered.
-      lines: store.meetings
-        .segments(id, version.id)
-        .filter((seg) => !seg.echo)
-        .map((seg) => ({ id: seg.id, text: seg.text })),
+      // With who said each line, where Meet's captions named them: a reply
+      // reads differently once the model knows whose question it answers.
+      lines: heard.map((seg) => ({ id: seg.id, text: seg.text, speaker: seg.speaker })),
+      people: [...new Set(heard.flatMap((seg) => (seg.speaker ? [seg.speaker] : [])))],
       // Read fresh on every call, so notes added AFTER the meeting are used by
       // the next render - which is the point of being able to add them later.
       context: meeting.scratchMd,
@@ -527,6 +546,10 @@ const micWatcher = new MicWatcher({
 let pendingOffer: string | null = null
 
 micWatcher.on('offer', (app_: string) => {
+  if (botInCall()) {
+    micWatcher.dismissOffer()
+    return
+  }
   pendingOffer = app_
   broadcast(IPC.meetingOffer, pendingOffer)
 
