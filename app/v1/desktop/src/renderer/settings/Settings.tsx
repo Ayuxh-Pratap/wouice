@@ -12,7 +12,7 @@ import { listInputs } from '../capture/mic.js'
 import { CHARACTER_LIST, posterStyle } from '../hud/sprite.js'
 import { PET_SIZE_LABELS, type PetSize } from '../../shared/pet.js'
 import { BotAccountSection } from './BotAccount.js'
-import { DictionaryEditor } from './DictionaryEditor.js'
+import { hashFor } from '../shell/routes.js'
 import { ConfirmButton, Choice, Row, Section, Toggle } from './Field.js'
 import { Tabs } from '../shell/Tabs.js'
 import { MEETING_KINDS, type MeetingKind } from '../../shared/meeting-kind.js'
@@ -469,20 +469,14 @@ export function SettingsPanel({
 
         <Row
           label="Names and words"
-          hint="The names, products and terms your meetings use, spelled right — one per line, or separated by commas. Only a spelling reference for the English and the notes: a misheard word that sounds like one of these is written as it. Meet's captions heard “Claude” as “Lord”; this is what fixes that."
+          hint="The names, products and terms your meetings and dictation use, what they tend to be misheard as, and what they mean. They have their own page now."
         >
-          <textarea
-            defaultValue={settings.meetings.glossary}
-            placeholder="Claude, Wouice, Google Meet"
-            rows={3}
-            // On blur, like your name: each save rewrites the file.
-            onBlur={(e) => {
-              const glossary = e.target.value
-              if (glossary === settings.meetings.glossary) return
-              save({ meetings: { ...settings.meetings, glossary } })
-            }}
-            className="w-56 resize-y rounded-md bg-neutral-950 px-2 py-1 text-[12px] text-neutral-200 ring-1 ring-white/10 outline-none placeholder:text-neutral-700 focus:ring-white/25"
-          />
+          <a
+            href={hashFor('vocabulary')}
+            className="rounded-md px-2 py-1 text-[11px] text-neutral-300 ring-1 ring-white/10 hover:bg-white/5 hover:text-neutral-100"
+          >
+            Open Vocabulary
+          </a>
         </Row>
       </Section>
       <BotAccountSection settings={settings} save={save} />
@@ -544,16 +538,6 @@ export function SettingsPanel({
         )}
       </Section>
 
-      {settings.developerMode && (
-        <Section
-          title="Dictionary"
-          hint="Words this app gets wrong for you specifically. Rules apply before the AI cleanup, so a name fixed here stays fixed."
-        >
-          <div className="pt-3">
-            <DictionaryEditor />
-          </div>
-        </Section>
-      )}
       </div>}
     </div>
   )
