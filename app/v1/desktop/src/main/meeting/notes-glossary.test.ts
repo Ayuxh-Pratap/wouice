@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dropRepeatedLines, glossaryReference, glossaryTerms, reduceInput } from './notes.js'
+import { dropRepeatedLines, glossaryOf, glossaryReference, glossaryTerms, reduceInput } from './notes.js'
 
 /**
  * The glossary setting and the repeat guard - the two pieces of the notes that
@@ -17,11 +17,19 @@ describe('the glossary', () => {
     expect(glossaryTerms(many)).toHaveLength(60)
   })
 
-  it('goes in front of a request labelled as reference, and not at all when empty', () => {
-    expect(glossaryReference(['Claude', 'Finch Bot'])).toMatch(/^Glossary - .*reference only.*: Claude, Finch Bot\n\n$/)
+  it('goes in front of a request labelled as reference, one entry a line, and not at all when empty', () => {
+    expect(glossaryReference(['Claude (heard as: Lord, लॉर्ड)', 'Finch Bot'])).toMatch(
+      /^Glossary - [^\n]*reference only[^\n]*:\n- Claude \(heard as: Lord, लॉर्ड\)\n- Finch Bot\n\n$/
+    )
     expect(glossaryReference([])).toBe('')
-    expect(reduceInput('- a point', '', new Date('2026-09-12'), ['Claude'])).toMatch(/^Glossary - .*Claude\n\nMeeting date: 2026-09-12/)
+    expect(reduceInput('- a point', '', new Date('2026-09-12'), ['Claude'])).toMatch(/^Glossary - [^\n]*\n- Claude\n\nMeeting date: 2026-09-12/)
     expect(reduceInput('- a point', '', new Date('2026-09-12'))).toMatch(/^Meeting date: 2026-09-12/)
+  })
+
+  it('takes a fixed list, or asks for what a stretch of text calls for', () => {
+    expect(glossaryOf(['Claude'], 'anything')).toEqual(['Claude'])
+    expect(glossaryOf((text) => (text.includes('Lord') ? ['Claude (heard as: Lord)'] : []), 'give it to Lord')).toEqual(['Claude (heard as: Lord)'])
+    expect(glossaryOf(undefined, 'anything')).toEqual([])
   })
 })
 
