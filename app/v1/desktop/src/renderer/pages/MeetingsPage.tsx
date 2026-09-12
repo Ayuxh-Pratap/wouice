@@ -4,6 +4,7 @@ import type { MeetingRecord } from '@wouice/store'
 import type { Settings } from '../../shared/settings.js'
 import { MEETING_KINDS, meetCaptionLanguage, type MeetingKind } from '../../shared/meeting-kind.js'
 import { describeJob, jobColour, useMeetingJobs } from '../meetings/jobs.js'
+import { useEngine } from '../shell/engine.js'
 import { isImproved, mainVersion } from '../meetings/versions.js'
 import { hashForMeeting } from '../shell/routes.js'
 import { Transcript } from '../meetings/Transcript.js'
@@ -300,10 +301,13 @@ function JobChip({
   meetingId: number
   jobs: MeetingJobsView
 }): React.JSX.Element | null {
+  // How far through, when this is the meeting the larger models are writing up.
+  const engine = useEngine()
   const running = jobs.running?.meetingId === meetingId ? jobs.running : null
   const waiting = running ? null : jobs.queued.find((j) => j.meetingId === meetingId)
   if (!running && !waiting) return null
   const colour = running ? jobColour(running.kind) : '#737373'
+  const percent = running && engine?.meetingId === meetingId ? engine.percent : null
   return (
     <span
       className="flex shrink-0 items-center gap-1.5 text-[11px]"
@@ -314,6 +318,7 @@ function JobChip({
         style={{ backgroundColor: colour }}
       />
       {running ? describeJob(running.kind) : 'Waiting'}
+      {percent !== null && <span className="tabular-nums">· {percent}%</span>}
     </span>
   )
 }
