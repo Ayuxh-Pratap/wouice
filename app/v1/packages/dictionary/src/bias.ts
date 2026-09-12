@@ -23,6 +23,12 @@ export interface BiasOptions {
   maxChars?: number
   /** Prefix, counted against the budget. */
   prefix?: string
+  /**
+   * Entries that go ahead of all the others, whatever their hits: your own
+   * vocabulary before the shipped list. The budget is small, and a colleague's
+   * name is worth more of it than a framework you mention once a month.
+   */
+  preferred?: readonly DictionaryEntry[]
 }
 
 /**
@@ -56,7 +62,13 @@ export function biasPrompt(
   const maxChars = options.maxChars ?? DEFAULT_BIAS_CHARS
   const prefix = options.prefix ?? 'Glossary: '
 
-  const words = rank(entries)
+  const seen = new Set<string>()
+  const words = [...rank(options.preferred ?? []), ...rank(entries)].filter((w) => {
+    const key = w.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
   if (words.length === 0) return ''
 
   const picked: string[] = []
