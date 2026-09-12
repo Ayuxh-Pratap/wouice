@@ -401,6 +401,8 @@ export interface MeetingDiagnostics {
     missed: number
     failedBatches: number
     ms: number
+    /** The language model that wrote it. Absent on runs from before this was kept. */
+    model?: string
     /** False when the pass failed outright; `message` says why. */
     ok?: boolean
     message?: string
@@ -411,6 +413,8 @@ export interface MeetingDiagnostics {
   notes?: {
     at: number
     ok: boolean
+    /** The language model that wrote them. Absent on runs from before this was kept. */
+    model?: string
     chunks: number
     gaps: number
     tasks: number
