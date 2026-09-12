@@ -1,10 +1,11 @@
 import { EventEmitter } from 'node:events'
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { BotRunReason, BotRunState, BotRunView } from '../../shared/ipc.js'
 import type { BotBrowser } from './browser.js'
+import { scoreAgainstPanel, type CaptionScore } from './caption-score.js'
 import { MeetFeed, type CaptionLine } from './captions.js'
-import { meetUrl, readPage, type PageSnapshot } from './meet-ui.js'
+import { meetUrl, readPage, type PageSnapshot, type PanelTurn } from './meet-ui.js'
 
 /**
  * One run of the meeting bot: join, wait to be let in, stay, leave.
@@ -122,6 +123,7 @@ export interface MeetingBotDeps {
   now?(): number
   sleep?(ms: number): Promise<void>
   writeFile?(file: string, data: string): void
+  appendFile?(file: string, data: string): void
   mkdir?(dir: string): void
   prune?(runsDir: string, keep: number): void
 }
@@ -156,6 +158,8 @@ interface Run {
   warning: string | null
   /** A failure to store captions. Sticky: the lines it failed on are gone. */
   saveProblem: string | null
+  /** What was stored, for scoring against Meet's own panel at the end. */
+  kept: { speaker: string | null; text: string }[]
 }
 
 interface CaptionState {
@@ -163,8 +167,10 @@ interface CaptionState {
   onAt: number | null
   tries: number
   lastTry: number
-  /** The language asked for and not got, if any. */
-  languageMissed: string | null
+  /** The language to caption in, e.g. `hi-IN`. Null for Meet's default. */
+  wanted: string | null
+  /** When the language was asked for again because captions arrived in another. */
+  retriedAt: number | null
 }
 
 type JoinOutcome = { joined: true } | { joined: false; reason: BotRunReason }
@@ -246,6 +252,7 @@ export class MeetingBot extends EventEmitter {
       lines: 0,
       warning: null,
       saveProblem: null,
+      kept: [],
     }
     this.current = run
     this.changed(run)
@@ -405,7 +412,14 @@ export class MeetingBot extends EventEmitter {
     this.move(run, 'in-meeting')
     const joinedAt = this.now()
     this.openMeeting(run, joinedAt)
-    const captions: CaptionState = { on: false, onAt: null, tries: 0, lastTry: -Infinity, languageMissed: null }
+    const captions: CaptionState = {
+      on: false,
+      onAt: null,
+      tries: 0,
+      lastTry: -Infinity,
+      wanted: this.deps.captionLanguage?.() ?? null,
+      retriedAt: null,
+    }
     let seenOthers = false
     let aloneSince: number | null = null
     let lostSince: number | null = null
@@ -418,7 +432,19 @@ export class MeetingBot extends EventEmitter {
       if (!captions.on && captions.tries < CAPTION_TRIES && this.now() - captions.lastTry >= this.t.captionRetryMs) {
         await this.turnOnCaptions(run, browser, captions)
       }
-      this.keep(run, feed.captions.take(this.now(), (d) => feed.roster.nameOf(d)))
+      this.keep(run, feed.take(this.now()))
+      this.logCaptions(run, feed)
+      // The captions say which language Meet is using, whatever the menus did.
+      // Meet remembers the choice from the last call, so the menus can fail on
+      // a language already set - judged by the clicks, a false warning.
+      if (captions.wanted && feed.lastLanguage && feed.lastLanguage !== captions.wanted && captions.retriedAt === null) {
+        captions.retriedAt = this.now()
+        const again = await browser.page.enableCaptions(captions.wanted)
+        this.note(
+          run,
+          `captions arriving in ${feed.lastLanguage}; asked for ${captions.wanted} again, ${again.languageSet ? 'chosen' : 'not chosen'}`
+        )
+      }
 
       const snapshot = await this.look(browser)
       if (snapshot) {
@@ -467,8 +493,11 @@ export class MeetingBot extends EventEmitter {
 
   private async leaveMeeting(run: Run, browser: BotBrowser, reason: BotRunReason): Promise<void> {
     const failed = reason === 'browser-died' || reason === 'lost-meeting'
+    let panel: PanelTurn[] | null = null
     if (!browser.closed) {
       await this.capture(run, browser, failed ? `failed-${reason}` : 'before-leaving', failed)
+      // Meet's own caption panel, before leaving takes it away.
+      panel = await browser.page.captionPanel()
       // Removed, or the call already over: there is no leave button to press,
       // and nothing to show as "leaving".
       if (reason !== 'removed' && reason !== 'meeting-ended') {
@@ -479,9 +508,15 @@ export class MeetingBot extends EventEmitter {
     }
     await this.closeBrowser(browser)
     this.closeMeeting(run)
+    const score = this.score(run, panel)
     const state = failed ? 'failed' : 'ended'
+    const match = score ? `, ${percent(score.exact)} of Meet's own caption words` : ''
     const kept =
-      run.meetingId === null ? '' : run.lines > 0 ? ` Kept ${run.lines} line${run.lines === 1 ? '' : 's'} of captions.` : ' No captions were kept.'
+      run.meetingId === null
+        ? ''
+        : run.lines > 0
+          ? ` Kept ${run.lines} line${run.lines === 1 ? '' : 's'} of captions${match}.`
+          : ' No captions were kept.'
     this.finish(run, state, reason, describeRun(state, reason) + kept)
   }
 
@@ -492,9 +527,8 @@ export class MeetingBot extends EventEmitter {
     captions.lastTry = this.now()
     // The language once: going through Meet's settings every twenty seconds
     // would be the bot fiddling with menus for the whole call.
-    const language = captions.tries === 1 ? (this.deps.captionLanguage?.() ?? null) : null
+    const language = captions.tries === 1 ? captions.wanted : null
     const result = await browser.page.enableCaptions(language)
-    if (language && result.languageSet === false) captions.languageMissed = language
     if (result.on) {
       captions.on = true
       captions.onAt = this.now()
@@ -502,7 +536,7 @@ export class MeetingBot extends EventEmitter {
     const chosen = language ? `, ${language} ${result.languageSet ? 'chosen' : 'not chosen'}` : ''
     const open = result.settingsOpen ? ", and Meet's settings were left open over the call" : ''
     this.note(run, `captions ${result.on ? 'on' : 'not on'}${chosen}${open} (try ${captions.tries})`)
-    if (!result.on || result.languageSet === false || result.settingsOpen) {
+    if (!result.on || result.settingsOpen) {
       await this.capture(run, browser, `captions-try-${captions.tries}`, true)
     }
   }
@@ -534,8 +568,15 @@ export class MeetingBot extends EventEmitter {
     ) {
       return `Captions are on, but Meet opened no caption channel (only ${[...feed.channels].join(', ')}). Meet may have changed how it sends them.`
     }
-    if (captions.languageMissed) {
-      return `Could not set the captions to ${captions.languageMissed}; they are in Meet's default language.`
+    // Only once asked a second time and captions still came in another language.
+    if (
+      captions.wanted &&
+      captions.retriedAt !== null &&
+      feed.lastLanguage !== null &&
+      feed.lastLanguage !== captions.wanted &&
+      (feed.lastLanguageAt ?? 0) > captions.retriedAt
+    ) {
+      return `Captions are arriving in ${feed.lastLanguage}, not ${captions.wanted}, so the transcript is in the wrong language.`
     }
     return null
   }
@@ -558,10 +599,14 @@ export class MeetingBot extends EventEmitter {
     try {
       this.deps.sink.append(run.meetingId, lines, run.meetingStartedAt)
       run.lines += lines.length
+      run.kept.push(...lines.map((l) => ({ speaker: l.speaker, text: l.text })))
       this.changed(run)
     } catch (err) {
       run.saveProblem = `Some captions could not be saved: ${err instanceof Error ? err.message : String(err)}`
       this.note(run, run.saveProblem)
+      // Now, not at the next look: a turn is often stored as the call ends,
+      // when there is no next look.
+      this.warn(run, run.saveProblem)
     }
   }
 
@@ -569,11 +614,14 @@ export class MeetingBot extends EventEmitter {
   private closeMeeting(run: Run): void {
     const feed = run.feed
     if (feed) {
-      this.keep(run, feed.captions.flush((d) => feed.roster.nameOf(d)))
+      this.keep(run, feed.flush())
+      const c = feed.captions
       this.note(
         run,
-        `captions: ${feed.captionMessages} read, ${feed.captions.lateRevisions} revised after being kept; ${feed.summary()}`
+        `captions: ${feed.captionMessages} read; kept ${c.keptFinal} at Meet's final version and ${c.keptQuiet} without one; ${c.lateRevisions} changed after being kept; ${feed.summary()}`
       )
+      this.logCaptions(run, feed)
+      this.writeJson(run, 'people.json', feed.roster.people())
       this.writeSamples(run, feed)
       run.feed = null
     }
@@ -657,6 +705,52 @@ export class MeetingBot extends EventEmitter {
     }
   }
 
+  /** New caption updates onto `captions.jsonl`: the call, replayable through new rules. */
+  private logCaptions(run: Run, feed: MeetFeed): void {
+    const logged = feed.drainLog()
+    if (logged.length === 0) return
+    try {
+      ;(this.deps.appendFile ?? ((f, d) => appendFileSync(f, d, 'utf8')))(
+        path.join(run.dir, 'captions.jsonl'),
+        logged.map((u) => JSON.stringify(u)).join('\n') + '\n'
+      )
+    } catch {
+      // As above.
+    }
+  }
+
+  /**
+   * What was kept, against Meet's own caption panel: into the log and
+   * `score.json`, with the panel itself in `meet-panel.json`. Null when there
+   * was no panel to read - the call ended under the bot, or Meet changed it.
+   */
+  private score(run: Run, panel: PanelTurn[] | null): CaptionScore | null {
+    if (run.meetingId === null) return null
+    if (!panel || panel.length === 0) {
+      this.note(run, "Meet's caption panel was not there to score against")
+      return null
+    }
+    this.writeJson(run, 'meet-panel.json', panel)
+    const score = scoreAgainstPanel(panel, run.kept)
+    this.writeJson(run, 'score.json', score)
+    this.note(
+      run,
+      `against Meet's caption panel: ${percent(score.exact)} of its words kept exactly, word error rate ${percent(score.wer)}, ${percent(score.speakerWer)} counting speakers; the panel had ${score.panelWords} words in ${score.panelTurns} turns, the bot kept ${score.keptWords} in ${score.keptLines} lines`
+    )
+    return score
+  }
+
+  private writeJson(run: Run, name: string, data: unknown): void {
+    try {
+      ;(this.deps.writeFile ?? ((f, d) => writeFileSync(f, d, 'utf8')))(
+        path.join(run.dir, name),
+        JSON.stringify(data, null, 2) + '\n'
+      )
+    } catch {
+      // As above.
+    }
+  }
+
   private finish(run: Run, state: 'ended' | 'failed', reason: BotRunReason, message?: string): void {
     run.state = state
     run.reason = reason
@@ -699,6 +793,10 @@ export class MeetingBot extends EventEmitter {
       // The log is for reading afterwards; failing to write it must not stop the bot.
     }
   }
+}
+
+function percent(share: number): string {
+  return `${Math.round(share * 100)}%`
 }
 
 /** Keep the newest runs' folders; the names are timestamps, so they sort by age. */
