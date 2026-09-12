@@ -392,7 +392,9 @@ export class DictationController extends EventEmitter {
       language: 'auto',
       // Short by design: a long initial prompt makes Whisper drift and invent
       // text on quiet audio.
-      prompt: biasPrompt(SEED_DICTIONARY),
+      // Your own vocabulary first: a colleague's name is worth more of the
+      // small budget than a framework in the shipped list.
+      prompt: biasPrompt(SEED_DICTIONARY, { preferred: this.deps.userDictionary?.() ?? [] }),
     })
   }
 
