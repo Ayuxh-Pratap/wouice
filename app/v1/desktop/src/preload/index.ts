@@ -3,6 +3,7 @@ import {
   IPC,
   type Diagnostics,
   type DictationOutcome,
+  type EngineView,
   type HotkeyReport,
   type HudState,
   type MeetingChannel,
@@ -98,6 +99,10 @@ const api: WouiceApi = {
   setMainVersion: (meetingId: number, versionId: number) =>
     ipcRenderer.invoke(IPC.setMainVersion, meetingId, versionId),
   onMeetingJobs: (cb) => subscribe<MeetingJobsView>(IPC.meetingJobs, cb),
+  getEngine: () => ipcRenderer.invoke(IPC.getEngine),
+  onEngine: (cb) => subscribe<EngineView>(IPC.engineState, cb),
+  resumeDictation: () => ipcRenderer.invoke(IPC.resumeDictation),
+  restartModels: () => ipcRenderer.invoke(IPC.restartModels),
   onMeetingUpdated: (cb) => subscribe<number>(IPC.meetingUpdated, cb),
   setTaskState: (taskId: number, state: TaskState) =>
     ipcRenderer.invoke(IPC.setTaskState, taskId, state),
