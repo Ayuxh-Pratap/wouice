@@ -463,6 +463,86 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT '';
     `,
   },
+  {
+    id: 12,
+    name: 'your vocabulary: names and words, what they sound like, what they mean',
+    sql: `
+      -- One list for dictation and meetings alike, replacing the dictation
+      -- dictionary and the meetings glossary box. An entry is a spelling, what
+      -- kind of thing it is, what it tends to be misheard as, what it means,
+      -- and where it came from. See docs/design/09-vocabulary.md.
+      CREATE TABLE vocabulary (
+        id         INTEGER PRIMARY KEY,
+        term       TEXT NOT NULL,
+        -- person, product, tool, term or place.
+        kind       TEXT NOT NULL DEFAULT 'term',
+        -- JSON array of {"text": "...", "rewrite": bool}: the sound-alikes.
+        aliases    TEXT NOT NULL DEFAULT '[]',
+        meaning    TEXT NOT NULL DEFAULT '',
+        -- you, roster (Meet's participant list), learned, or shipped.
+        source     TEXT NOT NULL DEFAULT 'you',
+        -- active, suggested, or rejected ("not a word" - never suggested again).
+        state      TEXT NOT NULL DEFAULT 'active',
+        pinned     INTEGER NOT NULL DEFAULT 0,
+        hits       INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX vocabulary_by_term ON vocabulary (lower(term));
+
+      -- Which meetings mentioned which entry, once each: how an entry shows it
+      -- still earns its place.
+      CREATE TABLE vocabulary_seen (
+        entry_id   INTEGER NOT NULL,
+        meeting_id INTEGER NOT NULL,
+        at         INTEGER NOT NULL,
+        PRIMARY KEY (entry_id, meeting_id)
+      );
+
+      -- The dictation dictionary moves in. A correction becomes the word it
+      -- writes, with what it hears as an always-rewrite sound-alike; a term
+      -- stays a term. The old table stays, untouched, behind it.
+      INSERT OR IGNORE INTO vocabulary (term, kind, aliases, source, hits, created_at, updated_at)
+        SELECT write, 'term',
+               json_group_array(json_object('text', hear, 'rewrite', json('true'))),
+               'you', SUM(hits), MIN(created_at), MIN(created_at)
+        FROM dictionary
+        WHERE kind = 'correction' AND enabled = 1 AND write IS NOT NULL AND write <> ''
+        GROUP BY lower(write);
+      INSERT OR IGNORE INTO vocabulary (term, kind, aliases, source, hits, created_at, updated_at)
+        SELECT hear, 'term', '[]', 'you', hits, created_at, created_at
+        FROM dictionary
+        WHERE kind = 'term' AND enabled = 1;
+    `,
+  },
+  {
+    id: 13,
+    name: 'what your meetings suggest for your vocabulary',
+    sql: `
+      -- Names and words the mining step found after a meeting, waiting for you.
+      -- Nothing here is in the vocabulary until you say so. A new word is kept
+      -- quietly as a candidate until it has come up in a second meeting, or
+      -- something outside the transcript backs it (the call's participant list,
+      -- your notes); a suspected mishearing of an entry you already have is
+      -- shown at once. "Not a word" is kept, so it is never suggested again.
+      CREATE TABLE vocabulary_suggestions (
+        id         INTEGER PRIMARY KEY,
+        -- 'new': a name or word not in the vocabulary.
+        -- 'heard': what an entry seems to be misheard as.
+        type       TEXT NOT NULL,
+        term       TEXT NOT NULL,
+        heard      TEXT NOT NULL DEFAULT '',
+        kind       TEXT NOT NULL DEFAULT 'term',
+        -- JSON array of {"meetingId": n, "quote": "...", "at": ms}, one per meeting.
+        evidence   TEXT NOT NULL DEFAULT '[]',
+        -- candidate, suggested, accepted or rejected.
+        state      TEXT NOT NULL DEFAULT 'candidate',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX vocabulary_suggestions_by_key ON vocabulary_suggestions (type, lower(term), lower(heard));
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */
