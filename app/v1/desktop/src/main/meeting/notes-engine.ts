@@ -139,6 +139,13 @@ const FALLBACK_FACTOR = 1.9
 const TOKENIZE_WORKERS = 6
 /** Lines kept on a task as where it came from. */
 const MAX_EVIDENCE = 8
+/**
+ * Words of substance a task's own lines must hold between them. "Search
+ * needed" is a mention, not work: asked to write it up, the model invents the
+ * rest - which is how a live call's only task came from two words. Checked in
+ * code, because the prompt already asked and the model wrote it up anyway.
+ */
+const MIN_TASK_BASIS = 5
 
 export class MeetingNotesEngine {
   /** Why the last model call failed, so a failed run can say why. */
@@ -309,6 +316,12 @@ export class MeetingNotesEngine {
       const members = group.members.map((i) => found[i]!)
       const evidence = mergedEvidence(members, byId)
       const cited = linesFor(lines, evidence.map((e) => e.segmentId))
+      // Work from the transcript needs lines that say something about it. Work
+      // from the person's own notes has none, and is theirs to judge.
+      if (evidence.length > 0 && contentWords(cited.map((line) => line.text).join(' ')).size < MIN_TASK_BASIS) {
+        setAside++
+        continue
+      }
       const raw = await this.tryComplete(
         MEETING_TASK_WRITEUP_SYSTEM,
         writeUpInput(members, cited, date),
