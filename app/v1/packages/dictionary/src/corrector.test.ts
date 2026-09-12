@@ -84,6 +84,19 @@ describe('correct() invariants', () => {
   })
 })
 
+describe('biasPrompt() with your own words', () => {
+  it('puts them ahead of the shipped list, each once', () => {
+    const prompt = biasPrompt(SEED_DICTIONARY, {
+      preferred: [
+        { kind: 'term', hear: 'Himanshu', enabled: true },
+        { kind: 'term', hear: 'Claude', enabled: true },
+      ],
+    })
+    expect(prompt.startsWith('Glossary: Claude, Himanshu, ')).toBe(true)
+    expect(prompt.match(/Claude(?! Code)/g)).toHaveLength(1)
+  })
+})
+
 describe('biasPrompt()', () => {
   it('returns empty for an empty dictionary', () => {
     expect(biasPrompt([])).toBe('')
