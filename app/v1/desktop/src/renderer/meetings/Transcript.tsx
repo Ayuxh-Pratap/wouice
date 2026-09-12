@@ -20,12 +20,18 @@ export function Transcript({
   emptyMessage = 'Nothing transcribed yet.',
   highlight = '',
   english = false,
+  awaitingEnglish = false,
 }: {
   segments: MeetingSegment[]
   emptyMessage?: string
   highlight?: string
   /** Show the English rendering where there is one. Never instead of it. */
   english?: boolean
+  /**
+   * The English has not been written yet - the call is still on, or it is
+   * being written now - so a line without it is not "not rendered", only early.
+   */
+  awaitingEnglish?: boolean
 }): React.JSX.Element {
   if (segments.length === 0) {
     return <p className="px-1 py-6 text-center text-[12px] text-neutral-600">{emptyMessage}</p>
@@ -73,7 +79,7 @@ export function Transcript({
               })()}
             </p>
             {/* Only a Hindi line lacks English; one spoken in English is its own. */}
-            {english && needsEnglish(segment) ? (
+            {english && !awaitingEnglish && needsEnglish(segment) ? (
               <span className="text-[10px] text-neutral-600">not rendered</span>
             ) : null}
           </div>
