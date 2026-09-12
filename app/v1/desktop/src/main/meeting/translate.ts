@@ -16,6 +16,8 @@ import { CHUNK_TOKEN_BUDGET } from './notes.js'
 export interface Line {
   id: number
   text: string
+  /** Who said it, when known. Shown to the model as context; never rendered. */
+  speaker?: string | null
 }
 
 export interface Rendered {
@@ -27,18 +29,20 @@ export interface Rendered {
 const OUTPUT_SHARE = 0.55
 
 /**
- * Lines per request, and the number matters more than it looks.
+ * Lines per request: one.
  *
- * MEASURED, NOT GUESSED. Handed twenty numbered lines, qwen3-4b stops
+ * MEASURED, NOT GUESSED, TWICE. Handed twenty numbered lines, qwen3-4b stops
  * translating and starts TRANSLITERATING - "कि इतने सारी फेलियर" comes back as
  * "Ki itne saari failiyar", which is the same sounds in Latin letters and is
- * not English. Handed the same line on its own it answers "So many failures,
- * what's going on?". The format instruction appears to crowd out the semantic
- * one as the list grows, so the list stays short. A few neighbours are still
- * worth having: "हाँ वही" renders very differently depending on what came
- * before it.
+ * not English. Handed six, in a real call, it merged a line that ended
+ * mid-sentence into the next and gave every later line the English of the one
+ * after it: the right words on the wrong lines, which the numbers cannot catch
+ * and which "Redo English" repeated exactly. One line per request cannot
+ * drift. What the neighbours gave - "हाँ वही" renders very differently
+ * depending on what came before it - is kept by showing the lines before it
+ * as context (see `renderBatch`).
  */
-const MAX_LINES_PER_BATCH = 6
+const MAX_LINES_PER_BATCH = 1
 
 /**
  * Group lines into batches the model can hold with room to answer.
@@ -72,8 +76,47 @@ export function batchLines(
   return batches
 }
 
-export function renderBatch(batch: readonly Line[]): string {
-  return batch.map((line) => `[${line.id}] ${line.text}`).join('\n')
+/**
+ * A batch as the model reads it: each line numbered and named, after the lines
+ * said just before it, marked as context. A reply - "हाँ वही", "मैं कर दूंगा" -
+ * means little without what it answers, and the first line of a batch would
+ * otherwise have nothing before it.
+ */
+export function renderBatch(batch: readonly Line[], before: readonly Line[] = []): string {
+  const numbered = batch.map((line) => `[${line.id}] ${named(line)}${line.text}`)
+  if (before.length === 0) return numbered.join('\n')
+  return [
+    'Before this (context only):',
+    ...before.map((line) => `${named(line)}${tail(line.text)}`),
+    '',
+    'Render only this:',
+    ...numbered,
+  ].join('\n')
+}
+
+/**
+ * Words of each earlier line shown as context: its end, nearest the line being
+ * rendered. Shown whole, a sixty-word line before a two-word "ठीक है" was
+ * rendered in its place.
+ */
+const CONTEXT_WORDS = 20
+
+function tail(text: string): string {
+  const words = text.split(/\s+/).filter(Boolean)
+  return words.length <= CONTEXT_WORDS ? words.join(' ') : `… ${words.slice(-CONTEXT_WORDS).join(' ')}`
+}
+
+function named(line: Line): string {
+  return line.speaker ? `(${line.speaker}) ` : ''
+}
+
+/** The name a line was shown with, when the model repeats it back despite being told not to. */
+function withoutName(text: string, name: string | null | undefined): string {
+  if (!name) return text
+  for (const prefix of [`(${name})`, `${name}:`]) {
+    if (text.startsWith(prefix)) return text.slice(prefix.length).trim()
+  }
+  return text
 }
 
 /**
@@ -86,17 +129,20 @@ export function renderBatch(batch: readonly Line[]): string {
  */
 export function parseEnglish(raw: string, batch: readonly Line[]): Rendered[] {
   const allowed = new Map(batch.map((line) => [line.id, line.text]))
+  const speakers = new Map(batch.map((line) => [line.id, line.speaker]))
   const out: Rendered[] = []
   const seen = new Set<number>()
+  let numbered = false
 
   for (const line of raw.split('\n')) {
     const match = /^\s*\[(\d{1,10})\]\s*(.*)$/.exec(line)
     if (!match) continue
+    numbered = true
 
     const id = Number(match[1])
     if (!allowed.has(id) || seen.has(id)) continue
 
-    const text = match[2]!.trim()
+    const text = withoutName(match[2]!.trim(), speakers.get(id))
     // An empty answer is the model saying it could not carry the meaning. The
     // raw line stays, which is better than an invented English sentence.
     if (!text) continue
@@ -106,6 +152,17 @@ export function parseEnglish(raw: string, batch: readonly Line[]): Rendered[] {
 
     seen.add(id)
     out.push({ id, textEn: text })
+  }
+
+  // One line asked for, answered without its number: a small model given a
+  // single line often just answers, and on a real call two lines stayed in
+  // Hindi for it. Unnumbered, the answer can only be that line. A number with
+  // nothing after it is still the model saying it could not, and stands.
+  const only = batch.length === 1 ? batch[0]! : null
+  if (only && !numbered) {
+    const first = raw.split('\n').map((line) => line.trim()).find(Boolean)
+    const text = first ? withoutName(first.replace(/^(output|english)\s*:\s*/i, ''), only.speaker) : ''
+    if (text && text.length <= Math.max(120, only.text.length * 4)) out.push({ id: only.id, textEn: text })
   }
 
   return out
