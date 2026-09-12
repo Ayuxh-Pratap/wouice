@@ -624,6 +624,9 @@ describe('stats', () => {
       'segments',
       'speakers',
       'tasks',
+      'vocabulary',
+      'vocabulary_seen',
+      'vocabulary_suggestions',
     ])
     db.close()
   })
