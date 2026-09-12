@@ -72,6 +72,8 @@ export interface RepassResult {
   unheard: number
   /** Whether the speech model you use every day was confirmed back on the card. */
   restored: boolean
+  /** Both models were left off for the write-up that follows. See `handOver`. */
+  handedOver: boolean
 }
 
 export interface RepassDeps {
@@ -84,6 +86,14 @@ export interface RepassDeps {
   onProgress(progress: RepassProgress): void
   /** Aborted when a recording starts: recording beats improving. */
   signal?: AbortSignal
+  /**
+   * Leave both models off at the end instead of restoring them, because a
+   * write-up on the after-call models follows at once and loads its own -
+   * restoring first loaded both dictation models only for it to stop them
+   * again. Ignored when the pass is stopped or produced nothing: then it
+   * restores, as always. The caller makes sure dictation comes back either way.
+   */
+  handOver?: boolean
 }
 
 export class RepassUnavailable extends Error {}
@@ -134,6 +144,8 @@ export async function repassMeeting(meetingId: number, deps: RepassDeps): Promis
 
   const segments: SegmentInput[] = []
   let restored = false
+  let handedOver = false
+  let completed = false
 
   try {
     // The language model has to go first: large-v3 and a 4B will not both fit
@@ -201,21 +213,33 @@ export async function repassMeeting(meetingId: number, deps: RepassDeps): Promis
       }
     }
     segments.push(...segmenter.flush())
+    completed = true
   } finally {
-    // Always, even when the pass threw or was stopped. The model your settings
-    // name goes back - never a snapshot of whatever was loaded - and it is
-    // confirmed, because a swap queued behind a dictation only happens once
-    // that dictation ends.
-    deps.onProgress({ meetingId, stage: 'restoring', doneSec: meetingSec, totalSec: meetingSec })
-    try {
-      await deps.supervisor.switchModel('whisper', deps.restoreModelId)
-      await deps.supervisor.start('llama')
-      restored = await deps.supervisor.whenModel('whisper', deps.restoreModelId)
-      if (!restored) {
-        console.error(`[repass] ${deps.restoreModelId} was not confirmed back on the card`)
+    if (deps.handOver && completed && segments.length > 0 && !deps.signal?.aborted) {
+      // The write-up takes the card from here and brings dictation back when
+      // it is done. Only the large model has to go.
+      try {
+        await deps.supervisor.stop('whisper')
+      } catch (err) {
+        console.error('[repass] could not stop the large model:', err)
       }
-    } catch (err) {
-      console.error('[repass] could not restore the sidecars:', err)
+      handedOver = true
+    } else {
+      // Always, even when the pass threw or was stopped. The model your settings
+      // name goes back - never a snapshot of whatever was loaded - and it is
+      // confirmed, because a swap queued behind a dictation only happens once
+      // that dictation ends.
+      deps.onProgress({ meetingId, stage: 'restoring', doneSec: meetingSec, totalSec: meetingSec })
+      try {
+        await deps.supervisor.switchModel('whisper', deps.restoreModelId)
+        await deps.supervisor.start('llama')
+        restored = await deps.supervisor.whenModel('whisper', deps.restoreModelId)
+        if (!restored) {
+          console.error(`[repass] ${deps.restoreModelId} was not confirmed back on the card`)
+        }
+      } catch (err) {
+        console.error('[repass] could not restore the sidecars:', err)
+      }
     }
   }
 
@@ -232,5 +256,6 @@ export async function repassMeeting(meetingId: number, deps: RepassDeps): Promis
     languages,
     unheard,
     restored,
+    handedOver,
   }
 }
