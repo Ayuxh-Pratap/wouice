@@ -42,6 +42,7 @@ const AURA: Record<Tone, string> = {
   inserted: 'rgb(52 211 153 / 0.24)',
   copied: 'rgb(56 189 248 / 0.24)',
   error: 'rgb(220 38 38 / 0.30)',
+  paused: 'rgb(251 146 60 / 0.24)',
 }
 
 export function Pet({
