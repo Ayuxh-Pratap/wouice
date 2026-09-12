@@ -51,6 +51,8 @@ export interface EnglishInput {
    * accepts lines numbered from the transcript.
    */
   context?: string
+  /** The people in the meeting, for spelling their names. Reference, like `context`. */
+  people?: readonly string[]
   onProgress?(progress: EnglishProgress): void
   signal?: AbortSignal
 }
@@ -76,12 +78,20 @@ export class MeetingEnglishEngine {
     let failedBatches = 0
     this.lastFailure = null
 
+    // The lines already sent, for the context each next one is shown with.
+    const said: Line[] = []
     for (const [index, batch] of batches.entries()) {
       input.signal?.throwIfAborted()
       input.onProgress?.({ batch: index + 1, batches: batches.length, lines: rendered.length })
 
+      const before = said.slice(-CONTEXT_LINES)
+      said.push(...batch)
+      // Numbered from 1 in each request, and put back to the stored ids here:
+      // copying a long id back, the model wrote "[900043]" as "[900343]", and
+      // a line rendered perfectly well stayed in Hindi.
+      const numbered = batch.map((line, i) => ({ ...line, id: i + 1 }))
       const answer = await this.tryComplete(
-        withContext(renderBatch(batch), input.context),
+        withContext(renderBatch(numbered, before), input.context, input.people),
         input.signal
       )
       if (answer === null) {
@@ -89,7 +99,7 @@ export class MeetingEnglishEngine {
         continue
       }
 
-      const parsed = parseEnglish(answer, batch)
+      const parsed = parseEnglish(answer, numbered).map((r) => ({ id: batch[r.id - 1]!.id, textEn: r.textEn }))
       // A batch that mostly did not come back is a batch where the model lost
       // the format. Keeping the few lines it did return would leave the
       // transcript half in English and half not, with nothing saying so.
@@ -145,16 +155,18 @@ export class MeetingEnglishEngine {
 
 /** Cap on the reference text, so a long scratch pad cannot crowd out the batch. */
 const MAX_CONTEXT_CHARS = 400
+/** The lines said just before, shown with each request as context. */
+const CONTEXT_LINES = 2
 
-function withContext(batch: string, context?: string): string {
+function withContext(batch: string, context?: string, people?: readonly string[]): string {
   const notes = (context ?? '').trim().slice(0, MAX_CONTEXT_CHARS)
-  if (!notes) return batch
-  return [
-    "Reference only - the person's own notes, for spelling names and terms.",
-    'Do not render these lines.',
-    notes,
-    '',
-    'Transcript:',
-    batch,
-  ].join('\n')
+  const names = (people ?? []).filter((name) => name.trim())
+  if (!notes && names.length === 0) return batch
+  const parts: string[] = []
+  if (names.length > 0) parts.push(`Reference only - the people in this meeting: ${names.join(', ')}.`)
+  if (notes) {
+    parts.push("Reference only - the person's own notes, for spelling names and terms.", 'Do not render these lines.', notes)
+  }
+  parts.push('', 'Transcript:', batch)
+  return parts.join('\n')
 }
