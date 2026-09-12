@@ -1,6 +1,6 @@
 import { gzipSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
-import { CaptionAssembler, MeetFeed, Roster, captionSegment } from './captions.js'
+import { CaptionAssembler, MeetFeed, Roster, TurnBuilder, captionSegment, type CaptionLine } from './captions.js'
 import { base64, bytes, collectionEvent, int, pageMessage, u8, userEntry } from './meet-fixtures.js'
 import type { CaptionUpdate, MeetUser } from './meet-protocol.js'
 
@@ -51,11 +51,22 @@ describe('assembling captions', () => {
     expect(a.flush(names)[0]!.text).toBe('the whole sentence')
   })
 
-  it('settles a caption Meet never marks final, two seconds after it stops changing', () => {
+  it('keeps a caption Meet never marks final once it has been quiet for ten seconds', () => {
     const a = new CaptionAssembler()
     a.update(cap({ text: 'ship it' }), 1_000)
-    expect(a.take(2_900, names)).toEqual([])
-    expect(a.take(3_000, names)).toHaveLength(1)
+    expect(a.take(10_900, names)).toEqual([])
+    expect(a.take(11_000, names)).toHaveLength(1)
+    expect(a.keptQuiet).toBe(1)
+  })
+
+  it("waits for Meet's final version rather than keeping its first guess", () => {
+    // The real case: kept after two quiet seconds, this was stored as "एक सेकंड".
+    const a = new CaptionAssembler()
+    a.update(cap({ version: 1, text: 'एक सेकंड' }), 1_000)
+    expect(a.take(4_000, names)).toEqual([])
+    a.update(cap({ version: 5, text: 'चलो देखते हैं क्या होता है', isFinal: true }), 5_000)
+    expect(a.take(5_000, names)).toMatchObject([{ text: 'चलो देखते हैं क्या होता है', startedAt: 1_000 }])
+    expect(a.keptFinal).toBe(1)
   })
 
   it('stores a line once, and counts Meet correcting it afterwards instead', () => {
@@ -68,22 +79,12 @@ describe('assembling captions', () => {
     expect(a.lateRevisions).toBe(1)
   })
 
-  it('keeps what a speaker says after a pause, as a line of only the new words', () => {
-    // The pause settles the caption; the same caption then grows.
+  it('knows which speakers still have a caption in progress, and since when', () => {
     const a = new CaptionAssembler()
-    a.update(cap({ version: 1, text: 'I will send the invoice' }), 1_000)
-    expect(a.take(3_000, names).map((l) => l.text)).toEqual(['I will send the invoice'])
-    a.update(cap({ version: 2, text: 'I will send the invoice on Monday' }), 4_000)
-    a.update(cap({ version: 3, text: 'I will send the invoice on Monday, after the call', isFinal: true }), 4_500)
-    expect(a.take(4_500, names)).toMatchObject([{ text: 'on Monday, after the call', startedAt: 4_000 }])
-  })
-
-  it('goes by word count when Meet also corrected the words it had kept', () => {
-    const a = new CaptionAssembler()
-    a.update(cap({ version: 1, text: 'kal tak ho jayega', isFinal: true }), 1_000)
-    a.take(1_000, names)
-    a.update(cap({ version: 2, text: 'Kal tak ho jaayega aur test bhi', isFinal: true }), 2_000)
-    expect(a.take(2_000, names).map((l) => l.text)).toEqual(['aur test bhi'])
+    a.update(cap({ captionId: '1', text: 'कल तक' }), 1_000)
+    a.update(cap({ captionId: '2', text: 'हो' }), 1_400)
+    expect(a.openSince('d-rahul')).toBe(1_000)
+    expect(a.openSince('d-you')).toBeNull()
   })
 
   it('keeps two people talking at once apart, and in order', () => {
@@ -101,6 +102,55 @@ describe('assembling captions', () => {
     const a = new CaptionAssembler()
     a.update(cap({ text: '   ', isFinal: true }), 1_000)
     expect(a.take(1_000, names)).toEqual([])
+  })
+})
+
+describe('joining captions into turns', () => {
+  const piece = (deviceId: string, text: string, startedAt: number, endedAt: number): CaptionLine => ({
+    deviceId,
+    speaker: deviceId === 'd-rahul' ? 'Rahul Dhir' : null,
+    text,
+    startedAt,
+    endedAt,
+    language: 'hi-IN',
+  })
+
+  it("joins one speaker's captions that follow each other, as Meet's panel does", () => {
+    const t = new TurnBuilder()
+    expect(t.add([piece('d-rahul', 'भाई होगा तो वही तरीका', 0, 900), piece('d-rahul', 'जो मैंने', 1_200, 1_800)])).toEqual([])
+    expect(t.flush()).toEqual([piece('d-rahul', 'भाई होगा तो वही तरीका जो मैंने', 0, 1_800)])
+  })
+
+  it('starts a new turn when someone else speaks, or after a long pause', () => {
+    const t = new TurnBuilder()
+    const done = t.add([piece('d-rahul', 'आएगा', 0, 500), piece('d-you', 'बताओ', 600, 900), piece('d-you', 'ठीक है', 16_000, 16_300)])
+    expect(done.map((l) => l.text)).toEqual(['आएगा', 'बताओ'])
+    expect(t.flush().map((l) => l.text)).toEqual(['ठीक है'])
+  })
+
+  it('closes a long turn at sixty words, so a monologue is still pieces a task can cite', () => {
+    const t = new TurnBuilder()
+    const ten = (at: number): CaptionLine => piece('d-rahul', 'एक दो तीन चार पांच छह सात आठ नौ दस', at, at + 500)
+    const done = t.add([0, 600, 1_200, 1_800, 2_400, 3_000, 3_600].map(ten))
+    expect(done).toHaveLength(1)
+    expect(done[0]!.text.split(' ')).toHaveLength(60)
+    expect(t.flush()[0]!.text.split(' ')).toHaveLength(10)
+  })
+
+  it('holds the turn open while its speaker has a caption in progress that began inside the gap', () => {
+    const t = new TurnBuilder()
+    t.add([piece('d-rahul', 'कल तक', 0, 800)])
+    // The gap has not passed.
+    expect(t.due(5_000, () => null)).toEqual([])
+    // It has, but their next caption began inside it.
+    expect(t.due(13_000, () => 1_000)).toEqual([])
+    expect(t.due(13_000, () => null).map((l) => l.text)).toEqual(['कल तक'])
+  })
+
+  it('puts the pieces in the order they were said, whatever order Meet finished them in', () => {
+    const t = new TurnBuilder()
+    t.add([piece('d-rahul', 'हो जाएगा', 900, 1_400), piece('d-rahul', 'कल तक', 0, 800)])
+    expect(t.flush()[0]!.text).toBe('कल तक हो जाएगा')
   })
 })
 
@@ -209,6 +259,28 @@ describe('the feed from the page', () => {
     expect(feed.samples[0]).toEqual({ label: 'captions_v2', at: 0, b64: '/w==', problem: 'not a caption' })
     expect(feed.samples.at(-1)).toMatchObject({ label: 'collections', problem: 'could not be inflated' })
     expect(feed.summary()).toMatch(/captions_v2 30 \(30 unreadable\), collections 1 \(1 unreadable\)/)
+  })
+
+  it('stores turns, not the pieces Meet cut them into, and logs every update', () => {
+    const feed = new MeetFeed()
+    feed.receive(pageMessage.caption({ deviceId: 'd-rahul', captionId: 1, version: 1, text: 'कल तक', isFinal: true }), 1_000)
+    feed.receive(pageMessage.caption({ deviceId: 'd-rahul', captionId: 2, version: 1, text: 'हो जाएगा', isFinal: true }), 1_300)
+    expect(feed.take(1_300)).toEqual([])
+    expect(feed.take(14_000).map((l) => l.text)).toEqual(['कल तक हो जाएगा'])
+    expect(feed.drainLog().map((u) => [u.captionId, u.at])).toEqual([
+      ['1', 1_000],
+      ['2', 1_300],
+    ])
+    expect(feed.drainLog()).toEqual([])
+  })
+
+  it('remembers who each device was, including people who have left', () => {
+    const feed = new MeetFeed()
+    feed.receive(pageMessage.people([userEntry('d-rahul', 'Rahul Dhir'), userEntry('d-priya', 'Priya', [], 6)]), 1_000)
+    expect(feed.roster.people().map((p) => [p.deviceId, p.name, p.status])).toEqual([
+      ['d-rahul', 'Rahul Dhir', 1],
+      ['d-priya', 'Priya', 6],
+    ])
   })
 
   it('takes a sync that says nothing about people as the normal case it is', () => {
