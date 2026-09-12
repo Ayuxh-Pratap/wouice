@@ -158,6 +158,23 @@ export interface MeetingConfig {
    * against this. See docs/design/07-meeting-bot.md.
    */
   bot: { email: string }
+  /**
+   * Write each meeting's English, summary and tasks with larger models than
+   * dictation's, after the call - pausing dictation while they run.
+   *
+   * On by default because the difference was measured, not assumed: on three
+   * graded meetings the larger models found every real bug the 4B missed,
+   * and wrote the only summaries worth reading. Off puts everything back on the
+   * dictation model and never touches the card. See 08-after-call-models.md.
+   */
+  largerModels: boolean
+  /**
+   * Names, products and terms your meetings use, spelled right: one per line
+   * or comma-separated. A spelling reference for the English and the notes,
+   * never content - Meet's captions wrote "Claude" as "लॉर्ड", and this is
+   * what lets the English say Claude. Parsed by `glossaryTerms`.
+   */
+  glossary: string
 }
 
 /**
@@ -273,6 +290,8 @@ export const DEFAULT_MEETINGS: MeetingConfig = {
   defaultKind: DEFAULT_MEETING_KIND,
   me: { name: '', area: 'frontend' },
   bot: { email: '' },
+  largerModels: true,
+  glossary: '',
 }
 
 export const DEFAULT_SETTINGS: Settings = {
