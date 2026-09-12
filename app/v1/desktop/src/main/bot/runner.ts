@@ -106,8 +106,12 @@ export interface CaptureSink {
   /** A meeting for this call, made when the bot gets in. Returns its id. */
   open(startedAt: number): number
   append(meetingId: number, lines: readonly CaptionLine[], startedAt: number): void
-  /** The call is over. `lines` is how many were kept. */
-  close(meetingId: number, detail: { endedAt: number; lines: number }): void
+  /**
+   * The call is over. `lines` is how many were kept; `people` the names on
+   * Meet's participant list, the bot and screen shares left out - spelled by
+   * Google, which is why the vocabulary takes them on its own.
+   */
+  close(meetingId: number, detail: { endedAt: number; lines: number; people: string[] }): void
 }
 
 export interface MeetingBotDeps {
@@ -613,7 +617,12 @@ export class MeetingBot extends EventEmitter {
   /** Whatever is still open becomes lines, and the meeting is closed. Once. */
   private closeMeeting(run: Run): void {
     const feed = run.feed
+    let people: string[] = []
     if (feed) {
+      people = feed.roster
+        .people()
+        .filter((p) => !p.isSelf && !p.screenShareOf && p.name)
+        .map((p) => p.name!)
       this.keep(run, feed.flush())
       const c = feed.captions
       this.note(
@@ -628,7 +637,7 @@ export class MeetingBot extends EventEmitter {
     if (run.meetingId === null || run.meetingClosed || !this.deps.sink) return
     run.meetingClosed = true
     try {
-      this.deps.sink.close(run.meetingId, { endedAt: this.now(), lines: run.lines })
+      this.deps.sink.close(run.meetingId, { endedAt: this.now(), lines: run.lines, people })
     } catch (err) {
       this.note(run, `could not close meeting ${run.meetingId}: ${err instanceof Error ? err.message : String(err)}`)
     }
