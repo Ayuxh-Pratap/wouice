@@ -15,20 +15,25 @@ import {
  *
  * CAPTIONS ARE REVISED, NOT APPENDED. Meet sends the same caption again and
  * again as the speaker goes on - "I will", "I will send", "I will send it on
- * Monday" - each a higher version under one id. Storing every update would
- * put the sentence in the transcript eight times. So each caption is kept
- * under `device:caption` and replaced by newer versions, and becomes a line
- * once Meet marks it final, or once it has not changed for two seconds. The
- * rule is Attendee's `closed_caption_manager`. A caption that grows again after
- * it settled - the speaker paused, then went on - adds a line with only the new
- * words, so a pause never costs the end of a sentence.
+ * Monday" - each a higher version under one id, correcting earlier words as it
+ * goes, until it marks the caption final. A caption is kept at that final
+ * version. Keeping it earlier, two seconds after it stopped changing, kept
+ * Meet's first guesses: in the first full call 172 revisions arrived after the
+ * line was kept, and "चलो देखते हैं क्या होता है" was stored as "एक सेकंड". A
+ * caption Meet never finalises is kept after ten quiet seconds.
+ *
+ * THEN JOINED INTO TURNS. Meet also cuts a new caption every few seconds while
+ * one person keeps talking, and its own caption panel joins them back into one
+ * block per speaker. Stored as they came, a third of the lines were one to
+ * three words ("की", "हूं") and the English was translated three words at a
+ * time. See `TurnBuilder`.
  *
  * NAMES FROM MEET'S OWN LIST. A caption carries a device id, not a person; the
  * participant list maps one to the other. It is kept for the whole call, so a
  * line said by someone who has since left still has their name.
  */
 
-/** One finished caption: a line of the transcript. */
+/** One finished caption, or a turn of them: a line of the transcript. */
 export interface CaptionLine {
   deviceId: string
   /** The speaker's name as Meet shows it, or null if the list never named them. */
@@ -58,8 +63,19 @@ export function captionSegment(line: CaptionLine, meetingStartedAt: number, myNa
   }
 }
 
+/** Who a device was, for the run folder. */
+export interface Person {
+  deviceId: string
+  name: string | null
+  status: number
+  isSelf: boolean
+  screenShareOf: string | null
+}
+
 export class Roster {
   private readonly present = new Map<string, MeetUser>()
+  /** Everyone ever listed, including those who have left. */
+  private readonly seen = new Map<string, MeetUser>()
   private readonly names = new Map<string, string>()
   private listed = false
 
@@ -71,6 +87,7 @@ export class Roster {
     if (complete) this.present.clear()
     for (const user of users) {
       this.present.set(user.deviceId, user)
+      this.seen.set(user.deviceId, user)
       // The full name, as Meet's own captions label people: "Ayush Pratap
       // Singh", where the shown name is "Ayush Pratap". It is also the one
       // that tells two Rahuls apart across meetings.
@@ -96,6 +113,17 @@ export class Roster {
     }
     return count
   }
+
+  /** Everyone Meet listed during the call, as last seen. */
+  people(): Person[] {
+    return [...this.seen.values()].map((u) => ({
+      deviceId: u.deviceId,
+      name: this.nameOf(u.deviceId),
+      status: u.status,
+      isSelf: u.isSelf,
+      screenShareOf: u.screenShareOf,
+    }))
+  }
 }
 
 interface Pending {
@@ -106,21 +134,19 @@ interface Pending {
   lastAt: number
   isFinal: boolean
   language: string | null
-  /** What of this caption an earlier line already kept. Empty for a new caption. */
-  kept: string
 }
 
 export class CaptionAssembler {
   private readonly pending = new Map<string, Pending>()
-  /** Captions already made into lines: the text kept, and at which version. */
+  /** Captions already kept, by `device:caption`: the text kept, and at which version. */
   private readonly done = new Map<string, { text: string; version: number }>()
-  /** Captions Meet changed after they were kept, without adding to them. Logged, not stored. */
+  /** Captions whose words Meet changed after they were kept. Counted, not stored. */
   lateRevisions = 0
+  /** How captions were kept: at Meet's final version, or without one. */
+  keptFinal = 0
+  keptQuiet = 0
 
-  constructor(
-    private readonly settleMs = 2_000,
-    private readonly minAgeMs = 1_000
-  ) {}
+  constructor(private readonly quietMs = 10_000) {}
 
   update(caption: CaptionUpdate, now: number): void {
     const key = `${caption.deviceId}:${caption.captionId}`
@@ -128,13 +154,8 @@ export class CaptionAssembler {
     if (kept) {
       if (caption.version <= kept.version) return
       kept.version = caption.version
-      if (!remainder(kept.text, caption.text)) {
-        this.lateRevisions++
-        return
-      }
-      // The speaker went on after a pause long enough to settle the caption.
-      // The new words become a line of their own rather than being lost.
-      this.done.delete(key)
+      if (caption.text.trim() !== kept.text.trim()) this.lateRevisions++
+      return
     }
     const current = this.pending.get(key)
     if (current && caption.version < current.version) return
@@ -146,21 +167,26 @@ export class CaptionAssembler {
       lastAt: current && current.text === caption.text ? current.lastAt : now,
       isFinal: caption.isFinal,
       language: caption.language ?? current?.language ?? null,
-      kept: current?.kept ?? kept?.text ?? '',
     })
   }
 
-  /** Captions that are finished: final, or settled. Oldest first. */
+  /** Captions that are finished: final, or quiet for too long to be anything else. Oldest first. */
   take(now: number, nameOf: (deviceId: string) => string | null): CaptionLine[] {
-    return this.release(
-      (p) => p.isFinal || (now - p.lastAt >= this.settleMs && now - p.firstAt >= this.minAgeMs),
-      nameOf
-    )
+    return this.release((p) => p.isFinal || now - p.lastAt >= this.quietMs, nameOf)
   }
 
   /** Everything still open, at the end of the call. */
   flush(nameOf: (deviceId: string) => string | null): CaptionLine[] {
     return this.release(() => true, nameOf)
+  }
+
+  /** When this speaker's oldest caption still in progress began; null when none is. */
+  openSince(deviceId: string): number | null {
+    let since: number | null = null
+    for (const p of this.pending.values()) {
+      if (p.deviceId === deviceId && (since === null || p.firstAt < since)) since = p.firstAt
+    }
+    return since
   }
 
   private release(ready: (p: Pending) => boolean, nameOf: (deviceId: string) => string | null): CaptionLine[] {
@@ -169,7 +195,9 @@ export class CaptionAssembler {
       if (!ready(p)) continue
       this.pending.delete(key)
       this.done.set(key, { text: p.text, version: p.version })
-      const text = p.kept ? remainder(p.kept, p.text) : p.text.trim()
+      if (p.isFinal) this.keptFinal++
+      else this.keptQuiet++
+      const text = p.text.trim()
       if (!text) continue
       lines.push({
         deviceId: p.deviceId,
@@ -182,6 +210,90 @@ export class CaptionAssembler {
     }
     return lines.sort((a, b) => a.startedAt - b.startedAt)
   }
+}
+
+/**
+ * One speaker's captions this close together are one turn. Meet's panel keeps
+ * a speaker's block going through pauses; on the first full call, twelve
+ * seconds gave turns of the same median length as the panel's, nine words.
+ */
+const JOIN_GAP_MS = 12_000
+/** A turn closes at this many words: a monologue still splits into pieces a task can cite. */
+const TURN_WORDS = 60
+
+/**
+ * One speaker's consecutive captions, joined into a turn.
+ *
+ * As Meet's own caption panel shows them: a turn goes on while the same person
+ * speaks, and ends when someone else does or they stop for a while. In the
+ * first full call the median gap between one person's consecutive captions was
+ * 0.3 s - pieces of one sentence, not sentences. Joined this way its 223 lines
+ * became 69 turns, against the 52 Meet's panel showed; the difference is mostly
+ * two people talking over each other.
+ */
+export class TurnBuilder {
+  private open: CaptionLine[] = []
+
+  constructor(
+    private readonly joinGapMs = JOIN_GAP_MS,
+    private readonly maxWords = TURN_WORDS
+  ) {}
+
+  /** Kept captions in, oldest first; finished turns out. */
+  add(lines: readonly CaptionLine[]): CaptionLine[] {
+    const done: CaptionLine[] = []
+    for (const line of lines) {
+      if (this.open.length > 0 && !this.joins(line)) done.push(this.close())
+      this.open.push(line)
+      if (countWords(this.open) >= this.maxWords) done.push(this.close())
+    }
+    return done
+  }
+
+  /**
+   * The open turn, once nothing more can join it: the gap has passed since its
+   * last words, and its speaker has no caption in progress that began inside
+   * that gap.
+   */
+  due(now: number, openSince: (deviceId: string) => number | null): CaptionLine[] {
+    if (this.open.length === 0) return []
+    const end = lastEnd(this.open)
+    if (now - end < this.joinGapMs) return []
+    const next = openSince(this.open[0]!.deviceId)
+    if (next !== null && next - end < this.joinGapMs) return []
+    return [this.close()]
+  }
+
+  /** The open turn, at the end of the call. */
+  flush(): CaptionLine[] {
+    return this.open.length > 0 ? [this.close()] : []
+  }
+
+  private joins(line: CaptionLine): boolean {
+    return line.deviceId === this.open[0]!.deviceId && line.startedAt - lastEnd(this.open) < this.joinGapMs
+  }
+
+  private close(): CaptionLine {
+    // In the order they were said, which is not always the order Meet finalised them.
+    const pieces = this.open.sort((a, b) => a.startedAt - b.startedAt)
+    this.open = []
+    return {
+      deviceId: pieces[0]!.deviceId,
+      speaker: pieces.find((p) => p.speaker)?.speaker ?? null,
+      text: pieces.map((p) => p.text).join(' '),
+      startedAt: pieces[0]!.startedAt,
+      endedAt: lastEnd(pieces),
+      language: pieces.find((p) => p.language)?.language ?? null,
+    }
+  }
+}
+
+function lastEnd(lines: readonly CaptionLine[]): number {
+  return Math.max(...lines.map((l) => l.endedAt))
+}
+
+function countWords(lines: readonly CaptionLine[]): number {
+  return lines.reduce((n, l) => n + l.text.split(/\s+/).filter(Boolean).length, 0)
 }
 
 /** What arrived under one label, and how much of it could be read. */
@@ -200,6 +312,9 @@ export interface MessageSample {
   problem?: string
 }
 
+/** One caption update as it arrived, for replaying a call through new rules. */
+export type LoggedCaption = CaptionUpdate & { at: number }
+
 /** Raw messages kept per label: enough to see Meet's format, not a copy of the call. */
 const SAMPLES_PER_LABEL = 25
 
@@ -212,10 +327,14 @@ const SAMPLES_PER_LABEL = 25
  * was; the first messages of each, kept as they arrived, are what the decoder
  * is then fixed against. The first live call failed like this with no bytes to
  * look at, which is why they are kept now.
+ *
+ * EVERY CAPTION UPDATE, LOGGED. Decoded, as they came: a call can be replayed
+ * through changed rules and scored again, instead of waiting for another call.
  */
 export class MeetFeed {
   readonly roster = new Roster()
   readonly captions = new CaptionAssembler()
+  readonly turns = new TurnBuilder()
   /** Every data channel label seen: the first sign Meet has renamed one. */
   readonly channels = new Set<string>()
   /** Per channel label (and `sync`, `page`, `page-error`). */
@@ -225,6 +344,13 @@ export class MeetFeed {
   captionMessages = 0
   /** Messages that could not be read at all. */
   unreadable = 0
+  /**
+   * The language the latest caption came in, and when: what Meet is actually
+   * captioning in, whatever its menus said.
+   */
+  lastLanguage: string | null = null
+  lastLanguageAt: number | null = null
+  private logged: LoggedCaption[] = []
 
   receive(raw: string, now: number): void {
     let message: PageMessage
@@ -263,6 +389,24 @@ export class MeetFeed {
     }
   }
 
+  /** Turns that are finished: what gets stored. */
+  take(now: number): CaptionLine[] {
+    const kept = this.captions.take(now, (d) => this.roster.nameOf(d))
+    return [...this.turns.add(kept), ...this.turns.due(now, (d) => this.captions.openSince(d))]
+  }
+
+  /** Everything, at the end of the call. */
+  flush(): CaptionLine[] {
+    return [...this.turns.add(this.captions.flush((d) => this.roster.nameOf(d))), ...this.turns.flush()]
+  }
+
+  /** The caption updates that arrived since the last call. */
+  drainLog(): LoggedCaption[] {
+    const logged = this.logged
+    this.logged = []
+    return logged
+  }
+
   /** One line per label: how much came, and how much of it could not be read. */
   summary(): string {
     const labels = [...this.stats].map(([label, s]) => `${label} ${s.messages} (${s.unreadable} unreadable)`)
@@ -281,6 +425,11 @@ export class MeetFeed {
         if (caption === 'other') return
         this.captionMessages++
         this.captions.update(caption, now)
+        this.logged.push({ ...caption, at: now })
+        if (caption.language) {
+          this.lastLanguage = caption.language
+          this.lastLanguageAt = now
+        }
       } else if (label === 'collections') {
         this.roster.update(decodeCollection(inflate(bytes)).users, false)
       }
@@ -304,14 +453,6 @@ export class MeetFeed {
       this.samples.push({ label, at: now, ...raw, ...(problem ? { problem } : {}) })
     }
   }
-}
-
-/** The words `after` adds to `before`: what was said since part of a caption was kept. */
-function remainder(before: string, after: string): string {
-  if (after.startsWith(before)) return after.slice(before.length).trim()
-  // Meet corrects earlier words as it goes, so go by how many there were.
-  const was = before.split(/\s+/).filter(Boolean).length
-  return after.split(/\s+/).filter(Boolean).slice(was).join(' ')
 }
 
 /**
