@@ -177,3 +177,31 @@ export function snapshotScript(joinLabels: readonly string[] = JOIN_LABELS): str
   };
 })()`
 }
+
+/** One block of Meet's own caption panel: a speaker, and what Meet finally made of their words. */
+export interface PanelTurn {
+  speaker: string
+  text: string
+}
+
+/**
+ * Meet's caption panel as it stands: one block per speaker turn, at Meet's
+ * final revisions - the text a person in the call could read, and what the
+ * bot's own lines are scored against.
+ *
+ * By structure, not class names, which Meet obfuscates and changes: the panel
+ * is the region labelled "Captions", and a turn is a child of it holding a
+ * picture, then a name, and last the words.
+ */
+export const CAPTION_PANEL_SCRIPT = `(() => {
+  const region = document.querySelector('[role="region"][aria-label="Captions"]');
+  if (!region) return null;
+  const turns = [];
+  for (const block of Array.from(region.children)) {
+    const name = block.querySelector('span');
+    const words = block.lastElementChild;
+    if (!block.querySelector('img') || !name || !words || words.contains(name)) continue;
+    turns.push({ speaker: (name.textContent || '').trim(), text: (words.textContent || '').trim() });
+  }
+  return turns;
+})()`
