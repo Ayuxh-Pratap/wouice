@@ -55,6 +55,43 @@ describe('the English pass', () => {
     expect(third).toContain('the people in this meeting: Ayush Pratap Singh')
   })
 
+  it('with several slots, runs lines side by side and still files each answer under its own line', async () => {
+    let inFlight = 0
+    let most = 0
+    const requests: LlmRequest[] = []
+    const client: LlmClient = {
+      async complete(req: LlmRequest): Promise<LlmResult> {
+        requests.push(req)
+        inFlight++
+        most = Math.max(most, inFlight)
+        // The first line asked for answers last, so answers come back out of order.
+        const line = lines.find((l) => req.user.includes(`[1] (${l.speaker}) ${l.text}`))!
+        await new Promise((resolve) => setTimeout(resolve, 30 - lines.indexOf(line) * 10))
+        inFlight--
+        return { text: `[1] english of ${line.id}`, latencyMs: 1, provider: 'local', model: 'test' }
+      },
+      async health() {
+        return { ok: true }
+      },
+    }
+    const run = await new MeetingEnglishEngine(() => client).render({ lines, concurrency: 2 })
+
+    expect(most).toBe(2)
+    expect(run.rendered).toEqual(lines.map((l) => ({ id: l.id, textEn: `english of ${l.id}` })))
+    // The context is still what was said before each line, not what came back.
+    expect(requests.find((r) => r.user.includes('सर्च करना है'))!.user).toContain(
+      '(Ayush Pratap Singh) वेरी वेरी फाइन'
+    )
+  })
+
+  it('offers the glossary as a spelling reference, never as a line to render', async () => {
+    const { client, requests } = fakeLlm(() => '[1] something')
+    await new MeetingEnglishEngine(client).render({ lines: lines.slice(0, 1), glossary: ['Claude', 'Finch Bot'] })
+    expect(requests[0]!.user).toContain('Reference only - names and words these meetings use, spelled right: Claude, Finch Bot.')
+    // The line to render is still the only numbered one.
+    expect(requests[0]!.user.match(/^\[\d+\]/gm)).toEqual(['[1]'])
+  })
+
   it('keeps a line the model could not render as it was, and counts it', async () => {
     const { client } = fakeLlm((req) => (req.user.includes('वेरी वेरी फाइन') && !req.user.includes('सर्च') ? '[1]' : '[1] rendered'))
     const run = await new MeetingEnglishEngine(client).render({ lines })
