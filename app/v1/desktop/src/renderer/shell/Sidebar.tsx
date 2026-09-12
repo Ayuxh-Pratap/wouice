@@ -197,6 +197,18 @@ function Search({ collapsed }: { collapsed: boolean }): React.JSX.Element {
   )
 }
 
+/** Suggestions waiting on the Vocabulary page: a dot, so they are seen without going there to look. */
+function usePendingSuggestions(): number {
+  const [waiting, setWaiting] = useState(0)
+  useEffect(() => {
+    const load = (): void =>
+      void window.wouice.getVocabularySuggestions().then((all) => setWaiting(all.filter((s) => s.state === 'suggested').length))
+    load()
+    return window.wouice.onVocabulary(load)
+  }, [])
+  return waiting
+}
+
 export function Sidebar({
   active,
   collapsed,
@@ -216,6 +228,7 @@ export function Sidebar({
     : jobs.queued.length > 0
       ? '#737373'
       : null
+  const suggestions = usePendingSuggestions()
 
   return (
     <nav
@@ -269,7 +282,7 @@ export function Sidebar({
                   route={r}
                   active={r.id === active}
                   collapsed={collapsed}
-                  dot={r.id === 'meetings' ? meetingDot : null}
+                  dot={r.id === 'meetings' ? meetingDot : r.id === 'vocabulary' && suggestions > 0 ? '#fbbf24' : null}
                 />
               ))}
             </div>
