@@ -86,10 +86,29 @@ describe('the English pass', () => {
 
   it('offers the glossary as a spelling reference, never as a line to render', async () => {
     const { client, requests } = fakeLlm(() => '[1] something')
-    await new MeetingEnglishEngine(client).render({ lines: lines.slice(0, 1), glossary: ['Claude', 'Finch Bot'] })
-    expect(requests[0]!.user).toContain('Reference only - names and words these meetings use, spelled right: Claude, Finch Bot.')
+    await new MeetingEnglishEngine(client).render({ lines: lines.slice(0, 1), glossary: ['Claude (heard as: Lord, लॉर्ड)', 'Finch Bot'] })
+    expect(requests[0]!.user).toContain(
+      'Reference only - names and words these meetings use, spelled right, with what each is often misheard as:\n- Claude (heard as: Lord, लॉर्ड)\n- Finch Bot'
+    )
     // The line to render is still the only numbered one.
     expect(requests[0]!.user.match(/^\[\d+\]/gm)).toEqual(['[1]'])
+  })
+
+  it('asks the vocabulary for what each line and its context call for', async () => {
+    const { client, requests } = fakeLlm(() => '[1] something')
+    const asked: string[] = []
+    await new MeetingEnglishEngine(client).render({
+      lines,
+      glossary: (text) => {
+        asked.push(text)
+        return text.includes('वेरी') ? ['Very'] : []
+      },
+    })
+    // The second line's request carries its own entry; the first line's has none.
+    expect(requests[0]!.user).not.toContain('- Very')
+    expect(requests[1]!.user).toContain('- Very')
+    // Asked with the line and the lines before it.
+    expect(asked[1]).toContain('ओके सो ये मीटिंग')
   })
 
   it('keeps a line the model could not render as it was, and counts it', async () => {
