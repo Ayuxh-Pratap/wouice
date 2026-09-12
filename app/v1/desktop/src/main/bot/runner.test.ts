@@ -136,7 +136,7 @@ function recordingSink() {
   const calls = {
     opened: [] as number[],
     lines: [] as CaptionLine[],
-    closed: [] as { endedAt: number; lines: number }[],
+    closed: [] as { endedAt: number; lines: number; people: string[] }[],
   }
   const sink: CaptureSink = {
     open: (at) => {
@@ -397,7 +397,7 @@ describe('keeping the captions', () => {
       ['Rahul Dhir', 'I will send it on Monday'],
       ['Rahul Dhir', 'and the invoice'],
     ])
-    expect(calls.closed).toEqual([{ endedAt: expect.any(Number), lines: 2 }])
+    expect(calls.closed).toEqual([{ endedAt: expect.any(Number), lines: 2, people: expect.any(Array) }])
     expect(meetingBot.view()).toMatchObject({
       state: 'ended',
       reason: 'meeting-ended',
