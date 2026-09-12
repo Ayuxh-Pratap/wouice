@@ -9,6 +9,7 @@ import { MeetingPage } from './pages/MeetingPage.js'
 import { MeetingsPage } from './pages/MeetingsPage.js'
 import { QualityPage } from './pages/QualityPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
+import { VocabularyPage } from './pages/VocabularyPage.js'
 import { Sidebar } from './shell/Sidebar.js'
 import { parseHash, routeById, type ParsedRoute } from './shell/routes.js'
 import { clampZoom, stepZoom } from '../shared/settings.js'
@@ -213,6 +214,7 @@ export function App(): React.JSX.Element {
             {route === 'dictations' && <DictationsPage developerMode={dev} query={query} />}
             {route === 'meetings' && meetingId === null && <MeetingsPage />}
             {route === 'meetings' && meetingId !== null && <MeetingPage meetingId={meetingId} />}
+            {route === 'vocabulary' && <VocabularyPage />}
             {route === 'quality' && <QualityPage />}
             {route === 'settings' && <SettingsPage settings={settings} />}
           </div>
