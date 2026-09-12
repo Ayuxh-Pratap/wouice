@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { SidecarSupervisor, type SidecarSnapshot } from './sidecars/supervisor.js'
 import { sweepOrphans } from './sidecars/orphans.js'
 import { SIDECARS } from '../shared/models.js'
+import { AfterCall, describeNotesStep, type Plan, type Session } from './sidecars/after-call.js'
+import { readGpu } from './sidecars/gpu.js'
 import { SettingsStore } from './settings-store.js'
 import { HotkeyManager } from './hotkeys.js'
 import { createTray, destroyTray, refreshTray } from './tray.js'
@@ -48,7 +50,8 @@ import { captionSegment } from './bot/captions.js'
 import { carryOver } from './meeting/versions.js'
 import { finishedSessions } from './meeting/merge.js'
 import { discardRecording } from './meeting/remove.js'
-import { MeetingNotesEngine, NotesUnavailable } from './meeting/notes-engine.js'
+import { MeetingNotesEngine, NotesUnavailable, type NotesProgress } from './meeting/notes-engine.js'
+import { glossaryTerms } from './meeting/notes.js'
 import { MicWatcher } from './meeting/mic-watcher.js'
 import { repassMeeting, RepassUnavailable } from './meeting/repass.js'
 import { MeetingEnglishEngine, EnglishUnavailable } from './meeting/english-engine.js'
@@ -118,6 +121,56 @@ const meetings = new MeetingController(MEETING_ROOT, {
  */
 const jobs = new MeetingJobs()
 jobs.on('change', (view: unknown) => broadcast(IPC.meetingJobs, view))
+
+/**
+ * Larger models for a meeting's English and notes, after the call: dictation
+ * pauses, both of its models leave the card, and they come back when the
+ * meeting is written up. It always runs inside a job above, so never two at
+ * once. See `AfterCall` and docs/design/08-after-call-models.md.
+ */
+/** What the tray last said about the engine, so it is rebuilt only when that changes. */
+let trayEngine = ''
+const afterCall = new AfterCall({
+  sidecars: supervisor,
+  gpu: readGpu,
+  dictationModels: () => settings.get().models,
+  // Never while you are recording a meeting yourself: its live transcription
+  // needs Whisper on the card. Then the dictation model writes it, as before.
+  enabled: () => settings.get().meetings.largerModels && meetings.state().phase === 'idle',
+  // Chosen by measurement (08 §2): E4B writes the best English, Qwen3.5 finds
+  // the most real work. The dictation model is always the last resort.
+  candidates: { english: ['gemma4-e4b'], notes: ['qwen35-9b', 'gemma4-e4b'] },
+  onView: (view) => {
+    broadcast(IPC.engineState, view)
+    // Only when what it says changes. Progress arrives a few times a second,
+    // and rebuilding the menu that often closes it under your cursor.
+    const said = `${view.mode}|${view.title}`
+    if (said !== trayEngine) {
+      trayEngine = said
+      refreshTray(trayDeps)
+    }
+  },
+  // Kept on the version it wrote up, beside that version's English and notes.
+  onRecord: (meetingId, record) => {
+    const meeting = store.meetings.byId(meetingId)
+    const versionId = meeting?.mainVersionId
+    if (versionId === null || versionId === undefined) return
+    // Every run, newest last, like the notes runs: redoing the English and then
+    // the summary is two runs, and keeping only the latest lost the first.
+    const earlier = meeting?.versions.find((v) => v.id === versionId)?.diagnostics.afterCall
+    const runs = Array.isArray(earlier) ? earlier : earlier ? [earlier] : []
+    try {
+      store.meetings.setVersionDiagnostics(versionId, { afterCall: [...runs, record] })
+    } catch (err) {
+      console.warn('[after-call] could not record the run:', err)
+    }
+    console.log(
+      `[after-call] meeting ${meetingId}: ${JSON.stringify(record.models)}, ` +
+        `${record.fallbacks.length} fallback(s), restored ${record.restored}` +
+        (record.stopped ? `, stopped: ${record.stopped}` : '')
+    )
+  },
+})
 
 /** The bot's own Chrome profile: signed in by hand once, used by every run. */
 const BOT_PROFILE = path.join(app.getPath('userData'), 'bot', 'chrome-profile')
@@ -293,7 +346,11 @@ function languageModelReady(): Promise<boolean> {
  * an English rendering and a summary without pressing anything, and two copies
  * of this logic would be two things to keep in step.
  */
-async function writeNotes(id: number, versionId?: number): Promise<NotesOutcome> {
+async function writeNotes(
+  id: number,
+  versionId?: number,
+  opts: { signal?: AbortSignal; onStep?(p: NotesProgress): void } = {}
+): Promise<NotesOutcome> {
   const empty = { notesMd: null, tasks: 0, gaps: 0 }
   const meeting = store.meetings.byId(id)
   if (!meeting) return { ok: false, message: 'that meeting is gone', ...empty }
@@ -302,6 +359,9 @@ async function writeNotes(id: number, versionId?: number): Promise<NotesOutcome>
   const version = meeting.versions.find((v) => v.id === (versionId ?? meeting.mainVersionId))
   if (!version) return { ok: false, message: 'that transcript is gone', ...empty }
   const segments = store.meetings.segments(id, version.id)
+  // Which model writes it, for the record: after a call a larger one than
+  // dictation's, or whichever the swap fell back to.
+  const model = supervisor.snapshot('llama').modelId
 
   if (!(await languageModelReady())) {
     const message = 'the language model did not start, so nothing could be written'
@@ -334,7 +394,12 @@ async function writeNotes(id: number, versionId?: number): Promise<NotesOutcome>
       scratch: meeting.scratchMd,
       startedAt: meeting.startedAt,
       me: { name: settings.get().meetings.me.name },
-      onProgress: (p) => broadcast(IPC.notesProgress, { meetingId: id, ...p }),
+      glossary: glossaryTerms(settings.get().meetings.glossary),
+      onProgress: (p) => {
+        broadcast(IPC.notesProgress, { meetingId: id, ...p })
+        opts.onStep?.(p)
+      },
+      signal: opts.signal,
     })
 
     // What you had ticked or dropped - in this version or another - goes onto
@@ -361,6 +426,7 @@ async function writeNotes(id: number, versionId?: number): Promise<NotesOutcome>
     store.meetings.recordNotesRun(version.id, {
       at: Date.now(),
       ok: true,
+      model,
       chunks: run.chunks,
       gaps: run.failedChunks,
       tasks: run.tasks.length,
@@ -390,8 +456,9 @@ async function writeNotes(id: number, versionId?: number): Promise<NotesOutcome>
   } catch (err) {
     // The transcript is untouched either way, so this is always worth
     // retrying rather than being a state to recover from.
-    const message =
-      err instanceof NotesUnavailable
+    const message = opts.signal?.aborted
+      ? `stopped because ${afterCall.stoppedBecause() ?? 'it was asked to'}`
+      : err instanceof NotesUnavailable
         ? err.message
         : `the model could not be reached: ${err instanceof Error ? err.message : String(err)}`
     // Recorded as well as returned: a failure you can still read tomorrow is
@@ -413,7 +480,11 @@ async function writeNotes(id: number, versionId?: number): Promise<NotesOutcome>
   }
 }
 
-async function renderEnglish(id: number, versionId?: number): Promise<EnglishOutcome> {
+async function renderEnglish(
+  id: number,
+  versionId?: number,
+  opts: { signal?: AbortSignal; concurrency?: number; onLine?(done: number, total: number): void } = {}
+): Promise<EnglishOutcome> {
   const empty = { rendered: 0, missed: 0 }
   const meeting = store.meetings.byId(id)
   if (!meeting) return { ok: false, message: 'that meeting is gone', ...empty }
@@ -445,6 +516,7 @@ async function renderEnglish(id: number, versionId?: number): Promise<EnglishOut
     // Echo lines are the far side heard twice; rendering them spends the
     // model on duplicates of lines that are already being rendered.
     const heard = store.meetings.segments(id, version.id).filter((seg) => !seg.echo)
+    const model = supervisor.snapshot('llama').modelId
     const run = await englishEngine.render({
       // With who said each line, where Meet's captions named them: a reply
       // reads differently once the model knows whose question it answers.
@@ -453,13 +525,22 @@ async function renderEnglish(id: number, versionId?: number): Promise<EnglishOut
       // Read fresh on every call, so notes added AFTER the meeting are used by
       // the next render - which is the point of being able to add them later.
       context: meeting.scratchMd,
-      onProgress: (p) => broadcast(IPC.englishProgress, { meetingId: id, ...p }),
+      // Names and words your meetings use: how "Lord" becomes Claude.
+      glossary: glossaryTerms(settings.get().meetings.glossary),
+      onProgress: (p) => {
+        broadcast(IPC.englishProgress, { meetingId: id, ...p })
+        opts.onLine?.(p.batch, p.batches)
+      },
+      // As many lines at once as the model on the card has slots for.
+      concurrency: opts.concurrency,
+      signal: opts.signal,
     })
     store.meetings.setEnglish(run.rendered.map((r) => ({ id: r.id, textEn: r.textEn })))
     store.meetings.setVersionDiagnostics(version.id, {
       english: {
         ok: true,
         at: Date.now(),
+        model,
         rendered: run.rendered.length,
         missed: run.missed,
         failedBatches: run.failedBatches,
@@ -474,6 +555,7 @@ async function renderEnglish(id: number, versionId?: number): Promise<EnglishOut
     )
     return { ok: true, message: '', rendered: run.rendered.length, missed: run.missed }
   } catch (err) {
+    if (opts.signal?.aborted) return failed(`stopped because ${afterCall.stoppedBecause() ?? 'it was asked to'}`)
     return failed(
       err instanceof EnglishUnavailable
         ? err.message
@@ -684,6 +766,8 @@ meetings.on('state', (state: { phase: string }) => {
   // Recording beats improving. A meeting that starts while the careful pass
   // holds the card would otherwise be transcribed live by the large model.
   if (state.phase === 'starting' && improving) improving.abort()
+  // And it beats a meeting's write-up: live transcription needs Whisper back.
+  if (state.phase === 'starting') afterCall.abort('a recording started')
   const busy = state.phase !== 'idle'
   if (busy && !meetingTicker) {
     meetingTicker = setInterval(() => broadcast(IPC.meetingState, meetings.state()), 250)
@@ -777,8 +861,11 @@ async function runRepass(meetingId: number): Promise<RepassOutcome> {
       restoreModelId: settings.get().models.whisper,
       onProgress: (p) => broadcast(IPC.repassProgress, p),
       signal: abort.signal,
+      // Straight to the write-up on the after-call models, without loading
+      // both dictation models in between only for it to stop them again.
+      handOver: afterCall.willSwap(),
     })
-    if (!result.restored) {
+    if (!result.restored && !result.handedOver) {
       notify(
         'Speech model not restored',
         `Wouice could not confirm ${settings.get().models.whisper} is back. Restart Wouice before your next meeting.`
@@ -798,29 +885,33 @@ async function runRepass(meetingId: number): Promise<RepassOutcome> {
         ms: Date.now() - started,
         languages: result.languages,
         unheard: result.unheard,
-        restored: result.restored,
+        // Handed over, the write-up's own record says whether dictation came back.
+        restored: result.handedOver ? undefined : result.restored,
       },
     })
     broadcast(IPC.meetingReady2, meetingId)
 
-    // The language model was unloaded to make room and is coming back now.
-    // Nothing that needs it starts until it answers.
     broadcast(IPC.repassProgress, { meetingId, stage: 'warming', doneSec: 0, totalSec: 0 })
-    await languageModelReady()
 
-    // Everything built on a transcript is built again, from this one.
+    // Everything built on a transcript is built again, from this one - on the
+    // after-call models, which take the card from here and put dictation back
+    // when they are done. Each step waits for its own model to answer.
     const meeting = store.meetings.byId(meetingId)
-    if (meeting && kindOf(meeting.kind).translate) {
-      broadcast(IPC.repassProgress, {
-        meetingId,
-        stage: 'rendering',
-        doneSec: 0,
-        totalSec: 0,
-      })
-      await renderEnglish(meetingId, versionId)
-    }
-    broadcast(IPC.repassProgress, { meetingId, stage: 'summarising', doneSec: 0, totalSec: 0 })
-    await writeNotes(meetingId, versionId)
+    const translate = meeting ? kindOf(meeting.kind).translate : false
+    const words = wordsIn(result.segments)
+    await onMeetingModels(
+      meetingId,
+      { english: translate ? words : 0, notes: words },
+      async (session) => {
+        if (translate) {
+          broadcast(IPC.repassProgress, { meetingId, stage: 'rendering', doneSec: 0, totalSec: 0 })
+          await englishStep(session, meetingId, versionId)
+        }
+        broadcast(IPC.repassProgress, { meetingId, stage: 'summarising', doneSec: 0, totalSec: 0 })
+        await notesStep(session, meetingId, versionId)
+      },
+      () => undefined
+    )
 
     notify(
       'Transcript improved',
@@ -837,6 +928,9 @@ async function runRepass(meetingId: number): Promise<RepassOutcome> {
     return { ok: false, message, ...empty }
   } finally {
     improving = null
+    // Whatever happened above, dictation's models end up running: the careful
+    // pass may have handed the card to a write-up that then did not swap.
+    await afterCall.ensureDictation()
     broadcast(IPC.meetingReady2, meetingId)
   }
 }
@@ -868,13 +962,91 @@ async function processVersion(meetingId: number): Promise<NotesOutcome> {
     return { ok: false, message: 'there is no transcript to write from', ...empty }
   }
 
-  if (kindOf(meeting.kind).translate && !segments.some((s) => s.textEn)) {
-    const rendered = await renderEnglish(meetingId)
-    if (!rendered.ok) console.warn(`[meeting] english pass: ${rendered.message}`)
+  const english = kindOf(meeting.kind).translate && !segments.some((s) => s.textEn)
+  return onMeetingModels(
+    meetingId,
+    { english: english ? wordsIn(segments.filter((s) => !s.echo)) : 0, notes: wordsIn(segments) },
+    async (session) => {
+      if (english) {
+        const rendered = await englishStep(session, meetingId)
+        if (!rendered.ok) console.warn(`[meeting] english pass: ${rendered.message}`)
+      }
+      const notes = await notesStep(session, meetingId)
+      if (!notes.ok) console.warn(`[meeting] notes: ${notes.message}`)
+      return notes
+    },
+    (message) => ({ ok: false, message, ...empty })
+  )
+}
+
+/**
+ * How many words a step will read, for the time left. The English if there is
+ * some, what was said if not: they are close enough in length to plan with.
+ */
+function wordsIn(segments: readonly { text: string; textEn?: string | null }[]): number {
+  return segments.reduce((n, s) => n + (s.textEn ?? s.text).split(/\s+/).filter(Boolean).length, 0)
+}
+
+/**
+ * A meeting's write-up on the after-call models.
+ *
+ * A stop - a recording starting, or you asking for dictation back - comes
+ * back as an outcome that says so, not as an error: what was finished is
+ * stored, and the rest can simply be run again.
+ */
+async function onMeetingModels<T>(
+  meetingId: number,
+  plan: Plan,
+  work: (session: Session) => Promise<T>,
+  stopped: (message: string) => T
+): Promise<T> {
+  try {
+    return await afterCall.run(meetingId, plan, work)
+  } catch (err) {
+    const why = afterCall.stoppedBecause()
+    if (why) return stopped(`Stopped because ${why}. What was finished is kept - run it again when you like.`)
+    throw err
   }
-  const notes = await writeNotes(meetingId)
-  if (!notes.ok) console.warn(`[meeting] notes: ${notes.message}`)
-  return notes
+}
+
+/**
+ * The English, on the best model that fits the card. A model that could not be
+ * loaded leaves the step to fail and say why, like any failed step.
+ */
+async function englishStep(session: Session, meetingId: number, versionId?: number): Promise<EnglishOutcome> {
+  let label = supervisor.snapshot('llama').modelId
+  let slots = 1
+  try {
+    const model = await session.use('english')
+    label = model.label
+    slots = model.slots
+  } catch (err) {
+    if (session.signal.aborted) throw err
+    console.warn('[after-call] english:', err instanceof Error ? err.message : err)
+  }
+  return renderEnglish(meetingId, versionId, {
+    signal: session.signal,
+    concurrency: slots,
+    onLine: (done, total) => session.progress(done, total, `${label} · ${done} of ${total} lines`),
+  })
+}
+
+/** The summary and tasks, on the best model that fits the card. */
+async function notesStep(session: Session, meetingId: number, versionId?: number): Promise<NotesOutcome> {
+  let label = supervisor.snapshot('llama').modelId
+  try {
+    label = (await session.use('notes')).label
+  } catch (err) {
+    if (session.signal.aborted) throw err
+    console.warn('[after-call] notes:', err instanceof Error ? err.message : err)
+  }
+  return writeNotes(meetingId, versionId, {
+    signal: session.signal,
+    onStep: (p) => {
+      const step = describeNotesStep(p)
+      session.progress(Math.round(step.share * 1000), 1000, `${label} · ${step.words}`)
+    },
+  })
 }
 
 function finishMeeting(meetingId: number): Promise<void> {
@@ -1068,16 +1240,22 @@ const trayDeps = {
   onSwitchModel: (id: SidecarId, modelId: string) => {
     // Persist first so the choice survives a crash during the restart.
     settings.set({ models: { ...settings.get().models, [id]: modelId } })
+    // Saved, not applied, while meeting work holds the card: bringing
+    // dictation back loads what settings name, so the choice lands then.
+    if (afterCall.pausesDictation()) return
     void supervisor.switchModel(id, modelId)
   },
   onRestart: (id: SidecarId) => {
+    if (afterCall.pausesDictation()) return
     void supervisor.stop(id).then(() => supervisor.start(id))
   },
+  status: () => (afterCall.pausesDictation() ? afterCall.pausedMessage().replace(' · ', ': ') : null),
 }
 
 supervisor.on('state', (snap: SidecarSnapshot) => {
   broadcast(IPC.sidecarState, toView(snap))
   refreshTray(trayDeps)
+  afterCall.sidecarsChanged()
 })
 
 /**
@@ -1094,6 +1272,19 @@ supervisor.on('state', (snap: SidecarSnapshot) => {
  * that true rather than aspirational.
  */
 function startDictation(): void {
+  // A meeting's write-up holds the card. Not an error, and not silence
+  // either: the HUD says why, and when dictation is back. A dictation already
+  // running is still stopped by the hotkey as usual.
+  if (afterCall.pausesDictation() && dictation.phase === 'idle') {
+    showHud()
+    broadcast(IPC.hudState, { phase: 'paused', level: 0, elapsedMs: 0, message: afterCall.pausedMessage() })
+    setTimeout(() => {
+      if (dictation.phase !== 'idle') return
+      broadcast(IPC.hudState, { phase: 'idle', level: 0, elapsedMs: 0 })
+      restHud()
+    }, 4_000)
+    return
+  }
   // BEFORE anything else. This is key-down, and the window in front right now
   // is the one the user means. Capturing at paste time instead would deliver
   // into whatever they alt-tabbed to while transcription ran.
@@ -1140,6 +1331,9 @@ function registerIpc(): void {
     return next
   })
   ipcMain.handle(IPC.getSidecars, () => supervisor.snapshotAll().map(toView))
+  ipcMain.handle(IPC.getEngine, () => afterCall.view())
+  ipcMain.handle(IPC.resumeDictation, () => afterCall.abort('you asked for dictation back'))
+  ipcMain.handle(IPC.restartModels, () => afterCall.restartDictation())
   ipcMain.handle(IPC.switchModel, (_e, id: SidecarId, modelId: string) => {
     trayDeps.onSwitchModel(id, modelId)
   })
@@ -1327,7 +1521,28 @@ function registerIpc(): void {
   ipcMain.handle(IPC.renderEnglish, (_e, id: number): Promise<EnglishOutcome> =>
     jobs.has(id, 'english')
       ? Promise.resolve({ ok: false, message: 'That is already running or waiting.', rendered: 0, missed: 0 })
-      : jobs.run(id, 'english', () => renderEnglish(id))
+      : jobs.run(id, 'english', () => {
+          const meeting = store.meetings.byId(id)
+          // Nothing to render: say so without moving any model.
+          if (!meeting || !kindOf(meeting.kind).translate) return renderEnglish(id)
+          const heard = store.meetings.segments(id).filter((s) => !s.echo)
+          return onMeetingModels(
+            id,
+            { english: wordsIn(heard), notes: wordsIn(heard) },
+            async (session) => {
+              const english = await englishStep(session, id)
+              // The summary and tasks were written from the English just
+              // replaced. Rewritten from the new one in the same pause, rather
+              // than left describing a transcript that is no longer there.
+              if (english.ok) {
+                const notes = await notesStep(session, id)
+                if (!notes.ok) console.warn(`[meeting] notes after the english: ${notes.message}`)
+              }
+              return english
+            },
+            (message) => ({ ok: false, message, rendered: 0, missed: 0 })
+          )
+        })
   )
   ipcMain.handle(IPC.repassMeeting, (_e, id: number): Promise<RepassOutcome> =>
     jobs.has(id, 'improve')
@@ -1355,7 +1570,14 @@ function registerIpc(): void {
   ipcMain.handle(IPC.generateNotes, (_e, id: number): Promise<NotesOutcome> =>
     jobs.has(id, 'notes')
       ? Promise.resolve({ ok: false, message: 'That is already running or waiting.', notesMd: null, tasks: 0, gaps: 0 })
-      : jobs.run(id, 'notes', () => writeNotes(id))
+      : jobs.run(id, 'notes', () =>
+          onMeetingModels(
+            id,
+            { english: 0, notes: wordsIn(store.meetings.segments(id)) },
+            (session) => notesStep(session, id),
+            (message) => ({ ok: false, message, notesMd: null, tasks: 0, gaps: 0 })
+          )
+        )
   )
   ipcMain.handle(IPC.processMeeting, (_e, id: number): Promise<NotesOutcome> =>
     jobs.has(id, 'process')
@@ -1609,6 +1831,8 @@ if (!app.requestSingleInstanceLock()) {
     // the UI is usable throughout and reports status as it changes.
     void supervisor.start('whisper')
     void supervisor.start('llama')
+    // The status card's memory reading, kept fresh while nothing is running.
+    afterCall.startSampling()
 
     // Slow on purpose: spawning nvidia-smi costs ~80ms and the headroom this
     // watches changes on the scale of seconds, never milliseconds. It is never
@@ -1633,6 +1857,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => {})
 
   app.on('before-quit', async () => {
+    // First, so nothing it would restore starts behind the stop below.
+    afterCall.shutdown()
     hotkeys.unregisterAll()
     destroyTray()
     // Sidecars are children, but killing them explicitly avoids orphaned
