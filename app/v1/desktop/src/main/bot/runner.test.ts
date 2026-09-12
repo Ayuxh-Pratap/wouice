@@ -6,7 +6,7 @@ import type { BotRunView } from '../../shared/ipc.js'
 import type { BotBrowser, CaptionsResult, ClickTarget } from './browser.js'
 import type { CaptionLine } from './captions.js'
 import { base64, pageMessage, str, userEntry } from './meet-fixtures.js'
-import type { PageSnapshot } from './meet-ui.js'
+import type { PageSnapshot, PanelTurn } from './meet-ui.js'
 import { MeetingBot, pruneRuns, type CaptureSink } from './runner.js'
 
 /**
@@ -49,7 +49,7 @@ const ENDED = snap({ text: 'Your host ended the meeting for everyone' })
 type Script = PageSnapshot[] | ((look: number, clock: number, emit: (raw: string) => void) => PageSnapshot)
 
 /** A page that answers each look from a script; the last entry repeats. */
-function fakeBrowser(script: Script, clock: () => number, captions: CaptionsResult) {
+function fakeBrowser(script: Script, clock: () => number, captions: CaptionsResult, panel: PanelTurn[] | null = null) {
   const clicks: ClickTarget[] = []
   const files: string[] = []
   const captionRequests: (string | null)[] = []
@@ -82,6 +82,7 @@ function fakeBrowser(script: Script, clock: () => number, captions: CaptionsResu
         captionRequests.push(language)
         return captions
       },
+      captionPanel: async () => panel,
     },
     get closed() {
       return closed
@@ -100,6 +101,7 @@ function bot(options: {
   sink?: CaptureSink
   captions?: CaptionsResult
   captionLanguage?: string | null
+  panel?: PanelTurn[] | null
 }) {
   let clock = 1_000_000
   const made: ReturnType<typeof fakeBrowser>[] = []
@@ -109,7 +111,12 @@ function bot(options: {
     ensureSignedIn: async () => options.signedIn ?? null,
     launch: async () => {
       if (options.launches) options.launches.count++
-      const fake = fakeBrowser(options.script, () => clock, options.captions ?? { on: true, languageSet: null })
+      const fake = fakeBrowser(
+        options.script,
+        () => clock,
+        options.captions ?? { on: true, languageSet: null },
+        options.panel ?? null
+      )
       made.push(fake)
       return fake.browser
     },
@@ -376,9 +383,9 @@ describe('keeping the captions', () => {
           emit(pageMessage.caption({ deviceId: 'd-rahul', captionId: 1, version: 2, text: 'I will send it on' }))
           emit(pageMessage.caption({ deviceId: 'd-rahul', captionId: 1, version: 3, text: 'I will send it on Monday', isFinal: true }))
         }
-        // Said as the call ended, and never settled.
-        if (look === 6) emit(pageMessage.caption({ deviceId: 'd-rahul', captionId: 2, version: 1, text: 'and the invoice' }))
-        return look < 6 ? IN(2) : ENDED
+        // Said as the call ended, long after the first, and never finalised.
+        if (look === 10) emit(pageMessage.caption({ deviceId: 'd-rahul', captionId: 2, version: 1, text: 'and the invoice' }))
+        return look < 10 ? IN(2) : ENDED
       },
     })
     meetingBot.send(LINK)
@@ -502,6 +509,129 @@ describe('keeping the captions', () => {
       .split('\n')
       .map((line) => JSON.parse(line) as { label: string; b64: string; problem?: string })
     expect(samples[0]).toMatchObject({ label: 'captions_v2', b64: '/wE=', problem: 'not a caption' })
+  })
+
+  it('trusts the captions over the menus: no warning when they arrive in the language asked for', async () => {
+    // Meet remembers the language from the last call; the menus then fail on
+    // a choice already made, and judged by them that was a false warning.
+    const { meetingBot, made } = bot({
+      captionLanguage: 'hi-IN',
+      captions: { on: true, languageSet: false },
+      script: (look, _clock, emit) => {
+        if (look === 0) return LOBBY
+        emit(pageMessage.heartbeat())
+        if (look === 2) {
+          emit(pageMessage.caption({ deviceId: 'd-ayush', captionId: 1, version: 1, text: 'ठीक है', isFinal: true, language: 'hi-IN' }))
+        }
+        return look < 6 ? IN(2) : ENDED
+      },
+    })
+    meetingBot.send(LINK)
+    await meetingBot.settled()
+    expect(made[0]!.captionRequests).toEqual(['hi-IN'])
+    expect(meetingBot.view()?.warning).toBeNull()
+  })
+
+  it('asks once more when captions arrive in another language, and says so if they still do', async () => {
+    const { meetingBot, made } = bot({
+      captionLanguage: 'hi-IN',
+      script: (look, _clock, emit) => {
+        if (look === 0) return LOBBY
+        emit(pageMessage.heartbeat())
+        if (look === 2 || look === 6) {
+          emit(pageMessage.caption({ deviceId: 'd-ayush', captionId: look, version: 1, text: 'okay', isFinal: true, language: 'en-US' }))
+        }
+        return look < 9 ? IN(2) : ENDED
+      },
+    })
+    meetingBot.send(LINK)
+    await meetingBot.settled()
+    expect(made[0]!.captionRequests).toEqual(['hi-IN', 'hi-IN'])
+    expect(meetingBot.view()?.warning).toMatch(/arriving in en-US/)
+  })
+
+  it("waits for Meet's final version rather than keeping its first guess", async () => {
+    // From the first full call: kept two seconds after it stopped changing,
+    // this caption was stored as "एक सेकंड".
+    const { sink, calls } = recordingSink()
+    const { meetingBot } = bot({
+      sink,
+      script: (look, _clock, emit) => {
+        if (look === 0) return LOBBY
+        emit(pageMessage.heartbeat())
+        if (look === 2) emit(pageMessage.caption({ deviceId: 'd-ayush', captionId: 7, version: 1, text: 'एक सेकंड' }))
+        if (look === 4) {
+          emit(pageMessage.caption({ deviceId: 'd-ayush', captionId: 7, version: 5, text: 'चलो देखते हैं क्या होता है', isFinal: true }))
+        }
+        return look < 7 ? IN(2) : ENDED
+      },
+    })
+    meetingBot.send(LINK)
+    await meetingBot.settled()
+    expect(calls.lines.map((l) => l.text)).toEqual(['चलो देखते हैं क्या होता है'])
+  })
+
+  it("joins one speaker's captions into a turn, as Meet's own panel shows them", async () => {
+    const { sink, calls } = recordingSink()
+    const { meetingBot } = bot({
+      sink,
+      script: (look, _clock, emit) => {
+        if (look === 0) return LOBBY
+        emit(pageMessage.heartbeat())
+        if (look === 2) {
+          emit(pageMessage.caption({ deviceId: 'd-rahul', captionId: 1, version: 3, text: 'we need SSO', isFinal: true }))
+          emit(pageMessage.caption({ deviceId: 'd-rahul', captionId: 2, version: 2, text: 'before the rollout', isFinal: true }))
+        }
+        if (look === 3) emit(pageMessage.caption({ deviceId: 'd-ayush', captionId: 3, version: 1, text: 'agreed', isFinal: true }))
+        return look < 6 ? IN(2) : ENDED
+      },
+    })
+    meetingBot.send(LINK)
+    await meetingBot.settled()
+    expect(calls.lines.map((l) => l.text)).toEqual(['we need SSO before the rollout', 'agreed'])
+  })
+
+  it("scores what it kept against Meet's own caption panel, and keeps the call to replay", async () => {
+    const holder: { bot?: MeetingBot } = {}
+    const { sink } = recordingSink()
+    const { meetingBot } = bot({
+      sink,
+      panel: [{ speaker: 'Rahul Dhir', text: 'I will send it on Monday.' }],
+      script: (look, _clock, emit) => {
+        if (look === 0) return LOBBY
+        emit(pageMessage.heartbeat())
+        if (look === 1) emit(pageMessage.people([userEntry('d-rahul', 'Rahul Dhir')]))
+        if (look === 2) {
+          emit(pageMessage.caption({ deviceId: 'd-rahul', captionId: 1, version: 1, text: 'I will' }))
+          emit(pageMessage.caption({ deviceId: 'd-rahul', captionId: 1, version: 2, text: 'I will send it on Monday', isFinal: true }))
+        }
+        if (look === 5) holder.bot!.leave()
+        return IN(2)
+      },
+    })
+    holder.bot = meetingBot
+    meetingBot.send(LINK)
+    await meetingBot.settled()
+
+    expect(meetingBot.view()?.message).toBe("Left when you asked. Kept 1 line of captions, 100% of Meet's own caption words.")
+    const dir = meetingBot.view()!.dir
+    const read = (name: string): unknown => JSON.parse(readFileSync(path.join(dir, name), 'utf8'))
+    expect(read('score.json')).toMatchObject({ exact: 1, wer: 0, speakerWer: 0, panelWords: 6 })
+    expect(read('meet-panel.json')).toHaveLength(1)
+    expect(read('people.json')).toMatchObject([{ deviceId: 'd-rahul', name: 'Rahul Dhir' }])
+    const logged = readFileSync(path.join(dir, 'captions.jsonl'), 'utf8').trim().split('\n')
+    expect(logged.map((l) => (JSON.parse(l) as { version: number }).version)).toEqual([1, 2])
+  })
+
+  it('says when there was no caption panel to score against', async () => {
+    const { sink } = recordingSink()
+    const { meetingBot } = bot({ sink, script: [LOBBY, IN(2), ENDED] })
+    meetingBot.send(LINK)
+    await meetingBot.settled()
+    const record = JSON.parse(readFileSync(path.join(meetingBot.view()!.dir, 'run.json'), 'utf8')) as {
+      events: { note?: string }[]
+    }
+    expect(record.events.map((e) => e.note)).toContain("Meet's caption panel was not there to score against")
   })
 })
 
