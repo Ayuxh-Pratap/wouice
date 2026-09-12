@@ -56,6 +56,8 @@ const DOT: Record<Look['tone'], string> = {
   inserted: '#34d399',
   copied: '#38bdf8',
   error: '#ef4444',
+  // The orange of the careful pass: meeting work that costs you dictation.
+  paused: '#fb923c',
 }
 
 const TITLE: Record<Look['tone'], string> = {
@@ -66,6 +68,7 @@ const TITLE: Record<Look['tone'], string> = {
   inserted: 'text-emerald-200',
   copied: 'text-sky-200',
   error: 'text-red-300',
+  paused: 'text-orange-200',
 }
 
 /** Few, because the pill is narrow. Enough to see a pause in. */
