@@ -2,7 +2,14 @@ import { writeFileSync } from 'node:fs'
 import { chromium, type BrowserContext, type Locator, type Page } from 'playwright-core'
 import { installedVersion } from './chrome.js'
 import { MEET_PAYLOAD, PAGE_BINDING } from './meet-payload.js'
-import { JOIN_LABELS, TEXTS, snapshotScript, type PageSnapshot } from './meet-ui.js'
+import {
+  CAPTION_PANEL_SCRIPT,
+  JOIN_LABELS,
+  TEXTS,
+  snapshotScript,
+  type PageSnapshot,
+  type PanelTurn,
+} from './meet-ui.js'
 
 /**
  * The bot's Chrome: the one place Playwright is used.
@@ -45,6 +52,8 @@ export interface BotPage {
   onMessage(listener: (raw: string) => void): void
   /** Meet's captions on, in `language` when given (e.g. `hi-IN`). Never throws. */
   enableCaptions(language: string | null): Promise<CaptionsResult>
+  /** Meet's own caption panel, turn by turn. Null when it is not on the page. Never throws. */
+  captionPanel(): Promise<PanelTurn[] | null>
 }
 
 export interface BotBrowser {
@@ -239,6 +248,13 @@ export async function launchBotBrowser(options: {
       const languageSet = language ? await setCaptionLanguage(page, language).catch(() => false) : null
       const settingsOpen = language ? !(await closeSettings(page).catch(() => false)) : false
       return { on: await turnOnCaptions(page).catch(() => false), languageSet, settingsOpen }
+    },
+    async captionPanel() {
+      try {
+        return (await page.evaluate(CAPTION_PANEL_SCRIPT)) as PanelTurn[] | null
+      } catch {
+        return null
+      }
     },
   }
 
