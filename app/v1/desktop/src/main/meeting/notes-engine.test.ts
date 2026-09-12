@@ -428,7 +428,10 @@ describe('tasks the model was not entitled to', () => {
   it('drops an item quoting a line from a different chunk', async () => {
     // Each extraction call sees one chunk, so a quote from outside it is a
     // fabrication even if the words exist elsewhere in the meeting.
-    const long = Array.from({ length: 400 }, (_, i) => line(i + 1, `point ${i} about the rollout plan`))
+    // Lines with something in them: a task needs lines that say something.
+    const long = Array.from({ length: 400 }, (_, i) =>
+      line(i + 1, `point ${i} about the rollout plan for the payments service in the new region`)
+    )
     const { client } = fakeLlm((req) => {
       if (stageOf(req) === 'items') {
         return '{"title":"Write the rollout plan","lines":[1],"quote":"point 0 about the rollout plan"}'
