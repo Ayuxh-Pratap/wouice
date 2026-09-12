@@ -10,7 +10,7 @@ import type { Pose } from './sprite.js'
  * up cheerful during an error.
  */
 
-export type Tone = 'idle' | 'waking' | 'listening' | 'thinking' | 'inserted' | 'copied' | 'error'
+export type Tone = 'idle' | 'waking' | 'listening' | 'thinking' | 'inserted' | 'copied' | 'error' | 'paused'
 
 export interface Look {
   tone: Tone
@@ -86,6 +86,9 @@ const LOOKS: Record<HudPhase, Look> = {
   copied: { tone: 'copied', pose: 'waving', content: 'word', label: 'Copied', open: true, live: false, frozen: false, working: false },
   // Not a wave. An error is not something to be cheerful about.
   error: { tone: 'error', pose: 'idle', content: 'word', label: 'Error', open: true, live: false, frozen: false, working: false },
+  // Not an error either: dictation is away on purpose, for a meeting's
+  // write-up, and says when it is back. See 08-after-call-models.md.
+  paused: { tone: 'paused', pose: 'idle', content: 'word', label: 'Paused', open: true, live: false, frozen: false, working: false },
 }
 
 export function lookOf(phase: HudPhase): Look {
@@ -161,5 +164,6 @@ export function outcomeParts(detail: string | null): Outcome {
  * place the reason is ever shown.
  */
 export function holdMs(phase: HudPhase): number {
-  return phase === 'error' ? 4_000 : 1_400
+  // A pause carries its reason and when dictation is back, so it earns the same time.
+  return phase === 'error' || phase === 'paused' ? 4_000 : 1_400
 }
