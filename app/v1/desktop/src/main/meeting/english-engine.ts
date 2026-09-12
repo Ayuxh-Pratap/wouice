@@ -53,6 +53,13 @@ export interface EnglishInput {
   context?: string
   /** The people in the meeting, for spelling their names. Reference, like `context`. */
   people?: readonly string[]
+  /** Names and words your meetings use, from settings. Reference, like `context`. See `glossaryTerms`. */
+  glossary?: readonly string[]
+  /**
+   * How many lines to have in flight at once. One unless the server was started
+   * with that many slots: more requests than slots only queue inside it.
+   */
+  concurrency?: number
   onProgress?(progress: EnglishProgress): void
   signal?: AbortSignal
 }
@@ -74,41 +81,60 @@ export class MeetingEnglishEngine {
       throw new EnglishUnavailable('there is no transcript to render')
     }
 
-    const rendered: Rendered[] = []
     let failedBatches = 0
+    let renderedLines = 0
     this.lastFailure = null
 
-    // The lines already sent, for the context each next one is shown with.
-    const said: Line[] = []
-    for (const [index, batch] of batches.entries()) {
-      input.signal?.throwIfAborted()
-      input.onProgress?.({ batch: index + 1, batches: batches.length, lines: rendered.length })
+    // The context each request is shown with is what was SAID just before it,
+    // never what came back for it. So no request waits on another's answer,
+    // and with more than one slot on the server they can run side by side.
+    const said = batches.flat()
+    let offset = 0
+    const jobs = batches.map((batch) => {
+      const before = said.slice(Math.max(0, offset - CONTEXT_LINES), offset)
+      offset += batch.length
+      return { batch, before }
+    })
 
-      const before = said.slice(-CONTEXT_LINES)
-      said.push(...batch)
-      // Numbered from 1 in each request, and put back to the stored ids here:
-      // copying a long id back, the model wrote "[900043]" as "[900343]", and
-      // a line rendered perfectly well stayed in Hindi.
-      const numbered = batch.map((line, i) => ({ ...line, id: i + 1 }))
-      const answer = await this.tryComplete(
-        withContext(renderBatch(numbered, before), input.context, input.people),
-        input.signal
-      )
-      if (answer === null) {
-        failedBatches++
-        continue
-      }
+    // Filed by position, and read back in order, so the answer to a line that
+    // finished early still lands on that line and nowhere else.
+    const results: (Rendered[] | null)[] = jobs.map(() => null)
+    let next = 0
+    const worker = async (): Promise<void> => {
+      while (next < jobs.length) {
+        input.signal?.throwIfAborted()
+        const index = next++
+        const { batch, before } = jobs[index]!
+        input.onProgress?.({ batch: index + 1, batches: jobs.length, lines: renderedLines })
 
-      const parsed = parseEnglish(answer, numbered).map((r) => ({ id: batch[r.id - 1]!.id, textEn: r.textEn }))
-      // A batch that mostly did not come back is a batch where the model lost
-      // the format. Keeping the few lines it did return would leave the
-      // transcript half in English and half not, with nothing saying so.
-      if (!batchUsable(batch, parsed)) {
-        failedBatches++
-        continue
+        // Numbered from 1 in each request, and put back to the stored ids here:
+        // copying a long id back, the model wrote "[900043]" as "[900343]", and
+        // a line rendered perfectly well stayed in Hindi.
+        const numbered = batch.map((line, i) => ({ ...line, id: i + 1 }))
+        const answer = await this.tryComplete(
+          withContext(renderBatch(numbered, before), input.context, input.people, input.glossary),
+          input.signal
+        )
+        if (answer === null) {
+          failedBatches++
+          continue
+        }
+
+        const parsed = parseEnglish(answer, numbered).map((r) => ({ id: batch[r.id - 1]!.id, textEn: r.textEn }))
+        // A batch that mostly did not come back is a batch where the model lost
+        // the format. Keeping the few lines it did return would leave the
+        // transcript half in English and half not, with nothing saying so.
+        if (!batchUsable(batch, parsed)) {
+          failedBatches++
+          continue
+        }
+        results[index] = parsed
+        renderedLines += parsed.length
       }
-      rendered.push(...parsed)
     }
+    const width = Math.max(1, Math.min(input.concurrency ?? 1, jobs.length))
+    await Promise.all(Array.from({ length: width }, worker))
+    const rendered = results.flatMap((r) => r ?? [])
 
     if (rendered.length === 0) {
       throw new EnglishUnavailable(
@@ -158,12 +184,21 @@ const MAX_CONTEXT_CHARS = 400
 /** The lines said just before, shown with each request as context. */
 const CONTEXT_LINES = 2
 
-function withContext(batch: string, context?: string, people?: readonly string[]): string {
+function withContext(
+  batch: string,
+  context?: string,
+  people?: readonly string[],
+  glossary?: readonly string[]
+): string {
   const notes = (context ?? '').trim().slice(0, MAX_CONTEXT_CHARS)
   const names = (people ?? []).filter((name) => name.trim())
-  if (!notes && names.length === 0) return batch
+  const terms = (glossary ?? []).filter((term) => term.trim())
+  if (!notes && names.length === 0 && terms.length === 0) return batch
   const parts: string[] = []
   if (names.length > 0) parts.push(`Reference only - the people in this meeting: ${names.join(', ')}.`)
+  if (terms.length > 0) {
+    parts.push(`Reference only - names and words these meetings use, spelled right: ${terms.join(', ')}.`)
+  }
   if (notes) {
     parts.push("Reference only - the person's own notes, for spelling names and terms.", 'Do not render these lines.', notes)
   }
