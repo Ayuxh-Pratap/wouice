@@ -801,7 +801,7 @@ const MAX_GLOSSARY_TERMS = 60
  * each once. Capped, because it rides along with every request, and a pasted
  * document would crowd out the transcript it is there to help with.
  */
-export function glossaryTerms(text: string | undefined): string[] {
+export function glossaryTerms(text: string | undefined, limit = MAX_GLOSSARY_TERMS): string[] {
   const seen = new Set<string>()
   const terms: string[] = []
   for (const raw of (text ?? '').split(/[\n,;]+/)) {
@@ -809,15 +809,33 @@ export function glossaryTerms(text: string | undefined): string[] {
     if (!term || seen.has(term.toLowerCase())) continue
     seen.add(term.toLowerCase())
     terms.push(term)
-    if (terms.length === MAX_GLOSSARY_TERMS) break
+    if (terms.length === limit) break
   }
   return terms
 }
 
-/** The glossary as it goes in front of a request: labelled as reference. Empty with no terms. */
+/**
+ * The vocabulary as a request gets it: a fixed list, or - from the app - what
+ * a given stretch of text calls for. See `glossaryFor` in vocabulary.ts.
+ */
+export type GlossarySource = readonly string[] | ((text: string) => readonly string[])
+
+export function glossaryOf(source: GlossarySource | undefined, text: string): readonly string[] {
+  if (!source) return []
+  return typeof source === 'function' ? source(text) : source
+}
+
+/**
+ * The glossary as it goes in front of a request: labelled as reference, one
+ * entry a line - an entry can carry commas of its own ("Claude (heard as:
+ * Lord, लॉर्ड)"). Empty with no entries.
+ */
 export function glossaryReference(terms: readonly string[] | undefined): string {
   if (!terms?.length) return ''
-  return `Glossary - names and words these meetings use, spelled right (reference only, nothing here was said): ${terms.join(', ')}\n\n`
+  return (
+    'Glossary - names and words these meetings use, spelled right, with what each is often misheard as and what it means (reference only, nothing here was said):\n' +
+    `${terms.map((t) => `- ${t}`).join('\n')}\n\n`
+  )
 }
 
 /**
