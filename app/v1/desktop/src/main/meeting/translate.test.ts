@@ -13,10 +13,9 @@ import { batchLines, batchUsable, parseEnglish, renderBatch, type Line } from '.
 const line = (id: number, text: string): Line => ({ id, text })
 
 describe('batching', () => {
-  it('keeps a short transcript in one batch', () => {
+  it('gives every line a request of its own, so no answer can land on the wrong line', () => {
     const batches = batchLines([line(1, 'हाँ ठीक है'), line(2, 'okay')])
-    expect(batches).toHaveLength(1)
-    expect(batches[0]!.map((l) => l.id)).toEqual([1, 2])
+    expect(batches.map((b) => b.map((l) => l.id))).toEqual([[1], [2]])
   })
 
   it('splits when a batch would not fit with room to answer', () => {
@@ -35,6 +34,21 @@ describe('batching', () => {
 
   it('numbers each line with the id the answer must carry', () => {
     expect(renderBatch([line(42, 'कुछ तो है')])).toBe('[42] कुछ तो है')
+  })
+
+  it('names each line, and shows what was said just before as context only, unnumbered', () => {
+    const batch = [{ id: 5, text: 'मैं कर दूंगा', speaker: 'Himanshu' }]
+    const before = [{ id: 4, text: 'कौन करेगा', speaker: 'Priya' }]
+    expect(renderBatch(batch, before)).toBe(
+      ['Before this (context only):', '(Priya) कौन करेगा', '', 'Render only this:', '[5] (Himanshu) मैं कर दूंगा'].join('\n')
+    )
+  })
+
+  it('shows only the end of a long line before, so it is not rendered in place of a short one', () => {
+    const long = Array.from({ length: 60 }, (_, i) => `शब्द${i}`).join(' ')
+    const text = renderBatch([{ id: 1, text: 'ठीक है' }], [{ id: 0, text: long }])
+    expect(text).toContain(`… ${Array.from({ length: 20 }, (_, i) => `शब्द${i + 40}`).join(' ')}`)
+    expect(text).not.toContain('शब्द39 ')
   })
 })
 
@@ -68,6 +82,23 @@ describe('reading the rendering back', () => {
   it('refuses a rendering far longer than the line', () => {
     const raw = `[11] ${'and then they went on at considerable length about '.repeat(6)}`
     expect(parseEnglish(raw, batch).map((r) => r.id)).toEqual([])
+  })
+
+  it("drops the speaker's name when the model repeats it", () => {
+    const named = [{ id: 5, text: 'मैं कर दूंगा', speaker: 'Himanshu' }]
+    expect(parseEnglish('[5] Himanshu: I will do it', named)).toEqual([{ id: 5, textEn: 'I will do it' }])
+    expect(parseEnglish('[5] (Himanshu) I will do it', named)).toEqual([{ id: 5, textEn: 'I will do it' }])
+  })
+
+  it('takes an unnumbered answer to a single line as that line', () => {
+    const one = [line(5, 'ठीक है ठीक है')]
+    expect(parseEnglish('Okay, okay', one)).toEqual([{ id: 5, textEn: 'Okay, okay' }])
+    expect(parseEnglish('Output: Okay, okay', one)).toEqual([{ id: 5, textEn: 'Okay, okay' }])
+  })
+
+  it('still reads a number with nothing after it as "could not", and never guesses for several lines', () => {
+    expect(parseEnglish('[5]', [line(5, 'कुछ')])).toEqual([])
+    expect(parseEnglish('Okay', batch)).toEqual([])
   })
 
   it('takes the first answer when a line is returned twice', () => {
