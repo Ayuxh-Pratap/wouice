@@ -1,6 +1,6 @@
 import { Menu, Tray, app } from 'electron'
 import type { SidecarSupervisor } from './sidecars/supervisor.js'
-import { SIDECARS, type SidecarId } from '../shared/models.js'
+import { SIDECARS, findModel, type SidecarId } from '../shared/models.js'
 import type { SettingsStore } from './settings-store.js'
 import { trayIcon } from './brand.js'
 
@@ -22,6 +22,8 @@ export interface TrayDeps {
   onOpenWindow: () => void
   onSwitchModel: (id: SidecarId, modelId: string) => void
   onRestart: (id: SidecarId) => void
+  /** Why dictation is away right now, in one line, or null when it is not. */
+  status?: () => string | null
 }
 
 /**
@@ -46,7 +48,8 @@ export function refreshTray(deps: TrayDeps): void {
 
   const modelMenus = snaps.map((snap) => {
     const def = SIDECARS[snap.id]
-    const active = def.models.find((m) => m.id === snap.modelId)
+    // Through `findModel`, so a meeting model on the card is named too.
+    const active = findModel(snap.id, snap.modelId)
     const queued = snap.pendingModelId
       ? ` (switching to ${def.models.find((m) => m.id === snap.pendingModelId)?.label ?? snap.pendingModelId} when idle)`
       : ''
@@ -74,8 +77,10 @@ export function refreshTray(deps: TrayDeps): void {
     }
   })
 
+  const status = deps.status?.() ?? null
   const menu = Menu.buildFromTemplate([
     { label: `Wouice ${app.getVersion()}`, enabled: false },
+    ...(status ? [{ label: status, enabled: false }] : []),
     { type: 'separator' },
     ...modelMenus,
     { type: 'separator' },
@@ -89,7 +94,8 @@ export function refreshTray(deps: TrayDeps): void {
   const summary = snaps
     .map((s) => `${s.id}: ${s.modelId} (${s.status})`)
     .join('\n')
-  tray.setToolTip(`Wouice\n${summary}`)
+  // Windows cuts a tooltip at 127 characters, so the reason goes first.
+  tray.setToolTip(`Wouice\n${status ? `${status}\n` : ''}${summary}`.slice(0, 127))
 }
 
 export function destroyTray(): void {
