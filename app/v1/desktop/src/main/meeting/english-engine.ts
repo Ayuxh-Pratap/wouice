@@ -1,4 +1,5 @@
 import { estimateTokens, MEETING_ENGLISH_SYSTEM, type LlmClient } from '@wouice/llm'
+import { glossaryOf, type GlossarySource } from './notes.js'
 import {
   batchLines,
   batchUsable,
@@ -53,8 +54,8 @@ export interface EnglishInput {
   context?: string
   /** The people in the meeting, for spelling their names. Reference, like `context`. */
   people?: readonly string[]
-  /** Names and words your meetings use, from settings. Reference, like `context`. See `glossaryTerms`. */
-  glossary?: readonly string[]
+  /** Your vocabulary: a fixed list, or what a stretch of text calls for. Reference, like `context`. See `glossaryFor`. */
+  glossary?: GlossarySource
   /**
    * How many lines to have in flight at once. One unless the server was started
    * with that many slots: more requests than slots only queue inside it.
@@ -111,8 +112,10 @@ export class MeetingEnglishEngine {
         // copying a long id back, the model wrote "[900043]" as "[900343]", and
         // a line rendered perfectly well stayed in Hindi.
         const numbered = batch.map((line, i) => ({ ...line, id: i + 1 }))
+        // The vocabulary this line and its context call for, and no more.
+        const terms = glossaryOf(input.glossary, [...before, ...batch].map((line) => line.text).join('\n'))
         const answer = await this.tryComplete(
-          withContext(renderBatch(numbered, before), input.context, input.people, input.glossary),
+          withContext(renderBatch(numbered, before), input.context, input.people, terms),
           input.signal
         )
         if (answer === null) {
@@ -197,7 +200,11 @@ function withContext(
   const parts: string[] = []
   if (names.length > 0) parts.push(`Reference only - the people in this meeting: ${names.join(', ')}.`)
   if (terms.length > 0) {
-    parts.push(`Reference only - names and words these meetings use, spelled right: ${terms.join(', ')}.`)
+    // One a line: an entry can carry commas of its own ("Claude (heard as: Lord, लॉर्ड)").
+    parts.push(
+      'Reference only - names and words these meetings use, spelled right, with what each is often misheard as:',
+      ...terms.map((term) => `- ${term}`)
+    )
   }
   if (notes) {
     parts.push("Reference only - the person's own notes, for spelling names and terms.", 'Do not render these lines.', notes)
