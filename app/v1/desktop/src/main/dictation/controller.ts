@@ -151,6 +151,14 @@ export class DictationController extends EventEmitter {
     const changed = state.phase !== this.state.phase
     this.state = state
     if (changed) this.emitState()
+    // Leaving the busy phases lets go of the sidecars, whichever way they were
+    // left. `finish` releases in its `finally`, but by then a dictation that
+    // worked is in 'delivering' - still busy - and the step to idle released
+    // nothing. So after the first successful dictation both sidecars stayed
+    // marked busy for the rest of the session: every model switch waited
+    // forever, and the after-call swap waited seven minutes for a dictation
+    // that had ended long before, then gave up on the larger models.
+    if (changed && !isBusy(state)) this.releaseSidecars()
     void this.perform(action)
   }
 
