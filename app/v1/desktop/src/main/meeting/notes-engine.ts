@@ -13,6 +13,8 @@ import {
   assembleCondensed,
   chunkTranscript,
   contentWords,
+  dropRepeatedLines,
+  glossaryReference,
   isMine,
   jobGroups,
   keepEnds,
@@ -106,6 +108,8 @@ export interface NotesInput {
   startedAt: number
   /** Who recorded the meeting, so a task given to them by name is theirs. */
   me?: { name: string }
+  /** Names and words your meetings use, from settings: a spelling reference. See `glossaryTerms`. */
+  glossary?: readonly string[]
   onProgress?(progress: NotesProgress): void
   signal?: AbortSignal
 }
@@ -164,12 +168,19 @@ export class MeetingNotesEngine {
       throw new NotesUnavailable('there is no transcript to write notes from')
     }
 
+    // The glossary goes in front of every request that reads the transcript,
+    // so its size comes out of every budget below.
+    const reference = glossaryReference(input.glossary)
+    const referenceCost = await this.count(reference)
+
     // The budget, from what will actually be sent. Each chunk goes to two
     // prompts; it has to fit beside the larger of them and its answer.
-    const reserved = Math.max(
-      (await this.count(MEETING_CHUNK_SYSTEM)) + MAX_CHUNK_TOKENS,
-      (await this.count(MEETING_WORK_ITEMS_SYSTEM)) + 24 + MAX_ITEMS_TOKENS
-    )
+    const reserved =
+      referenceCost +
+      Math.max(
+        (await this.count(MEETING_CHUNK_SYSTEM)) + MAX_CHUNK_TOKENS,
+        (await this.count(MEETING_WORK_ITEMS_SYSTEM)) + 24 + MAX_ITEMS_TOKENS
+      )
     const budget = CONTEXT_TOKENS - reserved - SAFETY_MARGIN
 
     const costs = await this.costs(usable)
@@ -185,15 +196,13 @@ export class MeetingNotesEngine {
       const rendered = renderChunk(chunk)
 
       input.onProgress?.({ stage: 'condensing', chunk: index + 1, chunks: chunks.length })
-      outcomes.push({
-        chunk,
-        text: await this.tryComplete(MEETING_CHUNK_SYSTEM, rendered, MAX_CHUNK_TOKENS, input.signal),
-      })
+      const condensed = await this.tryComplete(MEETING_CHUNK_SYSTEM, reference + rendered, MAX_CHUNK_TOKENS, input.signal)
+      outcomes.push({ chunk, text: condensed === null ? null : dropRepeatedLines(condensed).text })
 
       input.onProgress?.({ stage: 'extracting', chunk: index + 1, chunks: chunks.length })
       const raw = await this.tryComplete(
         MEETING_WORK_ITEMS_SYSTEM,
-        `Meeting date: ${date}\n\n${rendered}`,
+        `${reference}Meeting date: ${date}\n\n${rendered}`,
         MAX_ITEMS_TOKENS,
         input.signal
       )
@@ -219,6 +228,7 @@ export class MeetingNotesEngine {
       CONTEXT_TOKENS -
       (await this.count(MEETING_NOTES_SYSTEM)) -
       (await this.count(input.scratch)) -
+      referenceCost -
       MAX_NOTES_TOKENS -
       SAFETY_MARGIN -
       40
@@ -227,17 +237,20 @@ export class MeetingNotesEngine {
     input.onProgress?.({ stage: 'writing', chunk: 0, chunks: chunks.length })
     const notes = await this.tryComplete(
       MEETING_NOTES_SYSTEM,
-      reduceInput(condensed, input.scratch, new Date(input.startedAt)),
+      reduceInput(condensed, input.scratch, new Date(input.startedAt), input.glossary),
       MAX_NOTES_TOKENS,
       input.signal
     )
     if (notes === null || !notes.trim()) {
       throw new NotesUnavailable(this.explain('the model could not write the final notes'))
     }
+    // A loop in the answer is cut back to each line once. See `dropRepeatedLines`.
+    const tidy = dropRepeatedLines(notes)
+    if (tidy.dropped > 0) console.warn(`[meeting] notes repeated ${tidy.dropped} line(s); kept each once`)
 
     const failed = outcomes.filter((o) => o.text === null)
     return {
-      notesMd: notes.trim(),
+      notesMd: tidy.text.trim(),
       tasks: built.tasks,
       chunks: chunks.length,
       failedChunks: failed.length,
@@ -324,7 +337,7 @@ export class MeetingNotesEngine {
       }
       const raw = await this.tryComplete(
         MEETING_TASK_WRITEUP_SYSTEM,
-        writeUpInput(members, cited, date),
+        glossaryReference(input.glossary) + writeUpInput(members, cited, date),
         MAX_WRITEUP_TOKENS,
         input.signal
       )
