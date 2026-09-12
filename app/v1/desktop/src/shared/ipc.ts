@@ -77,6 +77,10 @@ export const IPC = {
   repassMeeting: 'meeting:repass',
   getMeetingJobs: 'meeting:jobs',
   setMainVersion: 'meeting:setMainVersion',
+  // What is on the GPU, and the after-call swap. See docs/design/08-after-call-models.md.
+  getEngine: 'engine:get',
+  resumeDictation: 'engine:resume',
+  restartModels: 'engine:restart',
   // The meeting bot's identity: its Chrome profile and who it is signed in as.
   getBotStatus: 'bot:status',
   checkBot: 'bot:check',
@@ -122,6 +126,7 @@ export const IPC = {
   botRun: 'bot:runChanged',
   // One step of a job stored its result, partway through the job.
   meetingUpdated: 'meeting:updated',
+  engineState: 'engine:changed',
 } as const
 
 /** Which way the capsule opens, and whether there is a pet to open it from. */
@@ -236,7 +241,7 @@ export interface DictationOutcome {
 }
 
 /** What the HUD is showing. Mirrors the dictation state machine in spec 6.2. */
-export type HudPhase = 'idle' | 'arming' | 'listening' | 'thinking' | 'inserted' | 'copied' | 'error'
+export type HudPhase = 'idle' | 'arming' | 'listening' | 'thinking' | 'inserted' | 'copied' | 'error' | 'paused'
 
 export interface HudState {
   phase: HudPhase
@@ -372,6 +377,40 @@ export interface MeetingJobView {
 export interface MeetingJobsView {
   running: MeetingJobView | null
   queued: MeetingJobView[]
+}
+
+/**
+ * What is on the GPU and whether you can dictate - the status card at the
+ * bottom of the sidebar.
+ *
+ * ready: dictation is serving. busy: the dictation models are starting (the
+ * app just opened, or a restart). working: a meeting is being written up on
+ * the larger models and dictation is paused - from the pause to the restore,
+ * whatever the step. problem: dictation cannot run, and `detail` says why.
+ */
+export type EngineMode = 'ready' | 'busy' | 'working' | 'problem'
+
+export interface EngineView {
+  mode: EngineMode
+  /** Whether you can dictate, in two words: "Dictation ready", "Dictation paused". */
+  title: string
+  /** The step under way while dictation is paused: "Writing the English". Null otherwise. */
+  step: string | null
+  /** One more line: the models, the step's progress, or the reason something is wrong. */
+  detail: string
+  /** The models serving right now, by name; null when that sidecar is not serving. */
+  speech: string | null
+  language: string | null
+  /** Dictation will not start right now, because meeting work holds the card. */
+  dictationPaused: boolean
+  /** The meeting being worked on, if any. */
+  meetingId: number | null
+  /** How far through the whole write-up, 0-99, while dictation is paused. Never goes backwards. */
+  percent: number | null
+  /** Roughly how long until dictation is back, in seconds, when it can be told. */
+  backInSec: number | null
+  vram: { usedMiB: number; totalMiB: number } | null
+  tempC: number | null
 }
 
 export interface NotesOutcome {
@@ -567,6 +606,13 @@ export interface WouiceApi {
    */
   setMainVersion(meetingId: number, versionId: number): Promise<string | null>
   onMeetingJobs(cb: (jobs: MeetingJobsView) => void): () => void
+  /** What is on the GPU and whether dictation can run. See `EngineView`. */
+  getEngine(): Promise<EngineView>
+  onEngine(cb: (view: EngineView) => void): () => void
+  /** Stop the after-call work now and bring dictation back. Finished steps are kept. */
+  resumeDictation(): Promise<void>
+  /** Start the dictation models again, when they could not be brought back. */
+  restartModels(): Promise<void>
   /**
    * A step stored its result partway through a job - the English, before the
    * summary is written. The page re-reads rather than waiting for the job to end.
