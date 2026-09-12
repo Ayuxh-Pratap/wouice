@@ -1,5 +1,6 @@
-import type { DictationRecord, MeetingDiagnostics, MeetingRecord } from '@wouice/store'
+import { MEET_CAPTIONS_SOURCE, type DictationRecord, type MeetingDiagnostics, type MeetingRecord } from '@wouice/store'
 import type { Settings } from '../../shared/settings.js'
+import type { AfterCallRecord } from '../sidecars/after-call.js'
 
 /**
  * Format one dictation as a self-contained diagnostic block.
@@ -200,8 +201,10 @@ export function formatMeeting(
   }
   lines.push('')
 
+  // A bot meeting is transcribed by Meet, and has no speech model of its own.
+  const byMeet = meeting.versions.some((v) => v.source === MEET_CAPTIONS_SOURCE)
   lines.push('transcription')
-  lines.push(`  model         ${d.asrModel ?? 'unknown'}`)
+  lines.push(`  model         ${d.asrModel ?? (byMeet ? "Meet's own captions (the bot)" : 'unknown')}`)
   lines.push(`  language      ${d.language ?? 'unknown'}`)
   lines.push(`  chunks sent   ${d.chunksSent ?? 0}`)
   lines.push(`  chunks silent ${d.chunksSkipped ?? 0}  (never sent, so never hallucinated over)`)
@@ -217,7 +220,7 @@ export function formatMeeting(
   lines.push('')
 
   lines.push('notes')
-  lines.push(`  model         ${d.llmModel ?? 'unknown'}`)
+  lines.push(`  model         ${d.llmModel ?? 'per version, below'}`)
   lines.push(`  your notes    ${meeting.scratchMd ? `${meeting.scratchMd.length} chars` : 'none'}`)
 
   // One block per transcript: each has its own English, summary and tasks, and
@@ -248,16 +251,47 @@ export function formatMeeting(
         v.english.ok === false
           ? `  english       FAILED - ${v.english.message ?? 'no reason recorded'}`
           : `  english       ${v.english.rendered} rendered, ${v.english.missed} missed, ` +
-              `${v.english.failedBatches} failed batch(es)`
+              `${v.english.failedBatches} failed batch(es), ${Math.round(v.english.ms / 1000)}s` +
+              (v.english.model ? `, by ${v.english.model}` : '')
       )
     }
     lines.push(`  summary       ${version.notesMd ? `yes, ${version.notesMd.length} chars` : 'not written'}`)
     lines.push(`  tasks         ${tasksIn(version.id)}`)
     formatNotesRuns(v.notes ?? [], lines)
+    const afterCall = v.afterCall as AfterCallRecord | AfterCallRecord[] | undefined
+    for (const run of Array.isArray(afterCall) ? afterCall : afterCall ? [afterCall] : []) {
+      formatAfterCall(run, lines)
+    }
   }
   if (meeting.versions.length === 0) lines.push('  (no transcript versions)')
 
   return lines.join('\n')
+}
+
+/**
+ * The larger-model write-up after the call, when it ran: which model wrote
+ * what, what it cost, and whether dictation came back. See after-call.ts.
+ */
+function formatAfterCall(record: AfterCallRecord, lines: string[]): void {
+  const s = (ms: number): string => `${Math.round(ms / 1000)}s`
+  const gb = (mib: number | null): string => (mib === null ? '?' : (mib / 1024).toFixed(1))
+  lines.push(
+    `  after call ${new Date(record.at).toLocaleTimeString()}  ` +
+      `english ${record.models.english ?? '-'}, notes ${record.models.notes ?? '-'}; ` +
+      (record.restored ? 'dictation back' : 'dictation NOT confirmed back')
+  )
+  lines.push(
+    `      took      pause ${s(record.ms.pause)}, unload ${s(record.ms.unload)}, ` +
+      record.ms.loads.map((l) => `load ${l.model} ${s(l.ms)}${l.addedMiB === null ? '' : ` (+${l.addedMiB} MiB)`}`).join(', ') +
+      `, work ${s(record.ms.work)}, restore ${s(record.ms.restore)}`
+  )
+  lines.push(
+    `      gpu       ${gb(record.vram.before)} GB before, ${gb(record.vram.idle)} idle, ${gb(record.vram.peak)} peak, ` +
+      `${gb(record.vram.after)} after, of ${gb(record.vram.total)}` +
+      (record.hottestC === null ? '' : `; hottest ${record.hottestC} C`)
+  )
+  for (const why of record.fallbacks) lines.push(`      fell back ${why}`)
+  if (record.stopped) lines.push(`      stopped   ${record.stopped}`)
 }
 
 function formatNotesRuns(runs: NonNullable<MeetingDiagnostics['notes']>, lines: string[]): void {
@@ -265,7 +299,8 @@ function formatNotesRuns(runs: NonNullable<MeetingDiagnostics['notes']>, lines: 
     lines.push(
       `  run ${new Date(run.at).toLocaleTimeString()}  ` +
         (run.ok
-          ? `ok - ${run.chunks} chunk(s), ${run.gaps} gap(s), ${run.tasks} task(s), ${Math.round(run.ms / 1000)}s`
+          ? `ok - ${run.model ? `${run.model}, ` : ''}${run.chunks} chunk(s), ${run.gaps} gap(s), ` +
+            `${run.tasks} task(s), ${Math.round(run.ms / 1000)}s`
           : `FAILED - ${run.message ?? 'no reason recorded'}`)
     )
     if (run.totalLines) {
