@@ -5,7 +5,10 @@ import type {
   MeetingRecord,
   TaskRecord,
   TaskState,
-  DictionaryRecord,
+  VocabularyAlias,
+  VocabularyEntry,
+  VocabularyKind,
+  VocabularySuggestion,
   Page,
   RatingProgress,
   RatingRecord,
@@ -37,10 +40,15 @@ export const IPC = {
   clearRating: 'ratings:clear',
   clearDictations: 'metrics:clear',
   getStorage: 'storage:stats',
-  getDictionary: 'dictionary:list',
-  addDictionaryEntry: 'dictionary:add',
-  updateDictionaryEntry: 'dictionary:update',
-  removeDictionaryEntry: 'dictionary:remove',
+  // Your vocabulary, shared by dictation and meetings. See docs/design/09-vocabulary.md.
+  getVocabulary: 'vocabulary:list',
+  saveVocabulary: 'vocabulary:save',
+  removeVocabulary: 'vocabulary:remove',
+  importVocabulary: 'vocabulary:import',
+  getVocabularySuggestions: 'vocabulary:suggestions',
+  acceptSuggestion: 'vocabulary:accept',
+  rejectSuggestion: 'vocabulary:reject',
+  reviveSuggestion: 'vocabulary:revive',
   getRecordings: 'recordings:list',
   deleteRecording: 'recordings:delete',
   clearRecordings: 'recordings:clear',
@@ -127,6 +135,7 @@ export const IPC = {
   // One step of a job stored its result, partway through the job.
   meetingUpdated: 'meeting:updated',
   engineState: 'engine:changed',
+  vocabularyChanged: 'vocabulary:changed',
 } as const
 
 /** Which way the capsule opens, and whether there is a pet to open it from. */
@@ -152,7 +161,10 @@ export type {
   RatingRecord,
   ResourceRecord,
   StoreStats,
-  DictionaryRecord,
+  VocabularyAlias,
+  VocabularyEntry,
+  VocabularyKind,
+  VocabularySuggestion,
   CalibrationRecord as CalibrationRun,
 } from '@wouice/store'
 
@@ -214,14 +226,22 @@ export interface CalibrationReport {
   notes: string[]
 }
 
-export interface NewDictionaryEntry {
-  kind: 'term' | 'correction'
-  hear: string
-  write: string
-  enabled: boolean
+/** An entry as the Vocabulary page sends it: new without an id, changed with one. */
+export interface VocabularyDraft {
+  id?: number
+  term: string
+  kind: VocabularyKind
+  aliases: VocabularyAlias[]
+  meaning: string
+  pinned: boolean
 }
 
-export type DictionaryPatch = Partial<{ hear: string; write: string; enabled: boolean }>
+/** What a pasted list came to. */
+export interface VocabularyImport {
+  added: number
+  /** Already in your vocabulary, so left as they were. */
+  skipped: number
+}
 
 /** One retained WAV, for the settings screen to list and delete. */
 export interface RetainedAudio {
@@ -555,11 +575,23 @@ export interface WouiceApi {
   clearRating(at: number): Promise<RatingSheet>
   /** What is in the database: schema version, size, and per-table row counts. */
   getStorage(): Promise<StoreStats>
-  getDictionary(): Promise<DictionaryRecord[]>
-  /** Returns the problem when the entry was refused, or null when it was added. */
-  addDictionaryEntry(entry: NewDictionaryEntry): Promise<string | null>
-  updateDictionaryEntry(id: number, patch: DictionaryPatch): Promise<void>
-  removeDictionaryEntry(id: number): Promise<void>
+  /** Every entry in your vocabulary, alphabetically. */
+  getVocabulary(): Promise<VocabularyEntry[]>
+  /** Add or change one. Why it was refused, or null. */
+  saveVocabulary(draft: VocabularyDraft): Promise<string | null>
+  removeVocabulary(id: number): Promise<void>
+  /** A pasted list, sorted into kinds by the model on the card and added as yours. */
+  importVocabulary(text: string): Promise<VocabularyImport>
+  /** What your meetings suggest, waiting for you, and what you said is not a word. */
+  getVocabularySuggestions(): Promise<VocabularySuggestion[]>
+  /** Take one - as it stands, or edited first. Why it was refused, or null. */
+  acceptSuggestion(id: number, draft?: VocabularyDraft): Promise<string | null>
+  /** "Not a word": never suggested again. */
+  rejectSuggestion(id: number): Promise<void>
+  /** Undo "not a word". */
+  reviveSuggestion(id: number): Promise<void>
+  /** The vocabulary changed: something added it, or a meeting counted its entries. */
+  onVocabulary(cb: () => void): () => void
   getRecordings(): Promise<RetainedAudio[]>
   deleteRecording(file: string): Promise<void>
   clearRecordings(): Promise<void>
