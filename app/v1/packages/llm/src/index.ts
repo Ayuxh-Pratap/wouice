@@ -15,6 +15,8 @@ export {
   MEETING_TASK_PLACE_SYSTEM,
   MEETING_TASK_WRITEUP_SYSTEM,
   MEETING_NOTES_TASKS_SYSTEM,
+  VOCABULARY_KINDS_SYSTEM,
+  VOCABULARY_MINE_SYSTEM,
   isPlausibleCleanup,
   containsDevanagari,
   type PlausibilityVerdict,
