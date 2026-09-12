@@ -8,6 +8,7 @@ import { isImproved, mainVersion } from '../meetings/versions.js'
 import { hashForMeeting } from '../shell/routes.js'
 import { Transcript } from '../meetings/Transcript.js'
 import { BotPanel } from '../meetings/BotPanel.js'
+import { botIsIn, useBotRun, useNow } from '../meetings/bot-run.js'
 
 /**
  * Meetings: the overview.
@@ -37,6 +38,10 @@ export function MeetingsPage(): React.JSX.Element {
   /** So a meeting that has already sent us to its page cannot do it twice. */
   const sentTo = useRef(0)
   const jobs = useMeetingJobs()
+  // A meeting the bot is in is live: its duration counts up rather than
+  // reading "0s", and it is not "never finished" - it is not finished yet.
+  const botRun = useBotRun()
+  const now = useNow(botRun?.state === 'in-meeting' || botRun?.state === 'leaving')
 
   const refresh = useCallback(() => {
     void window.wouice.listMeetings().then(setMeetings)
@@ -66,12 +71,16 @@ export function MeetingsPage(): React.JSX.Element {
       if (next.phase === 'idle') refresh()
     })
     const offProcessed = window.wouice.onMeetingProcessed(() => refresh())
+    // Lines arriving while the bot is in a call, and the call ending: the row
+    // follows both, not only the end of the work done afterwards.
+    const offUpdated = window.wouice.onMeetingUpdated(() => refresh())
 
     return () => {
       offSettings()
       offOffer()
       offState()
       offProcessed()
+      offUpdated()
     }
   }, [refresh])
 
@@ -214,11 +223,20 @@ export function MeetingsPage(): React.JSX.Element {
                       {meeting.title ?? formatWhen(meeting.startedAt)}
                     </p>
                     <p className="mt-0.5 text-[11.5px] text-neutral-500">
-                      {meeting.endedAt === null ? (
-                        <span className="text-amber-400">never finished · </span>
-                      ) : null}
-                      {formatDuration(meeting.durationMs)} · {meeting.segments} line
-                      {meeting.segments === 1 ? '' : 's'}
+                      {botIsIn(botRun, meeting.id) ? (
+                        <span className="text-emerald-400">
+                          Live, the bot is in the call · {formatDuration(now - meeting.startedAt)}
+                        </span>
+                      ) : (
+                        <>
+                          {meeting.endedAt === null ? (
+                            <span className="text-amber-400">never finished · </span>
+                          ) : null}
+                          {formatDuration(meeting.durationMs)}
+                        </>
+                      )}
+                      {' · '}
+                      {meeting.segments} line{meeting.segments === 1 ? '' : 's'}
                       {meeting.notesMd ? ' · summarised' : ''}
                       {isImproved(meeting) ? (
                         <span className="text-sky-300/80"> · improved</span>
