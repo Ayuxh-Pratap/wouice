@@ -45,6 +45,13 @@ const PATHS: Record<IconName | ExtraIcon, React.ReactNode> = {
       <path d="M12 8v4M10 10h4" />
     </>
   ),
+  // An open book: the words this app should know.
+  vocabulary: (
+    <>
+      <path d="M12 6.5C10.4 5.1 7.9 4.5 4 4.5v13c3.9 0 6.4.6 8 2 1.6-1.4 4.1-2 8-2v-13c-3.9 0-6.4.6-8 2Z" />
+      <path d="M12 6.5v13" />
+    </>
+  ),
   // A tick inside a circle: a judgement recorded.
   quality: (
     <>
