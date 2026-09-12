@@ -14,6 +14,7 @@ import {
   chunkTranscript,
   contentWords,
   dropRepeatedLines,
+  glossaryOf,
   glossaryReference,
   isMine,
   jobGroups,
@@ -35,6 +36,7 @@ import {
   writeUpInput,
   type Chunk,
   type ChunkOutcome,
+  type GlossarySource,
   type Evidence,
   type Group,
   type Job,
@@ -108,8 +110,8 @@ export interface NotesInput {
   startedAt: number
   /** Who recorded the meeting, so a task given to them by name is theirs. */
   me?: { name: string }
-  /** Names and words your meetings use, from settings: a spelling reference. See `glossaryTerms`. */
-  glossary?: readonly string[]
+  /** Your vocabulary: a fixed list, or what a stretch of text calls for. See `glossaryFor`. */
+  glossary?: GlossarySource
   onProgress?(progress: NotesProgress): void
   signal?: AbortSignal
 }
@@ -168,10 +170,11 @@ export class MeetingNotesEngine {
       throw new NotesUnavailable('there is no transcript to write notes from')
     }
 
-    // The glossary goes in front of every request that reads the transcript,
-    // so its size comes out of every budget below.
-    const reference = glossaryReference(input.glossary)
-    const referenceCost = await this.count(reference)
+    // The vocabulary a stretch of text calls for goes in front of every request
+    // that reads the transcript, so its size comes out of every budget below -
+    // sized from the whole meeting, which calls for as much as any part does.
+    const referenceFor = (text: string): string => glossaryReference(glossaryOf(input.glossary, text))
+    const referenceCost = await this.count(referenceFor(usable.map((line) => line.text).join('\n')))
 
     // The budget, from what will actually be sent. Each chunk goes to two
     // prompts; it has to fit beside the larger of them and its answer.
@@ -196,6 +199,7 @@ export class MeetingNotesEngine {
       const rendered = renderChunk(chunk)
 
       input.onProgress?.({ stage: 'condensing', chunk: index + 1, chunks: chunks.length })
+      const reference = referenceFor(rendered)
       const condensed = await this.tryComplete(MEETING_CHUNK_SYSTEM, reference + rendered, MAX_CHUNK_TOKENS, input.signal)
       outcomes.push({ chunk, text: condensed === null ? null : dropRepeatedLines(condensed).text })
 
@@ -237,7 +241,7 @@ export class MeetingNotesEngine {
     input.onProgress?.({ stage: 'writing', chunk: 0, chunks: chunks.length })
     const notes = await this.tryComplete(
       MEETING_NOTES_SYSTEM,
-      reduceInput(condensed, input.scratch, new Date(input.startedAt), input.glossary),
+      reduceInput(condensed, input.scratch, new Date(input.startedAt), glossaryOf(input.glossary, condensed)),
       MAX_NOTES_TOKENS,
       input.signal
     )
@@ -335,9 +339,10 @@ export class MeetingNotesEngine {
         setAside++
         continue
       }
+      const writeUp = writeUpInput(members, cited, date)
       const raw = await this.tryComplete(
         MEETING_TASK_WRITEUP_SYSTEM,
-        glossaryReference(input.glossary) + writeUpInput(members, cited, date),
+        glossaryReference(glossaryOf(input.glossary, writeUp)) + writeUp,
         MAX_WRITEUP_TOKENS,
         input.signal
       )
