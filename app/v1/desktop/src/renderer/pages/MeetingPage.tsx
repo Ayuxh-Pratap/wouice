@@ -11,6 +11,7 @@ import type {
 import { kindOf } from '../../shared/meeting-kind.js'
 import { needsEnglish } from '../meetings/english.js'
 import { describeJob, jobColour, useMeetingJobs } from '../meetings/jobs.js'
+import { leftLabel, useEngine } from '../shell/engine.js'
 import { isImproved, mainVersion, versionLabel, visibleVersions } from '../meetings/versions.js'
 import { botIsIn, useBotRun, useNow } from '../meetings/bot-run.js'
 import { Notes } from '../meetings/Notes.js'
@@ -65,6 +66,8 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   /** Something else is running: asked before this one queues behind it. */
   const [queueing, setQueueing] = useState<{ what: string; start(): void } | null>(null)
   const jobs = useMeetingJobs()
+  // Which model is writing this meeting up, and when dictation is back.
+  const engine = useEngine()
   // The bot is in this call: the meeting is being written as it happens, and
   // its English, summary and tasks come when the bot leaves.
   const inCall = botIsIn(useBotRun(), meetingId)
@@ -214,7 +217,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   }
 
   const redo = (what: 'notes' | 'english'): void =>
-    startJob(what === 'notes' ? 'Redo summary' : 'Redo English', () =>
+    startJob(what === 'notes' ? 'Redo summary' : 'Redo English and summary', () =>
       what === 'notes'
         ? window.wouice.generateNotes(meetingId)
         : window.wouice.renderEnglish(meetingId)
@@ -405,7 +408,8 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
               ...(kind.translate
                 ? [
                     {
-                      label: 'Redo English',
+                      // The summary is written from the English, so it is rewritten with it.
+                      label: 'Redo English and summary',
                       onClick: () => void redo('english'),
                       disabled: working || segments.length === 0,
                     },
@@ -446,6 +450,13 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
                   ? describeNotes(notesProgress)
                   : `${describeJob(running.kind)}…`}
           </span>
+          {engine?.meetingId === meetingId && engine.dictationPaused && (
+            <span className="ml-auto shrink-0 text-[11px] text-neutral-400 tabular-nums">
+              {engine.percent !== null ? `${engine.percent}% · ` : ''}
+              {engine.language ? `${engine.language} · ` : ''}
+              {leftLabel(engine.backInSec) ?? 'dictation paused'}
+            </span>
+          )}
         </div>
       ) : waiting ? (
         <div className="relative flex items-center gap-2.5 rounded-xl bg-white/[0.03] px-4 py-2.5 ring-1 ring-white/[0.08]">
