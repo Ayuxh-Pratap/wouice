@@ -15,6 +15,7 @@ export type RouteId =
   | 'dictations'
   | 'meetings'
   | 'companion'
+  | 'vocabulary'
   | 'quality'
   | 'settings'
 
@@ -23,6 +24,7 @@ export type IconName =
   | 'transcript'
   | 'meeting'
   | 'companion'
+  | 'vocabulary'
   | 'quality'
   | 'settings'
 
@@ -77,6 +79,14 @@ export const ROUTES: RouteDef[] = [
     icon: 'companion',
     blurb: 'A voice loop that answers back.',
     soon: true,
+  },
+  {
+    id: 'vocabulary',
+    path: '/vocabulary',
+    label: 'Vocabulary',
+    group: 'System',
+    icon: 'vocabulary',
+    blurb: 'The names and words your meetings and dictation use: how they are spelled, what they are misheard as, what they mean.',
   },
   {
     id: 'quality',
