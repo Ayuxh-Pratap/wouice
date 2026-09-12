@@ -12,6 +12,7 @@ import { kindOf } from '../../shared/meeting-kind.js'
 import { needsEnglish } from '../meetings/english.js'
 import { describeJob, jobColour, useMeetingJobs } from '../meetings/jobs.js'
 import { isImproved, mainVersion, versionLabel, visibleVersions } from '../meetings/versions.js'
+import { botIsIn, useBotRun, useNow } from '../meetings/bot-run.js'
 import { Notes } from '../meetings/Notes.js'
 import { Transcript } from '../meetings/Transcript.js'
 import { Icon } from '../shell/Icon.js'
@@ -64,6 +65,10 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   /** Something else is running: asked before this one queues behind it. */
   const [queueing, setQueueing] = useState<{ what: string; start(): void } | null>(null)
   const jobs = useMeetingJobs()
+  // The bot is in this call: the meeting is being written as it happens, and
+  // its English, summary and tasks come when the bot leaves.
+  const inCall = botIsIn(useBotRun(), meetingId)
+  const now = useNow(inCall)
 
   // Your area names the third filter. Read once; it changes in Settings.
   useEffect(() => {
@@ -331,11 +336,24 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
             {/* No "improved" badge here: the switch beside the title already
                 says which version this is, and saying it twice was noise. */}
             <span>
-              {formatDuration(meeting.durationMs)} · {shownLines} line
-              {shownLines === 1 ? '' : 's'} · {kind.label}
-              {meeting.endedAt === null ? ' · never finished' : ''}
+              {inCall ? (
+                <span className="text-emerald-400">
+                  Live, the bot is in the call · {formatDuration(now - meeting.startedAt)}
+                </span>
+              ) : (
+                formatDuration(meeting.durationMs)
+              )}
+              {' · '}
+              {shownLines} line{shownLines === 1 ? '' : 's'} · {kind.label}
+              {meeting.endedAt === null && !inCall ? ' · never finished' : ''}
             </span>
           </div>
+          {inCall ? (
+            <p className="mt-1.5 text-[12px] text-neutral-400">
+              The bot is keeping Meet's captions as the call goes. The English, the summary and the
+              tasks are written when it leaves.
+            </p>
+          ) : null}
         </div>
 
         {/*
@@ -565,7 +583,8 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
                 ))}
               </div>
             ) : null}
-            {kind.translate && english && missingEnglish > 0 ? (
+            {/* Not during the call: English is written after it, so nothing is missing yet. */}
+            {kind.translate && english && missingEnglish > 0 && !live && !inCall ? (
               <EnglishMissing
                 missing={missingEnglish}
                 running={englishPending}
@@ -577,6 +596,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
               <Transcript
                 segments={segments}
                 english={english && kind.translate}
+                awaitingEnglish={live || inCall || englishPending}
                 emptyMessage={
                   version && versionLabel(version.source) === 'Meet captions'
                     ? "No captions were kept from this call. The meeting bot's run folder says why."
