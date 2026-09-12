@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { MARK_BARS, MARK_STROKE, MARK_VIEWBOX } from '../../shared/mark.js'
 import { zoomLabel } from '../../shared/settings.js'
 import { jobColour, useMeetingJobs } from '../meetings/jobs.js'
+import { EngineCard } from './EngineCard.js'
 import { Icon } from './Icon.js'
 import { groupedRoutes, hashFor, type RouteDef, type RouteId } from './routes.js'
 
@@ -275,6 +276,9 @@ export function Sidebar({
           </div>
         ))}
       </div>
+
+      {/* What is on the GPU, and whether you can dictate. See EngineCard. */}
+      <EngineCard collapsed={collapsed} />
 
       {/*
         Housekeeping. The scale appears only when it is not 100%: an indicator
