@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { BotRunView } from '../../shared/ipc.js'
 import { hashForMeeting } from '../shell/routes.js'
+import { BOT_ACTIVE, useBotRun } from './bot-run.js'
 
 /**
  * Send the bot to a meeting, and see where it is.
@@ -9,16 +10,6 @@ import { hashForMeeting } from '../shell/routes.js'
  * in the call it keeps Meet's captions as a meeting of their own, which opens
  * from here; anything wrong with what it is keeping shows under it in amber.
  */
-
-const ACTIVE = new Set<BotRunView['state']>([
-  'checking',
-  'launching',
-  'joining',
-  'waiting-room',
-  'waiting-for-host',
-  'in-meeting',
-  'leaving',
-])
 
 function describe(run: BotRunView): string {
   switch (run.state) {
@@ -55,16 +46,11 @@ function colour(run: BotRunView): string {
 
 /** @param captions the language Meet will caption in, as "Spoken in" above decides it. */
 export function BotPanel({ captions }: { captions: string }): React.JSX.Element {
-  const [run, setRun] = useState<BotRunView | null>(null)
+  const run = useBotRun()
   const [link, setLink] = useState('')
   const [problem, setProblem] = useState<string | null>(null)
 
-  useEffect(() => {
-    void window.wouice.getBotRun().then(setRun)
-    return window.wouice.onBotRun(setRun)
-  }, [])
-
-  const active = run !== null && ACTIVE.has(run.state)
+  const active = run !== null && BOT_ACTIVE.has(run.state)
 
   const send = (): void => {
     setProblem(null)
