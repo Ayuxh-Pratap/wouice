@@ -6,14 +6,16 @@ import { Calibrations, Resources } from './resources.js'
 import { Dictionary } from './dictionary.js'
 import { Ratings } from './ratings.js'
 import { Meetings } from './meetings.js'
+import { Vocabulary } from './vocabulary.js'
 
 export { openDb, migrate, type Db } from './db.js'
+export { Vocabulary } from './vocabulary.js'
 export { Dictations, toMatchQuery } from './dictations.js'
 export { Calibrations, Resources } from './resources.js'
 export { Dictionary, validateEntry, type EntryCheck } from './dictionary.js'
 export { Ratings, A4_SAMPLE_TARGET, A4_SHIP_TARGET } from './ratings.js'
 export { Meetings } from './meetings.js'
-export { LIVE_SOURCE, MEET_CAPTIONS_SOURCE, TASK_AREAS, TASK_KINDS } from './types.js'
+export { LIVE_SOURCE, MEET_CAPTIONS_SOURCE, TASK_AREAS, TASK_KINDS, VOCABULARY_KINDS } from './types.js'
 export { importJsonl, type ImportResult } from './import.js'
 export { MIGRATIONS, LATEST_VERSION, type Migration } from './migrations.js'
 export type {
@@ -40,6 +42,17 @@ export type {
   TaskStatus,
   VersionDiagnostics,
   VersionRecord,
+  VocabularyAlias,
+  VocabularyEntry,
+  VocabularyInput,
+  VocabularyKind,
+  VocabularySource,
+  VocabularyState,
+  VocabularySuggestion,
+  SuggestionEvidence,
+  SuggestionInput,
+  SuggestionState,
+  SuggestionType,
 } from './types.js'
 
 /**
@@ -58,6 +71,7 @@ export interface Store {
   readonly dictionary: Dictionary
   readonly ratings: Ratings
   readonly meetings: Meetings
+  readonly vocabulary: Vocabulary
   readonly file: string
   /** What is actually in the database right now. */
   stats(): StoreStats
@@ -107,6 +121,7 @@ export function openStore(options: OpenStoreOptions): Store {
     dictionary: new Dictionary(db),
     ratings: new Ratings(db),
     meetings: new Meetings(db),
+    vocabulary: new Vocabulary(db),
     stats: () => stats(db, file),
     close: () => {
       // Fold the WAL back into the main file on the way out, so a database that
