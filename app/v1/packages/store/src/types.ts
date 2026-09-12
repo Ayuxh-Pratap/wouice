@@ -130,6 +130,106 @@ export interface DictionaryRecord {
 }
 
 /**
+ * Your vocabulary: the names and words your meetings and dictation use.
+ * See `Vocabulary` and docs/design/09-vocabulary.md.
+ */
+export type VocabularyKind = 'person' | 'product' | 'tool' | 'term' | 'place'
+
+/** In the order the page shows them. */
+export const VOCABULARY_KINDS: readonly VocabularyKind[] = ['person', 'product', 'tool', 'term', 'place']
+
+/** you: added or changed by hand. roster: from a Meet call's participant list. learned: a suggestion you accepted. shipped: came with the app. */
+export type VocabularySource = 'you' | 'roster' | 'learned' | 'shipped'
+
+/** active: used. suggested: waiting for your yes. rejected: "not a word", and never suggested again. */
+export type VocabularyState = 'active' | 'suggested' | 'rejected'
+
+/**
+ * What an entry tends to be misheard as - "Lord" and "लॉर्ड" for Claude.
+ *
+ * `rewrite` makes it a guaranteed replacement in dictation. Only for a
+ * sound-alike that is never a real word: "coin" is one, so for Qwen it hints
+ * and never rewrites.
+ */
+export interface VocabularyAlias {
+  text: string
+  rewrite: boolean
+}
+
+export interface VocabularyEntry {
+  id: number
+  /** The spelling to use. */
+  term: string
+  kind: VocabularyKind
+  aliases: VocabularyAlias[]
+  /** One line on what it is, for the notes: "the team's knowledge-base document". */
+  meaning: string
+  source: VocabularySource
+  state: VocabularyState
+  /** Sent with every request, whatever the text. */
+  pinned: boolean
+  /** Times a dictation rewrite of it fired. */
+  hits: number
+  /** Meetings that mentioned it, and when the last did. */
+  meetings: number
+  lastSeenAt: number | null
+  createdAt: number
+  updatedAt: number
+}
+
+/** What you set on an entry. The rest is kept by the app. */
+export interface VocabularyInput {
+  term: string
+  kind: VocabularyKind
+  aliases: VocabularyAlias[]
+  meaning: string
+  pinned: boolean
+  source: VocabularySource
+  state: VocabularyState
+}
+
+/** 'new': a name or word not in your vocabulary. 'heard': what one of its entries seems to be misheard as. */
+export type SuggestionType = 'new' | 'heard'
+
+/** candidate: kept quietly until it earns a place. suggested: waiting for you. accepted. rejected: "not a word", for good. */
+export type SuggestionState = 'candidate' | 'suggested' | 'accepted' | 'rejected'
+
+/** Where a suggestion was seen: one line of one meeting, quoted exactly. */
+export interface SuggestionEvidence {
+  meetingId: number
+  quote: string
+  at: number
+}
+
+export interface VocabularySuggestion {
+  id: number
+  type: SuggestionType
+  /** The new word, or - for 'heard' - the entry it is a sound-alike of. */
+  term: string
+  /** The sound-alike, for 'heard'. Empty for 'new'. */
+  heard: string
+  kind: VocabularyKind
+  evidence: SuggestionEvidence[]
+  /** Meetings it was seen in. */
+  meetings: number
+  state: SuggestionState
+  createdAt: number
+  updatedAt: number
+}
+
+/** What the mining step found, once. */
+export interface SuggestionInput {
+  type: SuggestionType
+  term: string
+  heard?: string
+  kind?: VocabularyKind
+  meetingId: number
+  quote: string
+  /** Backed by something outside the transcript: the call's participant list, your notes. */
+  corroborated?: boolean
+}
+
+/**
  * Your verdict on one dictation. See `Ratings` and acceptance criterion A4.
  */
 export interface RatingRecord {
