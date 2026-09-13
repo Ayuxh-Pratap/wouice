@@ -38,6 +38,11 @@ export interface RouteDef {
   /** One line, shown under the page title. */
   blurb: string
   /**
+   * The page fills the panel and scrolls inside itself - Vocabulary's word
+   * list - instead of the panel scrolling the whole page.
+   */
+  fill?: boolean
+  /**
    * Present in the sidebar but not reachable yet.
    *
    * Listed rather than hidden on purpose: the shape of the finished app is
@@ -86,7 +91,8 @@ export const ROUTES: RouteDef[] = [
     label: 'Vocabulary',
     group: 'System',
     icon: 'vocabulary',
-    blurb: 'The names and words your meetings and dictation use: how they are spelled, what they are misheard as, what they mean.',
+    blurb: 'The names and words Wouice should spell right — in meetings and dictation.',
+    fill: true,
   },
   {
     id: 'quality',
