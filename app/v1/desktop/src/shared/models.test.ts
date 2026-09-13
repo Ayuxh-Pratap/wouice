@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { LLM_MODELS, MEETING_MODELS, SIDECARS, findModel } from './models.js'
+import { AFTER_CALL_CANDIDATES, LLM_MODELS, MEETING_MODELS, SIDECARS, findModel } from './models.js'
 
 /**
  * The command lines the language model is started with. Dictation's must not
@@ -32,5 +32,15 @@ describe('language model command lines', () => {
     expect(findModel('llama', 'qwen35-9b')?.label).toBe('Qwen3.5 9B')
     expect(findModel('whisper', 'qwen35-9b')).toBeUndefined()
     expect(LLM_MODELS.map((m) => m.id)).not.toContain('qwen35-9b')
+  })
+
+  it('gives the notes a 4k context per request, whichever model writes them', () => {
+    // Meeting 17: E4B in the English shape - four slots of 2k - could not take
+    // the notes' first chunk, and the summary skipped 19 minutes.
+    for (const id of AFTER_CALL_CANDIDATES.notes) {
+      const serve = findModel('llama', id)?.serve
+      expect(serve ? serve.ctx / serve.parallel : 0, id).toBeGreaterThanOrEqual(4096)
+    }
+    expect(args('gemma4-e4b-notes').join(' ')).toContain('-c 4096 --parallel 1')
   })
 })
