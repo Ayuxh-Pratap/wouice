@@ -9,6 +9,8 @@ import {
   parseKinds,
   parseVocabularyList,
   referenceLine,
+  trackedGlossary,
+  vocabularyUse,
 } from './vocabulary.js'
 
 let next = 1
@@ -91,6 +93,43 @@ describe('what a request gets', () => {
       'Claude (heard as: Lord, लॉर्ड; means: the AI we build with)',
       'Bible',
     ])
+  })
+})
+
+describe('the record of a run', () => {
+  it('keeps every entry a request was given', () => {
+    const tracked = trackedGlossary([claude, bump, pinned])
+    tracked.glossary('give it to Lord')
+    tracked.glossary('the finch bot')
+    expect(tracked.used().map((e) => e.term).sort()).toEqual(['Bump', 'Claude', 'Wouice'])
+  })
+
+  it('says where each entry was said and written, and which lines wrote it unheard', () => {
+    const atlas = entry('Atlas')
+    const lines = [
+      { startMs: 0, text: 'कैप्शंस तू गिव तू मी लॉर्ड', textEn: 'captions to give to Claude' },
+      { startMs: 60_000, text: 'ऑल्टो भी आ जाएगी', textEn: 'Atlas will also come' },
+      { startMs: 120_000, text: 'बम्प के लिए', textEn: 'for the bump' },
+    ]
+    const use = vocabularyUse(lines, [claude, atlas, bump], [claude, atlas, bump, himanshu], 7)
+    expect(use).toEqual({
+      at: 7,
+      sent: 3,
+      entries: [
+        { term: 'Atlas', said: 0, written: 1, as: [], unheard: 1, check: [{ atMs: 60_000, said: 'ऑल्टो भी आ जाएगी', written: 'Atlas will also come' }] },
+        { term: 'Bump', said: 1, written: 1, as: [], unheard: 0, check: [] },
+        // "Lord" and "लॉर्ड" are one sound, so both were heard.
+        { term: 'Claude', said: 1, written: 1, as: ['Lord', 'लॉर्ड'], unheard: 0, check: [] },
+      ],
+    })
+  })
+
+  it('counts a name said a line or two before as heard', () => {
+    const lines = [
+      { startMs: 0, text: 'give it to Lord', textEn: 'give it to Claude' },
+      { startMs: 1000, text: 'and then', textEn: 'and then Claude will answer' },
+    ]
+    expect(vocabularyUse(lines, [claude], [claude]).entries[0]).toMatchObject({ said: 1, written: 2, unheard: 0 })
   })
 })
 
