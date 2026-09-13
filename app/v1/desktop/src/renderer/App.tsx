@@ -155,6 +155,9 @@ export function App(): React.JSX.Element {
   }, [route])
 
   const def = routeById(route)
+  // A page that scrolls inside itself gets exactly the panel's height - and no
+  // less than it needs to be usable, below which the panel scrolls after all.
+  const fill = def.fill === true && meetingId === null
   const dev = settings?.developerMode ?? false
   const zoom = settings?.appearance.zoom ?? 1
 
@@ -176,7 +179,7 @@ export function App(): React.JSX.Element {
           ref={scroller}
           className="lift-panel min-h-0 flex-1 overflow-y-auto rounded-2xl bg-neutral-900 ring-1 ring-white/[0.08]"
         >
-          <div className="px-7 py-6">
+          <div className={fill ? 'flex h-full min-h-[34rem] flex-col px-7 py-6' : 'px-7 py-6'}>
             {meetingId === null && (
               <header className="mb-5">
                 <h1 className="text-[19px] font-semibold tracking-tight text-neutral-50">
