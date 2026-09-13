@@ -1,5 +1,5 @@
 import type { DictionaryEntry } from '@wouice/dictionary'
-import type { VocabularyEntry } from '@wouice/store'
+import type { VocabularyEntry, VocabularyUse } from '@wouice/store'
 import { prepare, soundsIn } from './phonetic.js'
 
 /**
@@ -8,9 +8,8 @@ import { prepare, soundsIn } from './phonetic.js'
  *
  * NOT THE WHOLE LIST. Every product and paper on this says the same: a long
  * list sent with everything makes the model "correct" words into names nobody
- * said. So a request gets the entries whose spelling or sound-alike is in its
- * own text, the pinned ones and the people in the meeting first, and only then,
- * while there is room, the ones used most.
+ * said. So a request gets only the entries whose spelling or sound-alike is in
+ * its own text, the pinned ones, and the people in the meeting.
  *
  * WITH WHAT THEY SOUND LIKE. "Claude" alone did not undo Meet's "लॉर्ड";
  * "Claude (heard as: Lord, लॉर्ड)" tells the model which mishearing is which.
@@ -109,11 +108,79 @@ export function referenceLine(entry: VocabularyEntry, meanings = false): string 
  * of a meeting that never said the word.
  */
 export function glossaryFor(entries: readonly VocabularyEntry[], choice: Choice = {}): (text: string) => string[] {
-  return (text) => {
-    const list = entriesFor(text, entries, choice)
-    const said = choice.meanings ? new Set(mentionedIn(text, list).map((e) => e.id)) : new Set<number>()
-    return list.map((e) => referenceLine(e, said.has(e.id)))
+  return (text) => linesFor(text, entries, choice)
+}
+
+function linesFor(
+  text: string,
+  entries: readonly VocabularyEntry[],
+  choice: Choice,
+  onUse?: (sent: readonly VocabularyEntry[]) => void
+): string[] {
+  const list = entriesFor(text, entries, choice)
+  onUse?.(list)
+  const said = choice.meanings ? new Set(mentionedIn(text, list).map((e) => e.id)) : new Set<number>()
+  return list.map((e) => referenceLine(e, said.has(e.id)))
+}
+
+/** `glossaryFor`, keeping every entry it hands out - for the run's record. */
+export function trackedGlossary(
+  entries: readonly VocabularyEntry[],
+  choice: Choice = {}
+): { glossary: (text: string) => string[]; used(): VocabularyEntry[] } {
+  const used = new Map<number, VocabularyEntry>()
+  return {
+    glossary: (text) => linesFor(text, entries, choice, (sent) => sent.forEach((e) => used.set(e.id, e))),
+    used: () => [...used.values()],
   }
+}
+
+/** The English of a line is written with the lines before it in view: a name said there counts. */
+const HEARD_BEFORE = 2
+const CHECK_SHOWN = 5
+const clip = (s: string, n = 90): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
+/**
+ * What the vocabulary did to an English run. For every entry that was sent,
+ * or that the English wrote anyway: the lines that said it, the lines that
+ * wrote it, which heard-as forms turned up, and the lines that wrote it though
+ * nothing said there (or just before) sounded like it. Those last are how
+ * meeting 10's four invented "Atlas" would have shown without reading 514
+ * lines. See docs/design/09-vocabulary.md §7.
+ */
+export function vocabularyUse(
+  lines: readonly { startMs: number; text: string; textEn: string | null }[],
+  sent: readonly VocabularyEntry[],
+  entries: readonly VocabularyEntry[],
+  at = Date.now()
+): VocabularyUse {
+  const spoken = lines.map((l) => prepare(l.text))
+  const sentIds = new Set(sent.map((e) => e.id))
+  const report: VocabularyUse['entries'] = []
+  for (const e of entries) {
+    if (e.state !== 'active') continue
+    const forms = [e.term, ...e.aliases.map((a) => a.text)]
+    const saidAt = spoken.map((p) => forms.some((f) => soundsIn(f, p)))
+    const writtenAt = lines.map((l) => l.textEn !== null && appears(e.term, l.textEn))
+    const said = saidAt.filter(Boolean).length
+    const written = writtenAt.filter(Boolean).length
+    if (written === 0 && (said === 0 || !sentIds.has(e.id))) continue
+    const unheardAt = lines.flatMap((l, i) =>
+      writtenAt[i] && !saidAt.slice(Math.max(0, i - HEARD_BEFORE), i + 1).some(Boolean)
+        ? [{ atMs: l.startMs, said: clip(l.text), written: clip(l.textEn ?? '') }]
+        : []
+    )
+    report.push({
+      term: e.term,
+      said,
+      written,
+      as: e.aliases.map((a) => a.text).filter((f) => spoken.some((p) => soundsIn(f, p))),
+      unheard: unheardAt.length,
+      check: unheardAt.slice(0, CHECK_SHOWN),
+    })
+  }
+  report.sort((a, b) => b.unheard - a.unheard || b.written - a.written || a.term.localeCompare(b.term))
+  return { at, sent: sent.length, entries: report }
 }
 
 /** A pasted entry: the word, and its meaning when the line gave one. */
