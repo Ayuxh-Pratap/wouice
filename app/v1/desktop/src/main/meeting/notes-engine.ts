@@ -101,6 +101,8 @@ export interface NotesRun {
   merged: number
   rejected: number
   ms: number
+  /** Why a part could not be read, when one could not: the last failed request's reason. */
+  failure?: string
 }
 
 export interface NotesInput {
@@ -263,6 +265,7 @@ export class MeetingNotesEngine {
         .reduce((n, o) => n + o.chunk.lines.length, 0),
       totalLines: usable.length,
       gapsAt: failed.map((o) => ({ fromMs: o.chunk.startMs, toMs: o.chunk.endMs })),
+      failure: failed.length > 0 ? (this.lastFailure ?? undefined) : undefined,
       candidates: found.length + dropped,
       filtered: dropped,
       merged: found.length - built.groups,
