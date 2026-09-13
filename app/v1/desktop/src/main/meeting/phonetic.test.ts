@@ -35,6 +35,28 @@ describe('sound keys', () => {
     for (const [latin, devanagari] of pairs) expect(soundKey(devanagari), `${latin} / ${devanagari}`).toBe(soundKey(latin))
   })
 
+  it('keeps a leading vowel, so a word is not found in one that only lacks it', () => {
+    // Meeting 18: "रिटर्न फ्रॉम रिस्पांस" counted as iframe, "अराउंड नेवीगेशन" as route.
+    expect(soundKey('iframe')).toBe(soundKey('आईफ्रेम'))
+    expect(soundKey('iframe')).not.toBe(soundKey('फ्रॉम'))
+    expect(soundKey('राउंड')).not.toBe(soundKey('अराउंड'))
+    expect(soundsIn('iframe', prepare('रिटर्न फ्रॉम रिस्पांस'))).toBe(false)
+    expect(soundsIn('राउंड', prepare('98 अराउंड नेवीगेशन'))).toBe(false)
+    expect(soundKey('Atlas')).toBe(soundKey('एटलस'))
+    // The mark does not make a short key long enough to trust: OpenAI is not "ओपन" (open).
+    expect(soundsIn('OpenAI', prepare('ओपन मी प्राइस'))).toBe(false)
+  })
+
+  it('matches by sound only across scripts; within one, by spelling or the close key', () => {
+    // Meeting 18: JSON's "जसन" and "जिसने" (who) share their consonants, and nothing else.
+    expect(soundsIn('जसन', prepare('जिसने लगता है कोई फर्क नहीं पड़ा'))).toBe(false)
+    expect(soundsIn('जशन', prepare('भेज सकता है मुझे जसन'))).toBe(true)
+    // Across scripts the sound key still does its work.
+    expect(soundsIn('Lord', prepare('गिव तू मी लॉर्ड'))).toBe(true)
+    // And an English variant is found by its close key.
+    expect(soundsIn('Qwen', prepare('this quen model'))).toBe(true)
+  })
+
   it('keeps words that sound different apart', () => {
     expect(soundKey('Claude')).not.toBe(soundKey('Lord'))
     expect(soundKey('Bump')).not.toBe(soundKey('Bible'))
