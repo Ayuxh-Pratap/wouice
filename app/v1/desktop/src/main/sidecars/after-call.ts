@@ -73,6 +73,8 @@ export interface AfterCallRecord {
   models: Partial<Record<Role, string>>
   /** Why a better model was passed over, or anything else that did not go to plan. */
   fallbacks: string[]
+  /** A model that ran partly on the processor, within what it is allowed: which, and how much. */
+  squeezed?: { model: string; onCpuMiB: number }
   ms: {
     pause: number
     unload: number
@@ -167,18 +169,22 @@ export function roomFor(footprintMiB: number, gpu: GpuReading | null): boolean {
  *
  * 'spilled': far less arrived than it takes, so `--fit` put layers on the
  * processor - correct, and several times slower (Gemma 12B took 34 minutes over
- * one meeting's notes). 'tight': it is all there, with too little left for the
- * card to work with.
+ * one meeting's notes). 'squeezed': less arrived, but no more than the model
+ * is allowed to put on the processor (`spillMiB`) - slower by a measured
+ * amount, and better than the smaller model. 'tight': it is all there, with too
+ * little left for the card to work with.
  */
 export function landing(
   footprintMiB: number,
   before: GpuReading | null,
-  after: GpuReading | null
-): 'ok' | 'spilled' | 'tight' {
+  after: GpuReading | null,
+  spillMiB = 0
+): 'ok' | 'squeezed' | 'spilled' | 'tight' {
   if (!before || !after) return 'ok'
   if (after.totalMiB - after.usedMiB < MIN_FREE_AFTER_LOAD_MIB) return 'tight'
-  if (after.usedMiB - before.usedMiB < footprintMiB * ON_GPU_SHARE) return 'spilled'
-  return 'ok'
+  const arrived = after.usedMiB - before.usedMiB
+  if (arrived >= footprintMiB * ON_GPU_SHARE) return 'ok'
+  return footprintMiB - arrived <= spillMiB ? 'squeezed' : 'spilled'
 }
 
 /** "a minute", "4 min" - no false precision. */
@@ -590,9 +596,11 @@ export class AfterCall extends EventEmitter {
           await this.deps.sidecars.stop('llama')
           loaded = null
           const before = await this.read(record)
-          if (!roomFor(model.vramMiB, before)) {
+          // A model allowed to run partly on the processor needs that much less room.
+          const spill = model.spillMiB ?? 0
+          if (!roomFor(model.vramMiB - spill, before)) {
             const free = before ? before.totalMiB - before.usedMiB : 0
-            record.fallbacks.push(`${model.label}: needs ${model.vramMiB + LOAD_MARGIN_MIB} MiB free, ${free} were`)
+            record.fallbacks.push(`${model.label}: needs ${model.vramMiB - spill + LOAD_MARGIN_MIB} MiB free, ${free} were`)
             continue
           }
 
@@ -612,8 +620,10 @@ export class AfterCall extends EventEmitter {
             ms: Date.now() - loading,
             addedMiB: before && after ? after.usedMiB - before.usedMiB : null,
           })
-          const where = landing(model.vramMiB, before, after)
-          if (where !== 'ok') {
+          const where = landing(model.vramMiB, before, after, spill)
+          if (where === 'squeezed' && before && after) {
+            record.squeezed = { model: id, onCpuMiB: model.vramMiB - (after.usedMiB - before.usedMiB) }
+          } else if (where !== 'ok') {
             record.fallbacks.push(
               `${model.label}: ${where === 'spilled' ? 'part of it loaded off the GPU' : 'left too little GPU memory'}`
             )
