@@ -21,6 +21,11 @@ export interface ModelChoice {
   file: string
   /** Measured on the RTX 3050, see docs/design/03-spike-results.md */
   vramMiB: number
+  /**
+   * How much of it may run on the processor when the card is a little short,
+   * instead of handing the step to a smaller model. Measured, so the cost is known.
+   */
+  spillMiB?: number
   note: string
   /**
    * How llama-server runs this model, when it is not the dictation shape.
@@ -123,12 +128,40 @@ export const MEETING_MODELS: ModelChoice[] = [
     // it is given, so it takes more on an emptier card. 4,650 is what it needs;
     // the 300 MiB margin keeps llama.cpp's own 256 free on top.
     vramMiB: 4650,
+    // Meeting 17, a real call: other apps held 1.4 GB and it was 188 MiB short,
+    // so E4B wrote the notes and found none of the tasks. Loaded squeezed into
+    // that room, --fit put about 1.1 GB on the processor; the notes took 20%
+    // longer (334 s against 278 s) and found the same two tasks.
+    spillMiB: 1200,
     note: 'Meeting summary and tasks. Found all eight real bugs in an hour of noisy Hindi.',
     // One slot: the notes engine sends one request at a time and sizes its
     // chunks to a 4k context.
     serve: { ctx: 4096, parallel: 1, extra: MEETING_FLAGS },
   },
+  {
+    // The English model, shaped for the notes: one request at a time with the
+    // 4k context the notes engine sizes its chunks to. In the English shape -
+    // four slots of 2k - meeting 17's first chunk did not fit, and the summary
+    // skipped its first 19 minutes.
+    id: 'gemma4-e4b-notes',
+    label: 'Gemma 4 E4B',
+    file: 'google_gemma-4-E4B-it-Q6_K.gguf',
+    // One slot, measured.
+    vramMiB: 4085,
+    note: 'Meeting summary and tasks when Qwen3.5 9B does not fit.',
+    serve: { ctx: 4096, parallel: 1, extra: MEETING_FLAGS },
+  },
 ]
+
+/**
+ * Which meeting model does which step after a call, in order of preference;
+ * the dictation model is the last resort for both. The notes engine sizes its
+ * chunks to a 4k context per request, so every notes candidate must give it one.
+ */
+export const AFTER_CALL_CANDIDATES = {
+  english: ['gemma4-e4b'],
+  notes: ['qwen35-9b', 'gemma4-e4b-notes'],
+} as const
 
 export interface SidecarDef {
   id: SidecarId
