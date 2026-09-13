@@ -126,8 +126,12 @@ export function soundKey(word: string): string {
   const s = latin(word)
   const number = numberOf(s)
   if (number !== undefined) return `#${number}`
-  // Vowels carry little across scripts and recognisers; the consonants carry the word.
-  return folded(s).replace(/[aeiouy]/g, '').replace(/(.)\1+/g, '$1')
+  // Vowels carry little across scripts and recognisers; the consonants carry
+  // the word. All but a leading one, kept as a single mark: without it
+  // "iframe" was "from" and "राउंड" was "अराउंड" (around) in meeting 18. One
+  // mark for any vowel, since "iframe" and "आईफ्रेम" start with different ones.
+  const f = folded(s)
+  return (/^[aeiou]/.test(f) ? '*' : '') + f.replace(/[aeiouy]/g, '').replace(/(.)\1+/g, '$1')
 }
 
 /**
@@ -178,11 +182,19 @@ export interface Prepared {
   lower: string[]
   keys: string[]
   close: string[]
+  /** Which words are Devanagari: a sound key only bridges the two scripts. */
+  devanagari: boolean[]
 }
 
 export function prepare(text: string): Prepared {
   const words = wordsOf(text)
-  return { words, lower: words.map((w) => w.toLowerCase()), keys: words.map(soundKey), close: words.map(closeKey) }
+  return {
+    words,
+    lower: words.map((w) => w.toLowerCase()),
+    keys: words.map(soundKey),
+    close: words.map(closeKey),
+    devanagari: words.map((w) => DEVANAGARI.test(w)),
+  }
 }
 
 /** Shorter than this, a sound key matches too many words to mean anything. */
@@ -192,8 +204,14 @@ const MIN_CLOSE = 4
 
 /**
  * Is this form - a term or a sound-alike, one or more words - in the text?
- * As spelled; or, when its key is long enough to trust, by sound; or, for a
- * short word the sound key cannot be trusted with, by its close key.
+ * As spelled; or by its close key; or, between the two scripts and when its
+ * key is long enough to trust, by sound.
+ *
+ * THE SOUND KEY ONLY BRIDGES SCRIPTS. It drops vowels so that "Lord" can find
+ * "लॉर्ड"; between two words in the same script that is only a loss, and in
+ * meeting 18 it had JSON's "जसन" in "जिसने" (who) and route's "राउंड" in
+ * "अराउंड" (around). Within a script a word is matched as spelled, or by its
+ * close key, which keeps the vowels.
  */
 export function soundsIn(form: string, text: Prepared): boolean {
   const words = wordsOf(form)
@@ -201,7 +219,10 @@ export function soundsIn(form: string, text: Prepared): boolean {
   const lower = words.map((w) => w.toLowerCase())
   const keys = words.map(soundKey)
   const close = words.map(closeKey)
-  const bySound = keys.join('').length >= MIN_KEY && keys.every((k) => k.length > 0)
+  const devanagari = words.map((w) => DEVANAGARI.test(w))
+  // The leading-vowel mark says where a word starts, not how much of it there
+  // is: counted, it made OpenAI's "*pn" long enough to find "ओपन" (open).
+  const bySound = keys.join('').replaceAll('*', '').length >= MIN_KEY && keys.every((k) => k.length > 0)
   const byClose = close.join('').length >= MIN_CLOSE
   for (let at = 0; at + words.length <= text.words.length; at++) {
     let spelled = true
@@ -209,7 +230,7 @@ export function soundsIn(form: string, text: Prepared): boolean {
     let near = byClose
     for (let j = 0; j < words.length; j++) {
       if (text.lower[at + j] !== lower[j]) spelled = false
-      if (text.keys[at + j] !== keys[j]) sounded = false
+      if (text.keys[at + j] !== keys[j] || text.devanagari[at + j] === devanagari[j]) sounded = false
       if (text.close[at + j] !== close[j]) near = false
       if (!spelled && !sounded && !near) break
     }
