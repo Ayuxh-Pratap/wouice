@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { SidecarId } from '../../shared/models.js'
+import { AFTER_CALL_CANDIDATES, type SidecarId } from '../../shared/models.js'
 import {
   AfterCall,
   describeNotesStep,
@@ -19,7 +19,13 @@ import type { GpuReading } from './gpu.js'
  * on the card without room for it.
  */
 
-const FOOTPRINT: Record<string, number> = { turbo: 865, 'qwen3-4b': 3124, 'gemma4-e4b': 4180, 'qwen35-9b': 4800 }
+const FOOTPRINT: Record<string, number> = {
+  turbo: 865,
+  'qwen3-4b': 3124,
+  'gemma4-e4b': 4180,
+  'gemma4-e4b-notes': 4085,
+  'qwen35-9b': 4800,
+}
 
 function card(opts: { baseMiB?: number; actual?: Record<string, number>; broken?: string[] } = {}) {
   const state: Record<SidecarId, { status: string; modelId: string; lastError: string | null; busy: boolean }> = {
@@ -73,7 +79,7 @@ function afterCall(c: ReturnType<typeof card>, over: Partial<AfterCallDeps> = {}
     gpu: c.gpu,
     dictationModels: () => ({ whisper: 'turbo', llama: 'qwen3-4b' }),
     enabled: () => true,
-    candidates: { english: ['gemma4-e4b'], notes: ['qwen35-9b', 'gemma4-e4b'] },
+    candidates: AFTER_CALL_CANDIDATES,
     onRecord: (_id, record) => records.push(record),
     timing: { pollMs: 1, releaseMs: 50, sampleMs: 60_000 },
     ...over,
@@ -164,17 +170,34 @@ describe('larger models after a meeting', () => {
     expect(c.calls).toContain('switch llama qwen35-9b')
   })
 
-  it('passes over a model there is no room for', async () => {
-    // 1,300 MiB taken by other apps: Qwen3.5 needs 4,950 free and gets 4,844.
-    const c = card({ baseMiB: 1300 })
+  it('passes over a model there is no room for, even squeezed', async () => {
+    // 2,500 MiB taken by other apps: Qwen3.5 needs 3,750 free even partly on
+    // the processor, E4B 4,385; the dictation model's 3,424 fits.
+    const c = card({ baseMiB: 2500 })
     const { engine, records } = afterCall(c)
     let model = ''
     await engine.run(1, { english: 0, notes: 5 }, async (session) => {
       model = (await session.use('notes')).id
     })
-    expect(model).toBe('gemma4-e4b')
-    expect(records[0]!.fallbacks[0]).toMatch(/^Qwen3.5 9B: needs 4950 MiB free, 4844 were/)
+    expect(model).toBe('qwen3-4b')
+    expect(records[0]!.fallbacks[0]).toMatch(/^Qwen3.5 9B: needs 3750 MiB free, 3644 were/)
+    expect(records[0]!.fallbacks[1]).toMatch(/^Gemma 4 E4B: needs 4385 MiB free, 3644 were/)
     expect(c.calls).not.toContain('switch llama qwen35-9b')
+    dictationBack(c)
+  })
+
+  it('runs Qwen3.5 partly on the processor when the card is only a little short', async () => {
+    // Meeting 17: other apps held 1.4 GB. --fit puts what does not fit on the
+    // processor; 20% slower, and the tasks E4B could not find.
+    const c = card({ baseMiB: 1400, actual: { 'qwen35-9b': 3600 } })
+    const { engine, records } = afterCall(c)
+    let model = ''
+    await engine.run(1, { english: 0, notes: 5 }, async (session) => {
+      model = (await session.use('notes')).id
+    })
+    expect(model).toBe('qwen35-9b')
+    expect(records[0]!.fallbacks).toEqual([])
+    expect(records[0]!.squeezed).toEqual({ model: 'qwen35-9b', onCpuMiB: 1050 })
     dictationBack(c)
   })
 
@@ -185,7 +208,8 @@ describe('larger models after a meeting', () => {
     await engine.run(1, { english: 0, notes: 5 }, async (session) => {
       model = (await session.use('notes')).id
     })
-    expect(model).toBe('gemma4-e4b')
+    // The English model, in its one-slot notes shape.
+    expect(model).toBe('gemma4-e4b-notes')
     expect(records[0]!.fallbacks).toEqual(['Qwen3.5 9B: part of it loaded off the GPU'])
     dictationBack(c)
   })
@@ -326,5 +350,12 @@ describe('the memory checks', () => {
     expect(landing(4800, at(600), at(5400))).toBe('ok')
     expect(landing(4800, at(600), at(3600))).toBe('spilled')
     expect(landing(4800, at(1250), at(6050))).toBe('tight')
+  })
+
+  it('accepts a model partly on the processor only within what it is allowed', () => {
+    // Qwen3.5: 4,650 on the card, up to 1,200 of it allowed on the processor.
+    expect(landing(4650, at(1400), at(5000), 1200)).toBe('squeezed')
+    expect(landing(4650, at(600), at(3600), 1200)).toBe('spilled')
+    expect(landing(4650, at(600), at(5250), 1200)).toBe('ok')
   })
 })
