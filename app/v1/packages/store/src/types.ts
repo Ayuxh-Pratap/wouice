@@ -292,7 +292,37 @@ export const LIVE_SOURCE = 'live'
 export const MEET_CAPTIONS_SOURCE = 'meet-captions'
 
 /** What happened to one version: how it was transcribed, rendered and summarised. */
+/**
+ * What the vocabulary did to one English run, entry by entry: how many lines
+ * said it (as spelled, a heard-as, or by sound), how many the English wrote it
+ * in, and the lines it was written in though nothing said there sounded like
+ * it - the ones to check for a name put where nobody said it.
+ * See docs/design/09-vocabulary.md §7.
+ */
+export interface VocabularyUse {
+  at: number
+  /** Entries sent with at least one request. */
+  sent: number
+  entries: {
+    term: string
+    /** Lines that said it. */
+    said: number
+    /** Lines whose English writes it, spelled as the entry is. */
+    written: number
+    /** The heard-as forms found in what was said: "Lord", "लॉर्ड". */
+    as: string[]
+    /** How many lines wrote it without anything said there, or just before, sounding like it. */
+    unheard: number
+    /** The first few of those. */
+    check: { atMs: number; said: string; written: string }[]
+  }[]
+}
+
 export interface VersionDiagnostics {
+  /** What the vocabulary did to the English, when a vocabulary was sent. */
+  vocabulary?: VocabularyUse
+  /** The step after the notes that looks for new names: what it found, and what it put in front of you. */
+  mining?: { at: number; found: number; suggested: number; ms: number }
   /** How a version made after the call was transcribed. Absent on the live one. */
   transcription?: {
     at: number
@@ -533,6 +563,8 @@ export interface MeetingDiagnostics {
     filtered?: number
     merged?: number
     rejected?: number
+    /** The vocabulary entries sent with the notes' requests. */
+    vocabulary?: string[]
   }[]
   [key: string]: unknown
 }
