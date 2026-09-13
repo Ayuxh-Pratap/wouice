@@ -29,3 +29,6 @@ app/v1/fixtures/
 
 # esbuild output used only by the injection acceptance test
 app/v1/scripts/build/
+
+# design mockups and their preview server's state, local only
+.superpowers/
