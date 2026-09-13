@@ -42,6 +42,7 @@ export type {
   TaskStatus,
   VersionDiagnostics,
   VersionRecord,
+  VocabularyUse,
   VocabularyAlias,
   VocabularyEntry,
   VocabularyInput,
