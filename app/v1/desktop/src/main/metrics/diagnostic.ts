@@ -1,4 +1,10 @@
-import { MEET_CAPTIONS_SOURCE, type DictationRecord, type MeetingDiagnostics, type MeetingRecord } from '@wouice/store'
+import {
+  MEET_CAPTIONS_SOURCE,
+  type DictationRecord,
+  type MeetingDiagnostics,
+  type MeetingRecord,
+  type VocabularyUse,
+} from '@wouice/store'
 import type { Settings } from '../../shared/settings.js'
 import type { AfterCallRecord } from '../sidecars/after-call.js'
 
@@ -255,9 +261,15 @@ export function formatMeeting(
               (v.english.model ? `, by ${v.english.model}` : '')
       )
     }
+    if (v.vocabulary) lines.push(...formatVocabularyUse(v.vocabulary))
     lines.push(`  summary       ${version.notesMd ? `yes, ${version.notesMd.length} chars` : 'not written'}`)
     lines.push(`  tasks         ${tasksIn(version.id)}`)
     formatNotesRuns(v.notes ?? [], lines)
+    if (v.mining) {
+      lines.push(
+        `  suggestions   ${v.mining.found} found, ${v.mining.suggested} put in front of you, ${Math.round(v.mining.ms / 1000)}s`
+      )
+    }
     const afterCall = v.afterCall as AfterCallRecord | AfterCallRecord[] | undefined
     for (const run of Array.isArray(afterCall) ? afterCall : afterCall ? [afterCall] : []) {
       formatAfterCall(run, lines)
@@ -291,6 +303,9 @@ function formatAfterCall(record: AfterCallRecord, lines: string[]): void {
       (record.hottestC === null ? '' : `; hottest ${record.hottestC} C`)
   )
   for (const why of record.fallbacks) lines.push(`      fell back ${why}`)
+  if (record.squeezed) {
+    lines.push(`      squeezed  ${record.squeezed.model}: ${record.squeezed.onCpuMiB} MiB on the processor, so slower`)
+  }
   if (record.stopped) lines.push(`      stopped   ${record.stopped}`)
 }
 
@@ -313,6 +328,7 @@ function formatNotesRuns(runs: NonNullable<MeetingDiagnostics['notes']>, lines: 
     for (const gap of run.gapsAt ?? []) {
       lines.push(`      not read  ${Math.round(gap.fromMs / 60_000)}-${Math.round(gap.toMs / 60_000)} min`)
     }
+    if (run.ok && run.message) lines.push(`      because   ${run.message}`)
     if (run.candidates !== undefined) {
       lines.push(
         `      tasks     ${run.candidates} found, ${run.filtered ?? 0} not traceable or too vague,` +
@@ -320,6 +336,34 @@ function formatNotesRuns(runs: NonNullable<MeetingDiagnostics['notes']>, lines: 
           ` ${run.tasks} kept`
       )
     }
+    if (run.vocabulary) {
+      lines.push(`      vocab     ${run.vocabulary.length === 0 ? 'none sent' : run.vocabulary.join(', ')}`)
+    }
   }
   if (runs.length === 0) lines.push('  (never run)')
+}
+
+const clock = (ms: number): string => `${Math.floor(ms / 60_000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`
+
+/**
+ * What the vocabulary did to the English, so a meeting can be graded without
+ * reading all of it: each entry said and written, and the lines that wrote a
+ * name nothing there sounded like - the ones to check first.
+ */
+export function formatVocabularyUse(use: VocabularyUse): string[] {
+  const checks = use.entries.reduce((n, e) => n + e.unheard, 0)
+  const out = [
+    `  vocabulary    ${use.sent} sent to the English; ${use.entries.length} said or written` +
+      (checks > 0 ? `; ${checks} line(s) to check` : ''),
+  ]
+  for (const e of use.entries) {
+    out.push(
+      `      ${e.term.padEnd(14)} said ${e.said}, written ${e.written}` +
+        (e.as.length > 0 ? `  (heard as ${e.as.join(', ')})` : '') +
+        (e.unheard > 0 ? `  <- written ${e.unheard}x where nothing sounded like it` : '') +
+        (e.said > 0 && e.written === 0 ? '  <- said, never written' : '')
+    )
+    for (const c of e.check) out.push(`        ${clock(c.atMs).padStart(5)}  ${c.said}  ->  ${c.written}`)
+  }
+  return out
 }
