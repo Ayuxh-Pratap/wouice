@@ -3,7 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SidecarSupervisor, type SidecarSnapshot } from './sidecars/supervisor.js'
 import { sweepOrphans } from './sidecars/orphans.js'
-import { SIDECARS } from '../shared/models.js'
+import { AFTER_CALL_CANDIDATES, SIDECARS } from '../shared/models.js'
 import { AfterCall, describeNotesStep, type Plan, type Session } from './sidecars/after-call.js'
 import { readGpu } from './sidecars/gpu.js'
 import { SettingsStore } from './settings-store.js'
@@ -52,7 +52,15 @@ import { carryOver } from './meeting/versions.js'
 import { finishedSessions } from './meeting/merge.js'
 import { discardRecording } from './meeting/remove.js'
 import { MeetingNotesEngine, NotesUnavailable, type NotesProgress } from './meeting/notes-engine.js'
-import { appears, asDictionary, glossaryFor, mentionedIn, parseKinds, parseVocabularyList } from './meeting/vocabulary.js'
+import {
+  appears,
+  asDictionary,
+  mentionedIn,
+  parseKinds,
+  parseVocabularyList,
+  trackedGlossary,
+  vocabularyUse,
+} from './meeting/vocabulary.js'
 import { VocabularyMiner } from './meeting/vocabulary-miner.js'
 import { MicWatcher } from './meeting/mic-watcher.js'
 import { repassMeeting, RepassUnavailable } from './meeting/repass.js'
@@ -141,7 +149,7 @@ const afterCall = new AfterCall({
   enabled: () => settings.get().meetings.largerModels && meetings.state().phase === 'idle',
   // Chosen by measurement (08 §2): E4B writes the best English, Qwen3.5 finds
   // the most real work. The dictation model is always the last resort.
-  candidates: { english: ['gemma4-e4b'], notes: ['qwen35-9b', 'gemma4-e4b'] },
+  candidates: AFTER_CALL_CANDIDATES,
   onView: (view) => {
     broadcast(IPC.engineState, view)
     // Only when what it says changes. Progress arrives a few times a second,
@@ -398,6 +406,13 @@ async function writeNotes(
     return { ok: false, message, ...empty }
   }
 
+  // With meanings here: "Bible" is the team's knowledge base, not scripture.
+  // Tracked, so the run's record says which entries it was given.
+  const vocabulary = trackedGlossary(store.vocabulary.active(), {
+    meanings: true,
+    people: [...new Set(segments.flatMap((s) => (s.speaker ? [s.speaker] : [])))],
+  })
+
   try {
     const run = await notesEngine.generate({
       // The English rendering when there is one: notes written from
@@ -415,11 +430,7 @@ async function writeNotes(
       scratch: meeting.scratchMd,
       startedAt: meeting.startedAt,
       me: { name: settings.get().meetings.me.name },
-      // With meanings here: "Bible" is the team's knowledge base, not scripture.
-      glossary: glossaryFor(store.vocabulary.active(), {
-        meanings: true,
-        people: [...new Set(segments.flatMap((s) => (s.speaker ? [s.speaker] : [])))],
-      }),
+      glossary: vocabulary.glossary,
       onProgress: (p) => {
         broadcast(IPC.notesProgress, { meetingId: id, ...p })
         opts.onStep?.(p)
@@ -472,6 +483,9 @@ async function writeNotes(
       filtered: run.filtered,
       merged: run.merged,
       rejected: run.rejected,
+      vocabulary: vocabulary.used().map((e) => e.term),
+      // Why a part could not be read: "exceeds the context" and a timeout are different fixes.
+      message: run.failure,
     })
     broadcast(IPC.meetingUpdated, id)
     console.log(
@@ -551,19 +565,20 @@ async function renderEnglish(
     // model on duplicates of lines that are already being rendered.
     const heard = store.meetings.segments(id, version.id).filter((seg) => !seg.echo)
     const model = supervisor.snapshot('llama').modelId
+    const people = [...new Set(heard.flatMap((seg) => (seg.speaker ? [seg.speaker] : [])))]
+    // Your vocabulary, as much of it as each line calls for: how "Lord"
+    // becomes Claude. The people in this meeting are always in it. Tracked,
+    // so the run's record can say what it did.
+    const vocabulary = trackedGlossary(store.vocabulary.active(), { people })
     const run = await englishEngine.render({
       // With who said each line, where Meet's captions named them: a reply
       // reads differently once the model knows whose question it answers.
       lines: heard.map((seg) => ({ id: seg.id, text: seg.text, speaker: seg.speaker })),
-      people: [...new Set(heard.flatMap((seg) => (seg.speaker ? [seg.speaker] : [])))],
+      people,
       // Read fresh on every call, so notes added AFTER the meeting are used by
       // the next render - which is the point of being able to add them later.
       context: meeting.scratchMd,
-      // Your vocabulary, as much of it as each line calls for: how "Lord"
-      // becomes Claude. The people in this meeting are always in it.
-      glossary: glossaryFor(store.vocabulary.active(), {
-        people: [...new Set(heard.flatMap((seg) => (seg.speaker ? [seg.speaker] : [])))],
-      }),
+      glossary: vocabulary.glossary,
       onProgress: (p) => {
         broadcast(IPC.englishProgress, { meetingId: id, ...p })
         opts.onLine?.(p.batch, p.batches)
@@ -573,6 +588,14 @@ async function renderEnglish(
       signal: opts.signal,
     })
     store.meetings.setEnglish(run.rendered.map((r) => ({ id: r.id, textEn: r.textEn })))
+    // Which words it was given, and what it did with them: said and written,
+    // and any written where nothing said sounded like them.
+    const english = new Map(run.rendered.map((r) => [r.id, r.textEn]))
+    const use = vocabularyUse(
+      heard.map((seg) => ({ startMs: seg.startMs, text: seg.text, textEn: english.get(seg.id) ?? null })),
+      vocabulary.used(),
+      store.vocabulary.active()
+    )
     store.meetings.setVersionDiagnostics(version.id, {
       english: {
         ok: true,
@@ -583,6 +606,7 @@ async function renderEnglish(
         failedBatches: run.failedBatches,
         ms: run.ms,
       },
+      vocabulary: use,
     })
     // Said now, not when the whole job ends: the summary still has minutes to
     // go, and the page should show the English it already has.
@@ -1120,6 +1144,9 @@ async function suggestVocabulary(meetingId: number, versionId: number | undefine
     if (state === 'suggested') waiting++
   }
   console.log(`[vocabulary] meeting ${meetingId}: ${found.length} found, ${waiting} suggested, ${Date.now() - started}ms`)
+  store.meetings.setVersionDiagnostics(version.id, {
+    mining: { at: Date.now(), found: found.length, suggested: waiting, ms: Date.now() - started },
+  })
   if (found.length > 0) broadcast(IPC.vocabularyChanged, null)
 }
 
