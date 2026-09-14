@@ -380,6 +380,8 @@ export interface CheckedSummary {
   gist: { text: string; points: number[] }[]
   /** The key points shown, in the order they came up. */
   points: SummaryPoint[]
+  /** Every other key point that held up, in the order they came up - nothing checked is dropped. Absent on a summary written before. */
+  more?: SummaryPoint[]
 }
 
 /** What a summary came to: points found, kept (and why not), shown; gist sentences kept of written. */
