@@ -40,7 +40,15 @@ describe('assembling captions', () => {
     expect(a.take(1_500, names)).toEqual([])
     a.update(cap({ version: 3, text: 'I will send it on Monday', isFinal: true }), 2_000)
     expect(a.take(2_000, names)).toEqual([
-      { deviceId: 'd-rahul', speaker: 'Rahul Dhir', text: 'I will send it on Monday', startedAt: 1_000, endedAt: 2_000, language: 'hi-IN' },
+      {
+        deviceId: 'd-rahul',
+        speaker: 'Rahul Dhir',
+        text: 'I will send it on Monday',
+        startedAt: 1_000,
+        endedAt: 2_000,
+        language: 'hi-IN',
+        keys: ['d-rahul:1'],
+      },
     ])
   })
 
@@ -69,7 +77,7 @@ describe('assembling captions', () => {
     expect(a.keptFinal).toBe(1)
   })
 
-  it('stores a line once, and counts Meet correcting it afterwards instead', () => {
+  it('stores a line once, and hands on a correction Meet makes to it afterwards', () => {
     const a = new CaptionAssembler()
     a.update(cap({ text: 'ship it friday', isFinal: true }), 1_000)
     expect(a.take(1_000, names)).toHaveLength(1)
@@ -77,6 +85,47 @@ describe('assembling captions', () => {
     a.update(cap({ version: 9, text: 'ship it Friday', isFinal: true }), 1_600)
     expect(a.take(1_600, names)).toEqual([])
     expect(a.lateRevisions).toBe(1)
+    expect(a.takeRevisions()).toEqual([{ key: 'd-rahul:1', from: 'ship it friday', to: 'ship it Friday' }])
+    expect(a.takeRevisions()).toEqual([])
+  })
+
+  it('keeps new words Meet sends under a caption id it already used as a caption of their own', () => {
+    // Replayed, meeting 18 had this line overwritten by the next thing said.
+    const a = new CaptionAssembler()
+    a.update(cap({ text: 'तो मतलब 12000 प्लस 6000 प्लस', isFinal: true }), 1_000)
+    expect(a.take(1_000, names)).toHaveLength(1)
+    a.update(cap({ version: 7, text: 'मतलब देखो अगर आप उसको बहुत', isFinal: true }), 9_000)
+    expect(a.takeRevisions()).toEqual([])
+    expect(a.take(9_000, names).map((l) => [l.text, l.startedAt])).toEqual([['मतलब देखो अगर आप उसको बहुत', 9_000]])
+    expect(a.newUnderOldId).toBe(1)
+    // And the new caption's own later versions correct it, not the first one.
+    a.update(cap({ version: 8, text: 'मतलब देखो अगर आप उसको बहुत बताओगे', isFinal: true }), 9_500)
+    expect(a.takeRevisions()).toEqual([
+      { key: 'd-rahul:1#7', from: 'मतलब देखो अगर आप उसको बहुत', to: 'मतलब देखो अगर आप उसको बहुत बताओगे' },
+    ])
+  })
+
+  it('makes a correction in the open turn, or hands it back once the line is stored', () => {
+    // Meeting 18: Meet's first guess "प्लस", then new words under the same id, then those corrected.
+    const feed = new MeetFeed()
+    feed.captions.update(cap({ text: 'प्लस', isFinal: true }), 1_000)
+    expect(feed.take(1_000)).toEqual([])
+    feed.captions.update(cap({ version: 2, text: 'ऑप्टिमाइज वाली लाइन हटा दो', isFinal: true }), 2_000)
+    expect(feed.revisions()).toEqual([])
+    expect(feed.take(20_000).map((l) => l.text)).toEqual(['प्लस ऑप्टिमाइज वाली लाइन हटा दो'])
+    feed.captions.update(cap({ version: 3, text: 'ऑप्टिमाइज वाली लाइन हटा दो भाई', isFinal: true }), 21_000)
+    expect(feed.revisions()).toEqual([
+      { startedAt: 1_000, speaker: null, from: 'ऑप्टिमाइज वाली लाइन हटा दो', to: 'ऑप्टिमाइज वाली लाइन हटा दो भाई' },
+    ])
+  })
+
+  it('corrects the words of the open turn itself when Meet revises them', () => {
+    const feed = new MeetFeed()
+    feed.captions.update(cap({ text: 'ship it friday', isFinal: true }), 1_000)
+    feed.take(1_000)
+    feed.captions.update(cap({ version: 2, text: 'ship it Friday', isFinal: true }), 1_500)
+    expect(feed.revisions()).toEqual([])
+    expect(feed.take(20_000).map((l) => l.text)).toEqual(['ship it Friday'])
   })
 
   it('knows which speakers still have a caption in progress, and since when', () => {
