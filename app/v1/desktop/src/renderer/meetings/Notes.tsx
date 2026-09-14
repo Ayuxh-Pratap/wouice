@@ -31,11 +31,14 @@ export function Notes({
   tasks,
   onTaskState,
   readOnly = false,
+  title = 'Tasks',
 }: {
   markdown: string | null
   tasks: TaskRecord[]
   onTaskState(id: number, state: TaskState): void
   readOnly?: boolean
+  /** What the task list is called where it is shown: "Next steps" under a summary. */
+  title?: string
 }): React.JSX.Element | null {
   // By id, so the open task follows the list when a tick changes it.
   const [openId, setOpenId] = useState<number | null>(null)
@@ -48,7 +51,7 @@ export function Notes({
       {tasks.length > 0 && (
         <section>
           <h3 className="mb-1.5 text-[11px] font-medium tracking-wide text-neutral-500 uppercase">
-            Tasks
+            {title}
           </h3>
           <ul className="space-y-1">
             {tasks.map((task) => (
