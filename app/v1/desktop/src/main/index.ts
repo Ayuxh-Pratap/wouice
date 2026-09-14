@@ -221,6 +221,19 @@ const botCapture: CaptureSink = {
     )
     broadcast(IPC.meetingUpdated, meetingId)
   },
+  revise(meetingId, revision, startedAt) {
+    // Meet rewrote a caption after its line was stored: the stored line takes
+    // Meet's final words, found by when it began.
+    const changed = store.meetings.reviseLine(
+      meetingId,
+      MEET_CAPTIONS_SOURCE,
+      Math.max(0, revision.startedAt - startedAt),
+      revision.from,
+      revision.to
+    )
+    if (changed) broadcast(IPC.meetingUpdated, meetingId)
+    return changed
+  },
   close(meetingId, { endedAt, lines, people }) {
     // The people on the call, spelled by Google: into your vocabulary on their
     // own - the one source trusted enough for that. Never over one you changed
