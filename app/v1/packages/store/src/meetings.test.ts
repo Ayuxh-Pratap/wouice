@@ -32,6 +32,19 @@ const said = (
 
 const mainOf = (id: number): number => meetings.byId(id)!.mainVersionId!
 
+describe('a correction to a stored line', () => {
+  it('changes the words in the line that began then, and nowhere else', () => {
+    // Meeting 18: Meet's first guess "प्लस" was stored, and Meet rewrote it after.
+    const id = meetings.start('/sessions/bot', 1_000)
+    meetings.appendToVersion(id, 'meet-captions', [said('them', 5_000, 'तो मतलब प्लस और'), said('them', 9_000, 'प्लस')])
+    expect(meetings.reviseLine(id, 'meet-captions', 5_000, 'प्लस', 'ऑप्टिमाइज वाली लाइन हटा दो')).toBe(true)
+    expect(meetings.reviseLine(id, 'meet-captions', 7_000, 'प्लस', 'anything')).toBe(false)
+    expect(meetings.reviseLine(id, 'meet-captions', 9_000, 'not there', 'anything')).toBe(false)
+    const version = meetings.versions(id).find((v) => v.source === 'meet-captions')!
+    expect(meetings.segments(id, version.id).map((s) => s.text)).toEqual(['तो मतलब ऑप्टिमाइज वाली लाइन हटा दो और', 'प्लस'])
+  })
+})
+
 describe('the life of a meeting', () => {
   it('exists from the moment recording starts, not when it ends', () => {
     // An hour that never reached a clean stop is exactly the case worth being
