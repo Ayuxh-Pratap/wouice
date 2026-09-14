@@ -11,6 +11,7 @@ const version = (over: Partial<VersionRecord>): VersionRecord => ({
   diagnostics: {},
   segments: 10,
   main: true,
+  summary: null,
   ...over,
 })
 
