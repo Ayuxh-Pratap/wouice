@@ -178,8 +178,25 @@ describe('the gist', () => {
     const many = Array.from({ length: 12 }, (_, i) => point(`Point number ${i} about the registry format`, (i + 1) * 10_000))
     const raw = JSON.stringify({ show: [1, 2, 3, 4, 5], gist: [{ text: 'Point number 8 settles the registry format.', points: [9] }] })
     const { summary } = buildSummary(many, raw)
-    expect(summary.points.map((p) => p.atMs)).toEqual([10_000, 20_000, 30_000, 40_000, 50_000, 90_000])
+    // 11 is the last third's, which nothing picked; 9 is the gist's.
+    expect(summary.points.map((p) => p.atMs)).toEqual([10_000, 20_000, 30_000, 40_000, 50_000, 90_000, 110_000])
     expect(summary.gist).toEqual([{ text: 'Point number 8 settles the registry format.', points: [5] }])
+  })
+
+  it('shows a point from every third of the meeting', () => {
+    // Meeting 20: the five picked were its last five, all after minute 22.
+    const ten = Array.from({ length: 10 }, (_, i) => point(`Point number ${i + 1} about the registry format`, (i + 1) * 60_000))
+    const { summary } = buildSummary(ten, JSON.stringify({ show: [6, 7, 8, 9, 10], gist: [] }))
+    expect(summary.points.map((p) => (p.atMs ?? 0) / 60_000)).toEqual([2, 6, 7, 8, 9, 10])
+  })
+
+  it('keeps every point that held up: those not shown are more points', () => {
+    const every = Array.from({ length: 12 }, (_, i) => point(`Point number ${i} about the registry format`, (i + 1) * 10_000))
+    // The gist is offered some of them; the rest held up too.
+    const offered = every.filter((_, i) => i % 2 === 0)
+    const { summary } = buildSummary(offered, JSON.stringify({ show: [1, 2, 3, 4, 5, 6], gist: [] }), every)
+    expect(summary.points.map((p) => (p.atMs ?? 0) / 10_000)).toEqual([1, 3, 5, 7, 9, 11])
+    expect(summary.more?.map((p) => (p.atMs ?? 0) / 10_000)).toEqual([2, 4, 6, 8, 10, 12])
   })
 
   it('still shows the key points when the gist could not be written', () => {
@@ -214,6 +231,12 @@ describe('the summary written out', () => {
         '- Add search to navigation and highlighting (Himanshu)',
       ].join('\n')
     )
+  })
+
+  it('writes out the points not shown as more points', () => {
+    const at = (text: string, atMs: number) => ({ text, mark: null, segmentIds: [1], quote: '', atMs })
+    const md = summaryMarkdown({ gist: [], points: [at('Costing is about 21,000', 10_000)], more: [at('Search is added to navigation', 40_000)] }, [])
+    expect(md).toContain('## Key points\n- [0:10] Costing is about 21,000\n\n## More points\n- [0:40] Search is added to navigation')
   })
 
   it('says so when nothing held up, and when there is no gist', () => {
