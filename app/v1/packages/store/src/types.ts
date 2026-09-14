@@ -359,6 +359,40 @@ export interface VersionRecord {
   diagnostics: VersionDiagnostics
   segments: number
   main: boolean
+  /** The summary checked against what was said. Null before one was written, or for a summary from before them. */
+  summary: CheckedSummary | null
+}
+
+/** One key point of a meeting, as it was checked against the lines it came from. */
+export interface SummaryPoint {
+  text: string
+  /** "agreed" only when a quoted line agrees; "open" only when one asks. */
+  mark: 'agreed' | 'open' | null
+  /** The lines it came from, in order; the first is where it was said. */
+  segmentIds: number[]
+  quote: string
+  atMs: number | null
+}
+
+/** A meeting's summary, checked against what was said. See docs/design/11-checked-summary.md. */
+export interface CheckedSummary {
+  /** Two or three sentences, each naming the key points it rests on (indexes into `points`). Empty when it could not be written. */
+  gist: { text: string; points: number[] }[]
+  /** The key points shown, in the order they came up. */
+  points: SummaryPoint[]
+}
+
+/** What a summary came to: points found, kept (and why not), shown; gist sentences kept of written. */
+export interface SummaryStats {
+  found: number
+  kept: number
+  /** The quote was not in the lines it named. */
+  badQuote: number
+  /** The quote was, but the point did not say what those lines say. */
+  offTopic: number
+  shown: number
+  gistKept: number
+  gistWritten: number
 }
 
 export interface SegmentInput {
@@ -565,6 +599,8 @@ export interface MeetingDiagnostics {
     rejected?: number
     /** The vocabulary entries sent with the notes' requests. */
     vocabulary?: string[]
+    /** The checked summary: what its points and gist came to. */
+    summary?: SummaryStats
   }[]
   [key: string]: unknown
 }
