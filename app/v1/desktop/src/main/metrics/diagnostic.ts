@@ -339,6 +339,13 @@ function formatNotesRuns(runs: NonNullable<MeetingDiagnostics['notes']>, lines: 
     if (run.vocabulary) {
       lines.push(`      vocab     ${run.vocabulary.length === 0 ? 'none sent' : run.vocabulary.join(', ')}`)
     }
+    if (run.summary) {
+      const s = run.summary
+      lines.push(
+        `      summary   ${s.found} points found, ${s.kept} kept (${s.badQuote} quotes not in their lines, ` +
+          `${s.offTopic} not saying what their lines say), ${s.shown} shown; gist ${s.gistKept} of ${s.gistWritten} sentences`
+      )
+    }
   }
   if (runs.length === 0) lines.push('  (never run)')
 }
