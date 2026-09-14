@@ -152,7 +152,9 @@ describe('the vocabulary', () => {
     const file = path.join(dir, 'wouice.db')
     const first = openDb({ file })
     // As a database at the version before this one, with a dictionary in it.
-    first.raw.exec('DROP TABLE vocabulary_suggestions; DROP TABLE vocabulary_seen; DROP TABLE vocabulary; PRAGMA user_version = 11')
+    first.raw.exec(
+      'ALTER TABLE meeting_versions DROP COLUMN summary; DROP TABLE vocabulary_suggestions; DROP TABLE vocabulary_seen; DROP TABLE vocabulary; PRAGMA user_version = 11'
+    )
     const add = first.raw.prepare('INSERT INTO dictionary (kind, hear, write, enabled, hits, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     add.run('correction', 'cloud code', 'Claude Code', 1, 4, 100)
     add.run('correction', 'claud code', 'Claude Code', 1, 1, 200)
