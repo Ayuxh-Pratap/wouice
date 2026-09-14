@@ -543,6 +543,17 @@ export const MIGRATIONS: Migration[] = [
       CREATE UNIQUE INDEX vocabulary_suggestions_by_key ON vocabulary_suggestions (type, lower(term), lower(heard));
     `,
   },
+  {
+    id: 14,
+    name: 'a summary checked against what was said',
+    sql: `
+      -- The summary as data: the gist, and each key point with the lines it came
+      -- from, so the page can take you to them. JSON. notes_md still holds the
+      -- same written out, for everything that reads a summary as text. Null for
+      -- a summary written before this. See docs/design/11-checked-summary.md.
+      ALTER TABLE meeting_versions ADD COLUMN summary TEXT;
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */
