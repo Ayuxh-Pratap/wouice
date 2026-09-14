@@ -14,6 +14,7 @@ import type {
   TaskState,
   VersionDiagnostics,
   VersionRecord,
+  CheckedSummary,
 } from './types.js'
 
 /**
@@ -66,6 +67,7 @@ interface VersionRow {
   diagnostics: string
   segments: number
   main: number
+  summary: string | null
 }
 
 interface SegmentRow {
@@ -123,6 +125,18 @@ function toVersion(r: VersionRow): VersionRecord {
     diagnostics: readJson<VersionDiagnostics>(r.diagnostics),
     segments: r.segments,
     main: r.main === 1,
+    summary: readSummary(r.summary),
+  }
+}
+
+/** A stored checked summary, or null when there is none or it cannot be read. */
+function readSummary(raw: string | null | undefined): CheckedSummary | null {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as CheckedSummary
+    return Array.isArray(parsed?.points) && Array.isArray(parsed?.gist) ? parsed : null
+  } catch {
+    return null
   }
 }
 
@@ -369,7 +383,7 @@ export class Meetings {
         this.db.raw.prepare('DELETE FROM segments WHERE version_id = ?').run(versionId)
         this.db.raw
           .prepare(
-            `UPDATE meeting_versions SET created_at = ?, notes_md = NULL, diagnostics = '{}'
+            `UPDATE meeting_versions SET created_at = ?, notes_md = NULL, summary = NULL, diagnostics = '{}'
              WHERE id = ?`
           )
           .run(at, versionId)
@@ -505,6 +519,13 @@ export class Meetings {
 
   setScratch(id: number, markdown: string): void {
     this.db.raw.prepare('UPDATE meetings SET scratch_md = ? WHERE id = ?').run(markdown, id)
+  }
+
+  /** The checked summary of one version's transcript, as data. See `CheckedSummary`. */
+  setVersionSummary(versionId: number, summary: CheckedSummary | null): void {
+    this.db.raw
+      .prepare('UPDATE meeting_versions SET summary = ? WHERE id = ?')
+      .run(summary === null ? null : JSON.stringify(summary), versionId)
   }
 
   /** The summary written from one version's transcript. */
