@@ -15,6 +15,7 @@ import { leftLabel, useEngine } from '../shell/engine.js'
 import { isImproved, mainVersion, versionLabel, visibleVersions } from '../meetings/versions.js'
 import { botIsIn, useBotRun, useNow } from '../meetings/bot-run.js'
 import { Notes } from '../meetings/Notes.js'
+import { Summary } from '../meetings/Summary.js'
 import { Transcript } from '../meetings/Transcript.js'
 import { Icon } from '../shell/Icon.js'
 import { Tabs } from '../shell/Tabs.js'
@@ -59,6 +60,8 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
   const [problem, setProblem] = useState('')
   const [copied, setCopied] = useState(false)
   const [tab, setTab] = useState<MeetingTab | null>(null)
+  // The line a key point of the summary was tapped for: shown on the Transcript tab.
+  const [focus, setFocus] = useState<{ id: number } | null>(null)
   const [taskFilter, setTaskFilter] = useState<'all' | 'mine' | 'area'>('all')
   const [myArea, setMyArea] = useState<TaskArea>('frontend')
   /** Which version is on screen. Null follows the main one, including when it changes. */
@@ -494,7 +497,19 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
         {shown === 'summary' && version ? <Coverage version={version} /> : null}
 
         {shown === 'summary' ? (
-          notesMd ? (
+          // The checked summary where there is one; a summary from before them as it was written.
+          version?.summary && notesMd ? (
+            <Summary
+              summary={version.summary}
+              tasks={listed}
+              onTaskState={changeTask}
+              readOnly={!onMain}
+              onJump={(id) => {
+                setTab('transcript')
+                setFocus({ id })
+              }}
+            />
+          ) : notesMd ? (
             <Notes markdown={notesMd} tasks={[]} onTaskState={changeTask} />
           ) : (
             <Empty
@@ -606,6 +621,7 @@ export function MeetingPage({ meetingId }: { meetingId: number }): React.JSX.Ele
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
               <Transcript
                 segments={segments}
+                focus={focus}
                 english={english && kind.translate}
                 awaitingEnglish={live || inCall || englishPending}
                 emptyMessage={
