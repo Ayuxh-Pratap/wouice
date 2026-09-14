@@ -1,19 +1,21 @@
 import {
   estimateTokens,
-  MEETING_CHUNK_SYSTEM,
-  MEETING_NOTES_SYSTEM,
+  MEETING_GIST_SYSTEM,
+  MEETING_POINTS_SYSTEM,
   MEETING_NOTES_TASKS_SYSTEM,
   MEETING_TASK_PLACE_SYSTEM,
   MEETING_TASK_WRITEUP_SYSTEM,
   MEETING_WORK_ITEMS_SYSTEM,
   type LlmClient,
 } from '@wouice/llm'
+import type { CheckedSummary, SummaryStats } from '@wouice/store'
 import {
   allFailed,
-  assembleCondensed,
+  buildSummary,
   chunkTranscript,
   contentWords,
-  dropRepeatedLines,
+  dedupePoints,
+  gistInput,
   glossaryOf,
   glossaryReference,
   isMine,
@@ -21,19 +23,21 @@ import {
   keepEnds,
   linesFor,
   mergeOverlapping,
+  offerPoints,
   parseNoteTasks,
+  parsePoints,
   parsePlacement,
   parseWorkItems,
   parseWriteUp,
   placeByWording,
   placeInput,
   placeItem,
-  reduceInput,
   renderChunk,
   renderLine,
   resolveOwner,
   committedOwner,
   sameTitle,
+  summaryMarkdown,
   writeUpInput,
   type Chunk,
   type ChunkOutcome,
@@ -41,6 +45,7 @@ import {
   type Evidence,
   type Group,
   type Job,
+  type KeyPoint,
   type ParsedTask,
   type TranscriptLine,
   type WorkItem,
@@ -104,6 +109,9 @@ export interface NotesRun {
   ms: number
   /** Why a part could not be read, when one could not: the last failed request's reason. */
   failure?: string
+  /** The summary checked against what was said; `notesMd` is the same written out. */
+  summary: CheckedSummary
+  summaryStats: SummaryStats
 }
 
 export interface NotesInput {
@@ -132,11 +140,12 @@ const MAX_ITEMS_TOKENS = 1100
 /** One small JSON answer: which job, and how. */
 const MAX_PLACE_TOKENS = 40
 const MAX_WRITEUP_TOKENS = 450
-const MAX_NOTES_TOKENS = 900
+/** Ten key points at most, each a sentence with its lines and a quote. */
+const MAX_POINTS_TOKENS = 1000
+/** Which points to show, and two or three sentences. */
+const MAX_GIST_TOKENS = 500
 /** Headroom for chat-template tokens the prompt text does not show. */
 const SAFETY_MARGIN = 150
-/** How many times condensed output may be condensed again before giving up. */
-const MAX_FOLDS = 2
 /** Generous: this is a backstop for a stopped model, not a prediction. */
 const STALL_MS = 20_000
 /**
@@ -184,7 +193,7 @@ export class MeetingNotesEngine {
     const reserved =
       referenceCost +
       Math.max(
-        (await this.count(MEETING_CHUNK_SYSTEM)) + MAX_CHUNK_TOKENS,
+        (await this.count(MEETING_POINTS_SYSTEM)) + MAX_POINTS_TOKENS,
         (await this.count(MEETING_WORK_ITEMS_SYSTEM)) + 24 + MAX_ITEMS_TOKENS
       )
     const budget = CONTEXT_TOKENS - reserved - SAFETY_MARGIN
@@ -194,6 +203,8 @@ export class MeetingNotesEngine {
 
     const outcomes: ChunkOutcome[] = []
     const found: WorkItem[] = []
+    const points: KeyPoint[] = []
+    const tally = { found: 0, badQuote: 0, offTopic: 0 }
     let dropped = 0
     const date = new Date(input.startedAt).toISOString().slice(0, 10)
 
@@ -201,10 +212,19 @@ export class MeetingNotesEngine {
       input.signal?.throwIfAborted()
       const rendered = renderChunk(chunk)
 
+      // This part's key points, each with the lines it came from - kept only
+      // when those lines say it. See `parsePoints`.
       input.onProgress?.({ stage: 'condensing', chunk: index + 1, chunks: chunks.length })
       const reference = referenceFor(rendered)
-      const condensed = await this.tryComplete(MEETING_CHUNK_SYSTEM, reference + rendered, MAX_CHUNK_TOKENS, input.signal)
-      outcomes.push({ chunk, text: condensed === null ? null : dropRepeatedLines(condensed).text })
+      const said = await this.tryComplete(MEETING_POINTS_SYSTEM, reference + rendered, MAX_POINTS_TOKENS, input.signal)
+      outcomes.push({ chunk, text: said })
+      if (said !== null) {
+        const checked = parsePoints(said, chunk.lines)
+        points.push(...checked.points)
+        tally.found += checked.found
+        tally.badQuote += checked.badQuote
+        tally.offTopic += checked.offTopic
+      }
 
       input.onProgress?.({ stage: 'extracting', chunk: index + 1, chunks: chunks.length })
       const raw = await this.tryComplete(
@@ -229,35 +249,38 @@ export class MeetingNotesEngine {
     found.push(...(await this.fromNotes(input, date)))
     const built = await this.buildTasks(found, usable, input, date)
 
-    // The reduce step has to fit too: its own prompt, the person's notes and
-    // room for the answer come out of the same 4096.
-    const reduceTarget =
-      CONTEXT_TOKENS -
-      (await this.count(MEETING_NOTES_SYSTEM)) -
-      (await this.count(input.scratch)) -
-      referenceCost -
-      MAX_NOTES_TOKENS -
-      SAFETY_MARGIN -
-      40
-    const condensed = await this.fold(assembleCondensed(outcomes), reduceTarget, input)
-
-    input.onProgress?.({ stage: 'writing', chunk: 0, chunks: chunks.length })
-    const notes = await this.tryComplete(
-      MEETING_NOTES_SYSTEM,
-      reduceInput(condensed, input.scratch, new Date(input.startedAt), glossaryOf(input.glossary, condensed)),
-      MAX_NOTES_TOKENS,
-      input.signal
-    )
-    if (notes === null || !notes.trim()) {
-      throw new NotesUnavailable(this.explain('the model could not write the final notes'))
+    // The gist, from the points that held up and nothing else: the model picks
+    // which to show and writes two or three sentences, each naming the points
+    // it rests on, and code keeps only what it can check. No gist is not a
+    // failure - the key points still show. See `buildSummary`.
+    const kept = dedupePoints(points)
+    const offered = offerPoints(kept)
+    let gist: string | null = null
+    if (offered.length > 0) {
+      input.onProgress?.({ stage: 'writing', chunk: 0, chunks: chunks.length })
+      const listed = gistInput(offered, input.scratch, new Date(input.startedAt))
+      gist = await this.tryComplete(
+        MEETING_GIST_SYSTEM,
+        glossaryReference(glossaryOf(input.glossary, listed)) + listed,
+        MAX_GIST_TOKENS,
+        input.signal
+      )
     }
-    // A loop in the answer is cut back to each line once. See `dropRepeatedLines`.
-    const tidy = dropRepeatedLines(notes)
-    if (tidy.dropped > 0) console.warn(`[meeting] notes repeated ${tidy.dropped} line(s); kept each once`)
+    const { summary, gistWritten } = buildSummary(offered, gist)
 
     const failed = outcomes.filter((o) => o.text === null)
     return {
-      notesMd: tidy.text.trim(),
+      notesMd: summaryMarkdown(summary, built.tasks),
+      summary,
+      summaryStats: {
+        found: tally.found,
+        kept: kept.length,
+        badQuote: tally.badQuote,
+        offTopic: tally.offTopic,
+        shown: summary.points.length,
+        gistKept: summary.gist.length,
+        gistWritten,
+      },
       tasks: built.tasks,
       chunks: chunks.length,
       failedChunks: failed.length,
@@ -436,36 +459,6 @@ export class MeetingNotesEngine {
     return jobGroups(jobs, found)
   }
 
-  /**
-   * Condense the condensed notes, when there are too many of them.
-   *
-   * A one hour meeting fits the reduce step comfortably once each chunk is
-   * condensed. A three hour one does not, and without this the reduce call
-   * would silently lose whatever did not fit - the exact failure map-reduce
-   * exists to prevent, reappearing one level up.
-   */
-  private async fold(condensed: string, target: number, input: NotesInput): Promise<string> {
-    let text = condensed
-    for (let depth = 0; depth < MAX_FOLDS; depth++) {
-      if ((await this.count(text)) <= target) return text
-      const parts = splitParagraphs(text, Math.floor(target / 1.2))
-      const folded: string[] = []
-      for (const part of parts) {
-        input.signal?.throwIfAborted()
-        const result = await this.tryComplete(MEETING_CHUNK_SYSTEM, part, MAX_CHUNK_TOKENS, input.signal)
-        folded.push(result ?? part)
-      }
-      text = folded.join('\n\n')
-    }
-    // Still too long after folding twice. Truncating is a visible loss and the
-    // alternative is an invisible one.
-    if ((await this.count(text)) > target) {
-      const keep = Math.floor(target * 2.5)
-      return `${text.slice(0, keep)}\n\n_[the rest could not be condensed enough to fit; read the transcript]_`
-    }
-    return text
-  }
-
   private async count(text: string): Promise<number> {
     if (!text) return 0
     const real = this.countTokens ? await this.countTokens(text) : null
@@ -594,27 +587,6 @@ function foldSameTitles(
 
 function padded(text: string): number {
   return Math.ceil(estimateTokens(text) * FALLBACK_FACTOR)
-}
-
-/** Split on blank lines, filling to a token budget. Never mid-paragraph. */
-function splitParagraphs(text: string, budget: number): string[] {
-  const paragraphs = text.split(/\n{2,}/).filter((p) => p.trim())
-  const parts: string[] = []
-  let current: string[] = []
-  let tokens = 0
-
-  for (const paragraph of paragraphs) {
-    const cost = padded(paragraph)
-    if (current.length > 0 && tokens + cost > budget) {
-      parts.push(current.join('\n\n'))
-      current = []
-      tokens = 0
-    }
-    current.push(paragraph)
-    tokens += cost
-  }
-  if (current.length > 0) parts.push(current.join('\n\n'))
-  return parts
 }
 
 export type { Chunk, ParsedTask, TranscriptLine }
