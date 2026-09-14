@@ -6,6 +6,7 @@ import {
   type TaskArea,
   type TaskKind,
   type TaskStatus,
+  type CheckedSummary,
 } from '@wouice/store'
 
 /**
@@ -977,6 +978,338 @@ export function committedOwner(
     who.add(line.channel === 'me' ? 'You' : (line.speaker ?? 'Them'))
   }
   return who.size === 1 ? [...who][0]! : null
+}
+
+/* ------------------------------------------------------------ the gist ---- */
+
+/**
+ * A key point of the meeting, checked against the lines it came from. See
+ * docs/design/11-checked-summary.md.
+ */
+export interface KeyPoint {
+  text: string
+  mark: 'agreed' | 'open' | null
+  /** The lines it came from, in order; the first is where it was said. */
+  segmentIds: number[]
+  quote: string
+  atMs: number
+  /** Who said its first line, as the transcript names them. */
+  who: string
+}
+
+/** What one part's points came to: those that held up, and why the rest did not. */
+export interface PointsFound {
+  points: KeyPoint[]
+  found: number
+  /** The quote was not in the lines it named. */
+  badQuote: number
+  /** The quote was, but the point did not say what those lines say. */
+  offTopic: number
+}
+
+/**
+ * A line that agrees, in English and in the Hindi Meet's captions write. Not
+ * "ok", "yes", "done" or "ठीक है" alone: in these calls they are filler, and
+ * "it's done, the song type is done" was marked agreed on the strength of it.
+ */
+const AGREEING = [
+  /\b(?:let'?s (?:do|go with|keep|build|make|ship|use|go ahead)|agreed|decided|we(?:'ll| will) go with|finali[sz]ed?|that'?s final|settled)\b/i,
+  /(?:ऐसे|यही|वही) (?:ही )?(?:करते हैं|कर लेते हैं|करेंगे|रखते हैं)|कर लेते हैं|फाइनल|तय (?:हुआ|है|कर)|डन है/u,
+]
+/**
+ * A line that asks: a question mark, which the English puts on a question, or
+ * "why" and "how" in Hindi. Not "who" or "what" alone - "those who are
+ * listening" is not a question.
+ */
+const ASKING = [/\?/, /क्यों|कैसे/u]
+/** Words a point and its lines must share: a real quote cannot carry an invented claim. */
+const MIN_SHARED = 2
+/** A point's lines kept for the jump and the record. */
+const MAX_POINT_LINES = 6
+
+/** Content words, with a number's commas gone: "21,000" and "21000" are one number. */
+function pointWords(text: string): Set<string> {
+  return contentWords(text.replace(/(\d),(?=\d)/g, '$1'))
+}
+
+function shared(a: Set<string>, b: Set<string>): number {
+  let n = 0
+  for (const word of a) if (b.has(word)) n++
+  return n
+}
+
+/**
+ * One part's key points, kept only when they hold up: the quote is in the lines
+ * the point names (the check tasks pass, `quoteSpan`), and the point shares at
+ * least two content words with those lines. "agreed" stays only when one of the
+ * lines agrees, "open" only when one asks; otherwise the mark goes and the
+ * point stays. Only this part's lines count: it can only quote what it was shown.
+ */
+export function parsePoints(raw: string, lines: readonly TranscriptLine[]): PointsFound {
+  const byId = new Map(lines.map((l) => [l.id, l]))
+  const position = new Map(lines.map((l, i) => [l.id, i]))
+  const out: PointsFound = { points: [], found: 0, badQuote: 0, offTopic: 0 }
+  for (const row of raw.split(/\r?\n/)) {
+    const json = /\{.*\}/.exec(row)?.[0]
+    if (!json) continue
+    let item: Record<string, unknown>
+    try {
+      item = JSON.parse(json) as Record<string, unknown>
+    } catch {
+      continue
+    }
+    const text = typeof item.point === 'string' ? item.point.trim() : ''
+    if (!text) continue
+    out.found++
+    const cited = Array.isArray(item.lines) ? item.lines.map(Number).filter((n) => byId.has(n)) : []
+    const quote = typeof item.quote === 'string' ? item.quote.trim() : ''
+    const span = quoteSpan(quote, lines, cited)
+    if (!span || span.length === 0) {
+      out.badQuote++
+      continue
+    }
+    const ids = [...new Set([...span, ...cited])]
+      .sort((a, b) => position.get(a)! - position.get(b)!)
+      .slice(0, MAX_POINT_LINES)
+    const said = ids.map((id) => byId.get(id)!.text)
+    if (shared(pointWords(text), pointWords(said.join(' '))) < MIN_SHARED) {
+      out.offTopic++
+      continue
+    }
+    const wanted = item.mark === 'agreed' ? 'agreed' : item.mark === 'open' ? 'open' : null
+    const shows = wanted === 'agreed' ? AGREEING : wanted === 'open' ? ASKING : null
+    const mark = shows && said.some((line) => shows.some((re) => re.test(line))) ? wanted : null
+    const first = byId.get(span[0]!)!
+    out.points.push({
+      text,
+      mark,
+      segmentIds: ids,
+      quote,
+      atMs: first.startMs,
+      who: first.channel === 'me' ? 'You' : (first.speaker ?? 'Them'),
+    })
+  }
+  return out
+}
+
+/** Two points this alike are one said twice. */
+const SAME_POINT = 0.6
+
+/** The same point from two parts, or said twice: kept once, the earliest. In the order said. */
+export function dedupePoints(points: readonly KeyPoint[]): KeyPoint[] {
+  const kept: KeyPoint[] = []
+  for (const point of [...points].sort((a, b) => a.atMs - b.atMs)) {
+    if (kept.some((k) => similarity(k.text, point.text) >= SAME_POINT)) continue
+    kept.push(point)
+  }
+  return kept
+}
+
+/** Points a long meeting offers the gist, at most: spread over the whole call, still in order. */
+export const MAX_OFFERED = 40
+
+/**
+ * `k` of these, spread evenly from first to last: a choice made without the
+ * model covers the whole call, not the stretch with the most marks in it.
+ */
+function spread<T>(items: readonly T[], k: number): T[] {
+  if (k >= items.length) return [...items]
+  if (k <= 0) return []
+  if (k === 1) return [items[Math.floor(items.length / 2)]!]
+  return Array.from({ length: k }, (_, i) => items[Math.round((i * (items.length - 1)) / (k - 1))]!)
+}
+
+export function offerPoints(points: readonly KeyPoint[]): KeyPoint[] {
+  return spread(points, MAX_OFFERED)
+}
+
+/** What the gist is written from: the points, numbered, with time and speaker, and your notes. */
+export function gistInput(points: readonly KeyPoint[], scratch: string, when: Date): string {
+  const listed = points.map(
+    (p, i) =>
+      `${i + 1}. [${stamp(p.atMs)}] ${p.who}: ${p.text}` +
+      (p.mark === 'agreed' ? ' (agreed)' : p.mark === 'open' ? ' (open question)' : '')
+  )
+  const notes = scratch.trim() ? `\n\nThe person's own notes, typed during the meeting:\n${scratch.trim()}` : ''
+  return `Meeting date: ${when.toISOString().slice(0, 10)}\n\nKey points:\n${listed.join('\n')}${notes}`
+}
+
+/** Key points shown: at least this many when there are, and never more than the most. */
+const SHOW = { least: 5, most: 8 }
+const MAX_GIST_SENTENCES = 3
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
+
+/** "[1, 3]" written into a sentence: the points it rests on. */
+const CITED = /\s*\[(\d+(?:\s*,\s*\d+)*)\]/g
+/** A sentence that says something was agreed or decided. */
+const SAYS_AGREED = /\b(?:agree(?:s|d|ing|ment)?|decid(?:e|ed|es|ing)|decisions?|settled|finali[sz]ed?)\b/i
+/**
+ * A text's capitalised words, lower-cased; with `opening` false, not the one a
+ * sentence starts with, which is capitalised whatever it is.
+ */
+const capitalised = (text: string, opening: boolean): string[] =>
+  [...text.matchAll(opening ? /\b[A-Z][a-z]{2,}\b/g : /(?<!^|[.!?:]\s)\b[A-Z][a-z]{2,}\b/g)].map((m) => m[0].toLowerCase())
+
+/** The numbers in a text, commas gone: "21,000" is 21000. */
+const numbersIn = (text: string): string[] => text.replace(/(\d),(?=\d)/g, '$1').match(/\d+(?:\.\d+)?/g) ?? []
+
+/** A gist sentence as written, with the points it names; null when it names none. */
+interface Proposed {
+  text: string
+  points: number[] | null
+}
+
+/**
+ * The gist's sentences, however it wrote them: the list of `{text, points}`
+ * asked for, or one paragraph (Qwen3.5 writes that), or a list of strings. In a
+ * paragraph, "[1, 3]" after a sentence (Gemma writes that) is the points it
+ * rests on.
+ */
+function gistSentences(gist: unknown): Proposed[] {
+  const out: Proposed[] = []
+  const paragraph = (text: string): void => {
+    for (const piece of text.split(/(?<=[.!?])\s+/)) {
+      const cited = [...piece.matchAll(CITED)].flatMap((m) => m[1]!.split(',').map(Number))
+      const clean = piece.replace(CITED, '').trim()
+      if (clean) out.push({ text: clean, points: cited.length > 0 ? cited : null })
+    }
+  }
+  if (typeof gist === 'string') paragraph(gist)
+  else if (Array.isArray(gist)) {
+    for (const s of gist) {
+      if (typeof s === 'string') paragraph(s)
+      else if (isObject(s) && typeof s.text === 'string' && s.text.trim()) {
+        out.push({ text: s.text.replace(CITED, '').trim(), points: Array.isArray(s.points) ? s.points.map(Number) : null })
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * The summary from the gist's answer, kept to what it can check: shown points
+ * are points it was offered (unknown numbers ignored; too few picked, the rest
+ * spread over the call). A gist sentence stays only when it rests on points -
+ * the ones it names, or those it shares two content words with - and shares at
+ * least two content words with them; gives no number the points do not; and
+ * says something was agreed only of a point marked agreed. A point it rests on
+ * is shown, room allowing. No answer at all, and the key points still show -
+ * no gist, never an unchecked one.
+ */
+export function buildSummary(
+  points: readonly KeyPoint[],
+  raw: string | null
+): { summary: CheckedSummary; gistWritten: number } {
+  let picked: number[] = []
+  let proposed: Proposed[] = []
+  const json = raw ? /\{[\s\S]*\}/.exec(raw)?.[0] : undefined
+  if (json) {
+    try {
+      const parsed = JSON.parse(json) as Record<string, unknown>
+      if (Array.isArray(parsed.show)) {
+        picked = [...new Set(parsed.show.map(Number))].filter((n) => Number.isInteger(n) && n >= 1 && n <= points.length)
+      }
+      proposed = gistSentences(parsed.gist)
+    } catch {
+      // Unreadable: no picks and no gist, and the fallbacks below.
+    }
+  }
+
+  // More picked than can show: a spread of them, not the first - meeting 11's
+  // first eight of seventeen all came from its first 26 minutes.
+  const chosen = new Set(spread([...picked].sort((a, b) => a - b), SHOW.most))
+  const want = Math.min(SHOW.least, points.length)
+  if (chosen.size < want) {
+    const rest = points.map((_, i) => i + 1).filter((n) => !chosen.has(n))
+    for (const n of spread(rest, want - chosen.size)) chosen.add(n)
+  }
+
+  // The names the points use: who said each, and their capitalised words -
+  // the first too, "Swapnil should be told", when it is not filler.
+  const known = new Set(points.flatMap((p) => [p.who.toLowerCase(), ...capitalised(p.text, true).filter((w) => !FILLER.has(w))]))
+  const kept: { text: string; points: number[] }[] = []
+  for (const sentence of proposed) {
+    if (kept.length >= MAX_GIST_SENTENCES) break
+    const words = pointWords(sentence.text)
+    const overlap = (n: number): number => shared(words, pointWords(points[n - 1]!.text))
+    // The points it rests on: those it shares two content words with, of the
+    // ones it names - or, naming none, of those shown - else the closest of
+    // all. A named point sharing less is not one it rests on: "Swapnil will
+    // receive the registry" named "Swapnil should be told" for the name alone.
+    const near = points.map((_, i) => i + 1).filter((n) => overlap(n) >= MIN_SHARED)
+    const cites = sentence.points ?? [...chosen]
+    let rests = near.filter((n) => cites.includes(n))
+    if (rests.length === 0) rests = near.sort((a, b) => overlap(b) - overlap(a)).slice(0, 1)
+    rests = rests.filter((n) => {
+      if (chosen.has(n)) return true
+      if (chosen.size >= SHOW.most) return false
+      chosen.add(n)
+      return true
+    })
+    if (rests.length === 0) continue
+    const basis = rests.map((n) => points[n - 1]!)
+    // A number it gives is one its points give: "23,000" worked out from
+    // 14,000 plus 9,000 was not said, and "around 98" from a point it does not
+    // rest on rode in on one about follow-up questions.
+    const given = new Set(numbersIn(basis.map((p) => p.text).join(' ')))
+    if (numbersIn(sentence.text).some((n) => !given.has(n))) continue
+    if (SAYS_AGREED.test(sentence.text) && !basis.some((p) => p.mark === 'agreed')) continue
+    // A name it gives is in the points it rests on. "Swapnil will receive the
+    // registry" rested on "You will send a registry": the name was the model's.
+    const named = basis.map((p) => `${p.who} ${p.text}`).join(' ').toLowerCase()
+    const names = [...capitalised(sentence.text, false), ...capitalised(sentence.text, true).filter((w) => known.has(w))]
+    if (names.some((name) => !named.includes(name))) continue
+    kept.push({ text: sentence.text, points: rests })
+  }
+
+  // In the order they were said.
+  const shown = [...chosen].sort((a, b) => a - b)
+  const indexOf = new Map(shown.map((n, i) => [n, i]))
+  const gist: CheckedSummary['gist'] = kept.map((s) => ({
+    text: s.text,
+    points: s.points.map((n) => indexOf.get(n)!).sort((a, b) => a - b),
+  }))
+
+  return {
+    summary: {
+      gist,
+      points: shown.map((n) => {
+        const p = points[n - 1]!
+        return { text: p.text, mark: p.mark, segmentIds: p.segmentIds, quote: p.quote, atMs: p.atMs }
+      }),
+    },
+    gistWritten: proposed.length,
+  }
+}
+
+/**
+ * The summary written out as markdown, for everything that reads a summary as
+ * text: In short, Key points (time, mark, point), Next steps (the tasks).
+ */
+export function summaryMarkdown(
+  summary: CheckedSummary,
+  tasks: readonly { text: string; owner: string | null }[]
+): string {
+  const out = ['## In short']
+  out.push(
+    summary.points.length === 0
+      ? 'Nothing in this meeting held up as a key point.'
+      : summary.gist.length > 0
+        ? summary.gist.map((s) => s.text).join(' ')
+        : '_The gist could not be written; the key points below are checked._'
+  )
+  if (summary.points.length > 0) {
+    out.push('', '## Key points')
+    for (const p of summary.points) {
+      out.push(`- ${p.atMs === null ? '' : `[${stamp(p.atMs)}] `}${p.mark ? `(${p.mark}) ` : ''}${p.text}`)
+    }
+  }
+  if (tasks.length > 0) {
+    out.push('', '## Next steps')
+    for (const t of tasks) out.push(`- ${t.text}${t.owner ? ` (${t.owner})` : ''}`)
+  }
+  return out.join('\n')
 }
 
 /* ----------------------------------------------------- the same task ---- */
