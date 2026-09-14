@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import type { MeetingSegment } from '../../shared/ipc.js'
 import { needsEnglish } from './english.js'
 
@@ -21,6 +22,7 @@ export function Transcript({
   highlight = '',
   english = false,
   awaitingEnglish = false,
+  focus = null,
 }: {
   segments: MeetingSegment[]
   emptyMessage?: string
@@ -32,7 +34,17 @@ export function Transcript({
    * being written now - so a line without it is not "not rendered", only early.
    */
   awaitingEnglish?: boolean
+  /**
+   * A line to bring into view and mark: where a key point of the summary came
+   * from. A new object each time, so the same line can be asked for twice.
+   */
+  focus?: { id: number } | null
 }): React.JSX.Element {
+  useEffect(() => {
+    if (!focus) return
+    document.getElementById(`line-${focus.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [focus])
+
   if (segments.length === 0) {
     return <p className="px-1 py-6 text-center text-[12px] text-neutral-600">{emptyMessage}</p>
   }
@@ -40,7 +52,14 @@ export function Transcript({
   return (
     <ol className="space-y-2">
       {segments.map((segment) => (
-        <li key={segment.id} className="flex gap-2.5">
+        <li
+          key={segment.id}
+          id={`line-${segment.id}`}
+          className={
+            'flex gap-2.5 rounded-md transition ' +
+            (focus?.id === segment.id ? '-mx-1.5 bg-amber-400/[0.07] px-1.5 py-1 ring-1 ring-amber-400/25' : '')
+          }
+        >
           <span className="w-11 shrink-0 pt-px text-right font-mono text-[10.5px] tabular-nums text-neutral-600">
             {formatStamp(segment.startMs)}
           </span>
