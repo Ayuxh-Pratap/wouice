@@ -266,7 +266,7 @@ export class MeetingNotesEngine {
         input.signal
       )
     }
-    const { summary, gistWritten } = buildSummary(offered, gist)
+    const { summary, gistWritten } = buildSummary(offered, gist, kept)
 
     const failed = outcomes.filter((o) => o.text === null)
     return {
