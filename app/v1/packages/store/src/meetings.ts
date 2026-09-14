@@ -561,6 +561,28 @@ export class Meetings {
     })
   }
 
+  /**
+   * One correction to a stored line: `from` becomes `to` in the line of this
+   * version that starts at `startMs`. For the bot, when Meet rewrites a caption
+   * after its line was stored. True when a line was changed.
+   */
+  reviseLine(meetingId: number, source: string, startMs: number, from: string, to: string): boolean {
+    const found = row<{ id: number; text: string }>(
+      this.db.raw
+        .prepare(
+          `SELECT s.id, s.text FROM segments s JOIN meeting_versions v ON v.id = s.version_id
+           WHERE s.meeting_id = ? AND v.source = ? AND s.start_ms = ? AND instr(s.text, ?) > 0
+           ORDER BY s.id LIMIT 1`
+        )
+        .get(meetingId, source, startMs, from)
+    )
+    if (!found) return false
+    const at = found.text.indexOf(from)
+    const text = `${found.text.slice(0, at)}${to}${found.text.slice(at + from.length)}`.replace(/\s+/g, ' ').trim()
+    this.db.raw.prepare('UPDATE segments SET text = ? WHERE id = ?').run(text, found.id)
+    return true
+  }
+
   setTitle(id: number, title: string): void {
     this.db.raw.prepare('UPDATE meetings SET title = ? WHERE id = ?').run(title, id)
   }
