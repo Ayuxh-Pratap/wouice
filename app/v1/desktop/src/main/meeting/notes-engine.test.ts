@@ -47,8 +47,8 @@ const transcript = [
 
 /** Which system prompt a request was for. */
 const stageOf = (req: LlmRequest): string =>
-  req.system.startsWith('You are condensing')
-    ? 'condense'
+  req.system.startsWith('You pick out the key points')
+    ? 'points'
     : req.system.startsWith('You read part of a meeting')
       ? 'items'
       : req.system.startsWith('You are sorting work items')
@@ -57,7 +57,20 @@ const stageOf = (req: LlmRequest): string =>
           ? 'writeup'
           : req.system.startsWith('You read the notes')
             ? 'notesTasks'
-            : 'notes'
+            : req.system.startsWith('You write the gist')
+              ? 'gist'
+              : 'other'
+
+const keyPoint = JSON.stringify({
+  point: 'The carousel capitalization is still not fixed',
+  lines: [1],
+  quote: 'fixed the capitalization stuff in the carousel',
+  mark: '',
+})
+const theGist = JSON.stringify({
+  show: [1],
+  gist: [{ text: 'The carousel capitalization is still not fixed, and it is being done now.', points: [1] }],
+})
 
 const carousel = JSON.stringify({
   title: 'Fix capitalization in the carousel',
@@ -87,24 +100,28 @@ const answering =
   (req: LlmRequest): string => {
     const stage = stageOf(req)
     if (stage in over) return over[stage]!
-    if (stage === 'condense') return '- carousel capitalization still broken'
+    if (stage === 'points') return keyPoint
     if (stage === 'items') return carousel
     if (stage === 'writeup') return writeUp()
     if (stage === 'notesTasks') return ''
-    return '## Summary\nThe carousel is being fixed.'
+    if (stage === 'gist') return theGist
+    return ''
   }
 
 const run = (client: () => LlmClient, over: Partial<Parameters<MeetingNotesEngine['generate']>[0]> = {}) =>
   new MeetingNotesEngine(client).generate({ lines: transcript, scratch: '', startedAt: Date.now(), ...over })
 
 describe('a normal run', () => {
-  it('condenses, finds the work, writes each task up, then the notes', async () => {
+  it('picks out the key points, finds the work, writes each task up, then the gist', async () => {
     const { client, requests } = fakeLlm(answering())
     const result = await run(client)
 
     // One item needs no grouping call.
-    expect(requests.map(stageOf)).toEqual(['condense', 'items', 'writeup', 'notes'])
-    expect(result.notesMd).toContain('## Summary')
+    expect(requests.map(stageOf)).toEqual(['points', 'items', 'writeup', 'gist'])
+    expect(result.notesMd).toContain('## In short')
+    expect(result.summary.points.map((p) => [p.text, p.segmentIds])).toEqual([['The carousel capitalization is still not fixed', [1]]])
+    expect(result.summary.gist).toHaveLength(1)
+    expect(result.summaryStats).toMatchObject({ found: 1, kept: 1, shown: 1, gistKept: 1, gistWritten: 1 })
     expect(result.tasks).toEqual([
       {
         text: 'Fix capitalization in the carousel',
@@ -152,14 +169,14 @@ describe('a normal run', () => {
     expect(stages).toEqual(['condensing', 'extracting', 'checking', 'checking', 'writing'])
   })
 
-  it('hands your notes to the summary and the task finder, never to the condenser', async () => {
+  it('hands your notes to the gist and the task finder, never to the point finder', async () => {
     const { client, requests } = fakeLlm(answering())
     await run(client, { scratch: 'priya = decision maker' })
     const having = (stage: string): boolean =>
       requests.filter((r) => stageOf(r) === stage).some((r) => r.user.includes('priya'))
-    expect(having('notes')).toBe(true)
+    expect(having('gist')).toBe(true)
     expect(having('notesTasks')).toBe(true)
-    expect(having('condense')).toBe(false)
+    expect(having('points')).toBe(false)
     expect(having('items')).toBe(false)
   })
 })
@@ -381,7 +398,7 @@ describe('when a step fails', () => {
     )
     let condensed = 0
     const { client } = fakeLlm((req) => {
-      if (stageOf(req) === 'condense') {
+      if (stageOf(req) === 'points') {
         condensed++
         if (condensed === 1) throw new Error('model restarting')
         return '- a point'
@@ -400,12 +417,12 @@ describe('when a step fails', () => {
     expect(result.gapsAt).toHaveLength(1)
     expect(result.gapsAt[0]!.fromMs).toBe(5_000)
     expect(result.coveredLines).toBeLessThan(result.totalLines)
-    expect(result.notesMd).toContain('Summary')
+    expect(result.notesMd).toContain('In short')
   })
 
   it('refuses the run when nothing could be summarised, and says why', async () => {
     const { client } = fakeLlm((req) => {
-      if (stageOf(req) === 'condense') throw new Error('503 Loading model')
+      if (stageOf(req) === 'points') throw new Error('503 Loading model')
       return ''
     })
     const failure = run(client)
@@ -413,9 +430,13 @@ describe('when a step fails', () => {
     await expect(failure).rejects.toThrow('503 Loading model')
   })
 
-  it('refuses when the final write comes back empty', async () => {
-    const { client } = fakeLlm(answering({ notes: '   ' }))
-    await expect(run(client)).rejects.toBeInstanceOf(NotesUnavailable)
+  it('still shows the key points when the gist comes back empty', async () => {
+    // No gist is not a failure: never an unchecked sentence, and the points stand.
+    const { client } = fakeLlm(answering({ gist: '   ' }))
+    const result = await run(client)
+    expect(result.summary.gist).toEqual([])
+    expect(result.summary.points).toHaveLength(1)
+    expect(result.notesMd).toContain('The gist could not be written')
   })
 
   it('refuses a meeting with no transcript at all', async () => {
@@ -438,7 +459,7 @@ describe('tasks the model was not entitled to', () => {
       }
       if (stageOf(req) === 'writeup') return '{"title":"Write the rollout plan","description":"x"}'
       if (stageOf(req) === 'group') return '{"items":["c1"],"status":"proposed"}'
-      if (stageOf(req) === 'condense') return '- a point'
+      if (stageOf(req) === 'points') return '- a point'
       return '## Summary\nok'
     })
 
