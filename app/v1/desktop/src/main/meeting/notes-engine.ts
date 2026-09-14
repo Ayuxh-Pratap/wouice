@@ -32,6 +32,7 @@ import {
   renderChunk,
   renderLine,
   resolveOwner,
+  committedOwner,
   sameTitle,
   writeUpInput,
   type Chunk,
@@ -371,9 +372,11 @@ export class MeetingNotesEngine {
       const speaker = first?.channel ?? 'notes'
       const speakerName = first?.speaker ?? null
       const said = [...cited.map(renderLine), ...members.map((m) => m.noteQuote ?? '')].join('\n')
+      // And when the model named nobody, whoever took it on in so many words.
       const owner =
         resolveOwner(written?.owner ?? null, speaker, said, speakerName) ??
-        resolveOwner(lead.owner, speaker, said, speakerName)
+        resolveOwner(lead.owner, speaker, said, speakerName) ??
+        committedOwner(cited)
 
       tasks.push({
         text: written?.title ?? lead.title,
