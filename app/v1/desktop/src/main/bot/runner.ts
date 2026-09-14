@@ -4,7 +4,7 @@ import path from 'node:path'
 import type { BotRunReason, BotRunState, BotRunView } from '../../shared/ipc.js'
 import type { BotBrowser } from './browser.js'
 import { scoreAgainstPanel, type CaptionScore } from './caption-score.js'
-import { MeetFeed, type CaptionLine } from './captions.js'
+import { MeetFeed, type CaptionLine, type CaptionRevision } from './captions.js'
 import { meetUrl, readPage, type PageSnapshot, type PanelTurn } from './meet-ui.js'
 
 /**
@@ -112,6 +112,11 @@ export interface CaptureSink {
    * Google, which is why the vocabulary takes them on its own.
    */
   close(meetingId: number, detail: { endedAt: number; lines: number; people: string[] }): void
+  /**
+   * Meet rewrote a caption after its line was stored: make the same change in
+   * the stored line. True when a line was changed.
+   */
+  revise?(meetingId: number, revision: CaptionRevision, startedAt: number): boolean
 }
 
 export interface MeetingBotDeps {
@@ -164,6 +169,8 @@ interface Run {
   saveProblem: string | null
   /** What was stored, for scoring against Meet's own panel at the end. */
   kept: { speaker: string | null; text: string }[]
+  /** Corrections Meet made after a line was stored, made in the transcript too. */
+  revised: number
 }
 
 interface CaptionState {
@@ -257,6 +264,7 @@ export class MeetingBot extends EventEmitter {
       warning: null,
       saveProblem: null,
       kept: [],
+      revised: 0,
     }
     this.current = run
     this.changed(run)
@@ -437,6 +445,7 @@ export class MeetingBot extends EventEmitter {
         await this.turnOnCaptions(run, browser, captions)
       }
       this.keep(run, feed.take(this.now()))
+      this.revise(run, feed.revisions())
       this.logCaptions(run, feed)
       // The captions say which language Meet is using, whatever the menus did.
       // Meet remembers the choice from the last call, so the menus can fail on
@@ -614,6 +623,25 @@ export class MeetingBot extends EventEmitter {
     }
   }
 
+  /**
+   * Corrections Meet made to lines already stored, made in the transcript -
+   * and in what the call is scored on, which is what was kept.
+   */
+  private revise(run: Run, revisions: CaptionRevision[]): void {
+    if (revisions.length === 0 || run.meetingId === null || !this.deps.sink?.revise) return
+    for (const r of revisions) {
+      try {
+        if (!this.deps.sink.revise(run.meetingId, r, run.meetingStartedAt)) continue
+        run.revised++
+        const kept = run.kept.find((k) => k.speaker === r.speaker && k.text.includes(r.from))
+        if (kept) kept.text = kept.text.replace(r.from, r.to)
+      } catch (err) {
+        this.note(run, `could not correct a stored line: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    this.changed(run)
+  }
+
   /** Whatever is still open becomes lines, and the meeting is closed. Once. */
   private closeMeeting(run: Run): void {
     const feed = run.feed
@@ -624,10 +652,11 @@ export class MeetingBot extends EventEmitter {
         .filter((p) => !p.isSelf && !p.screenShareOf && p.name)
         .map((p) => p.name!)
       this.keep(run, feed.flush())
+      this.revise(run, feed.revisions())
       const c = feed.captions
       this.note(
         run,
-        `captions: ${feed.captionMessages} read; kept ${c.keptFinal} at Meet's final version and ${c.keptQuiet} without one; ${c.lateRevisions} changed after being kept; ${feed.summary()}`
+        `captions: ${feed.captionMessages} read; kept ${c.keptFinal} at Meet's final version and ${c.keptQuiet} without one; ${c.lateRevisions} changed after being kept (${run.revised} corrected in the transcript, ${c.newUnderOldId} new words under an old caption kept as lines); ${feed.summary()}`
       )
       this.logCaptions(run, feed)
       this.writeJson(run, 'people.json', feed.roster.people())
