@@ -1196,10 +1196,14 @@ function gistSentences(gist: unknown): Proposed[] {
  * says something was agreed only of a point marked agreed. A point it rests on
  * is shown, room allowing. No answer at all, and the key points still show -
  * no gist, never an unchecked one.
+ *
+ * NOTHING THAT HELD UP IS LOST. Every point in `every` - all that were kept,
+ * not only the ones offered to the gist - that is not shown goes in `more`.
  */
 export function buildSummary(
   points: readonly KeyPoint[],
-  raw: string | null
+  raw: string | null,
+  every: readonly KeyPoint[] = points
 ): { summary: CheckedSummary; gistWritten: number } {
   let picked: number[] = []
   let proposed: Proposed[] = []
@@ -1216,9 +1220,19 @@ export function buildSummary(
     }
   }
 
+  // The meeting in thirds, by when its points were said. A third with points
+  // but none picked gets its middle one, so what shows covers the whole call:
+  // meeting 20's five picks were its last five, all after minute 22.
+  const all = points.map((_, i) => i + 1)
+  const first = Math.min(...points.map((p) => p.atMs))
+  const span = Math.max(...points.map((p) => p.atMs)) - first
+  const thirdOf = (n: number): number => (span > 0 ? Math.min(2, Math.floor(((points[n - 1]!.atMs - first) / span) * 3)) : 0)
+  const sorted = [...picked].sort((a, b) => a - b)
+  const missing = [0, 1, 2].filter((t) => all.some((n) => thirdOf(n) === t) && !sorted.some((n) => thirdOf(n) === t))
   // More picked than can show: a spread of them, not the first - meeting 11's
   // first eight of seventeen all came from its first 26 minutes.
-  const chosen = new Set(spread([...picked].sort((a, b) => a - b), SHOW.most))
+  const chosen = new Set(spread(sorted, SHOW.most - missing.length))
+  for (const t of missing) chosen.add(spread(all.filter((n) => thirdOf(n) === t), 1)[0]!)
   const want = Math.min(SHOW.least, points.length)
   if (chosen.size < want) {
     const rest = points.map((_, i) => i + 1).filter((n) => !chosen.has(n))
@@ -1271,13 +1285,19 @@ export function buildSummary(
     points: s.points.map((n) => indexOf.get(n)!).sort((a, b) => a - b),
   }))
 
+  const asShown = (p: KeyPoint): CheckedSummary['points'][number] => ({
+    text: p.text,
+    mark: p.mark,
+    segmentIds: p.segmentIds,
+    quote: p.quote,
+    atMs: p.atMs,
+  })
+  const onShow = new Set(shown.map((n) => points[n - 1]!))
   return {
     summary: {
       gist,
-      points: shown.map((n) => {
-        const p = points[n - 1]!
-        return { text: p.text, mark: p.mark, segmentIds: p.segmentIds, quote: p.quote, atMs: p.atMs }
-      }),
+      points: shown.map((n) => asShown(points[n - 1]!)),
+      more: every.filter((p) => !onShow.has(p)).map(asShown),
     },
     gistWritten: proposed.length,
   }
@@ -1285,12 +1305,15 @@ export function buildSummary(
 
 /**
  * The summary written out as markdown, for everything that reads a summary as
- * text: In short, Key points (time, mark, point), Next steps (the tasks).
+ * text: In short, Key points (time, mark, point), More points (the rest that
+ * held up), Next steps (the tasks).
  */
 export function summaryMarkdown(
   summary: CheckedSummary,
   tasks: readonly { text: string; owner: string | null }[]
 ): string {
+  const line = (p: CheckedSummary['points'][number]): string =>
+    `- ${p.atMs === null ? '' : `[${stamp(p.atMs)}] `}${p.mark ? `(${p.mark}) ` : ''}${p.text}`
   const out = ['## In short']
   out.push(
     summary.points.length === 0
@@ -1301,9 +1324,12 @@ export function summaryMarkdown(
   )
   if (summary.points.length > 0) {
     out.push('', '## Key points')
-    for (const p of summary.points) {
-      out.push(`- ${p.atMs === null ? '' : `[${stamp(p.atMs)}] `}${p.mark ? `(${p.mark}) ` : ''}${p.text}`)
-    }
+    for (const p of summary.points) out.push(line(p))
+  }
+  const more = summary.more ?? []
+  if (more.length > 0) {
+    out.push('', '## More points')
+    for (const p of more) out.push(line(p))
   }
   if (tasks.length > 0) {
     out.push('', '## Next steps')
