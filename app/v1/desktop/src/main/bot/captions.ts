@@ -43,6 +43,16 @@ export interface CaptionLine {
   startedAt: number
   endedAt: number
   language: string | null
+  /** The Meet captions it was made from, as `device:caption`: how a correction Meet sends later finds it. */
+  keys?: string[]
+}
+
+/** Meet rewrote a caption after its line was stored: `from` becomes `to` in the line that began at `startedAt`. */
+export interface CaptionRevision {
+  startedAt: number
+  speaker: string | null
+  from: string
+  to: string
 }
 
 /**
@@ -140,8 +150,14 @@ export class CaptionAssembler {
   private readonly pending = new Map<string, Pending>()
   /** Captions already kept, by `device:caption`: the text kept, and at which version. */
   private readonly done = new Map<string, { text: string; version: number }>()
-  /** Captions whose words Meet changed after they were kept. Counted, not stored. */
+  /** Corrections to captions already kept, not yet handed on. See `MeetFeed.revisions`. */
+  private revised: { key: string; from: string; to: string }[] = []
+  /** A caption id Meet reused for new words: its later versions belong to the new caption. */
+  private readonly reused = new Map<string, string>()
+  /** Captions whose words Meet changed after they were kept. */
   lateRevisions = 0
+  /** Of those, the ones that were new words under an old id, kept as captions of their own. */
+  newUnderOldId = 0
   /** How captions were kept: at Meet's final version, or without one. */
   keptFinal = 0
   keptQuiet = 0
@@ -149,13 +165,26 @@ export class CaptionAssembler {
   constructor(private readonly quietMs = 10_000) {}
 
   update(caption: CaptionUpdate, now: number): void {
-    const key = `${caption.deviceId}:${caption.captionId}`
+    const id = `${caption.deviceId}:${caption.captionId}`
+    let key = this.reused.get(id) ?? id
     const kept = this.done.get(key)
     if (kept) {
       if (caption.version <= kept.version) return
       kept.version = caption.version
-      if (caption.text.trim() !== kept.text.trim()) this.lateRevisions++
-      return
+      const text = caption.text.trim()
+      if (text === kept.text) return
+      this.lateRevisions++
+      if (kept.text && sameCaption(kept.text, text)) {
+        this.revised.push({ key, from: kept.text, to: text })
+        kept.text = text
+        return
+      }
+      // Different words under an id Meet already used: a caption of its own,
+      // not a correction. Replayed, meeting 18 had "तो मतलब 12000 प्लस 6000
+      // प्लस" overwritten by the next thing said, "मतलब देखो अगर आप उसको बहुत".
+      this.newUnderOldId++
+      key = `${id}#${caption.version}`
+      this.reused.set(id, key)
     }
     const current = this.pending.get(key)
     if (current && caption.version < current.version) return
@@ -180,6 +209,13 @@ export class CaptionAssembler {
     return this.release(() => true, nameOf)
   }
 
+  /** Corrections Meet made to kept captions since the last call. */
+  takeRevisions(): { key: string; from: string; to: string }[] {
+    const out = this.revised
+    this.revised = []
+    return out
+  }
+
   /** When this speaker's oldest caption still in progress began; null when none is. */
   openSince(deviceId: string): number | null {
     let since: number | null = null
@@ -194,10 +230,10 @@ export class CaptionAssembler {
     for (const [key, p] of this.pending) {
       if (!ready(p)) continue
       this.pending.delete(key)
-      this.done.set(key, { text: p.text, version: p.version })
+      const text = p.text.trim()
+      this.done.set(key, { text, version: p.version })
       if (p.isFinal) this.keptFinal++
       else this.keptQuiet++
-      const text = p.text.trim()
       if (!text) continue
       lines.push({
         deviceId: p.deviceId,
@@ -206,10 +242,33 @@ export class CaptionAssembler {
         startedAt: p.firstAt,
         endedAt: p.lastAt,
         language: p.language,
+        keys: [key],
       })
     }
     return lines.sort((a, b) => a.startedAt - b.startedAt)
   }
+}
+
+/**
+ * Is the new text a correction of the kept one, or new words? A correction
+ * keeps at least half of the words it corrects: "ship it friday" and "ship it
+ * Friday", or a long line with a word changed. New words under an old id share
+ * a word or two by chance.
+ */
+function sameCaption(kept: string, next: string): boolean {
+  const words = (s: string): string[] => s.toLowerCase().split(/\s+/).filter(Boolean)
+  const left = new Map<string, number>()
+  for (const w of words(next)) left.set(w, (left.get(w) ?? 0) + 1)
+  const before = words(kept)
+  let still = 0
+  for (const w of before) {
+    const n = left.get(w) ?? 0
+    if (n > 0) {
+      still++
+      left.set(w, n - 1)
+    }
+  }
+  return still * 2 >= before.length
 }
 
 /**
@@ -269,6 +328,14 @@ export class TurnBuilder {
     return this.open.length > 0 ? [this.close()] : []
   }
 
+  /** A correction to a caption still in the open turn: made here, before the turn is stored. */
+  revise(key: string, to: string): boolean {
+    const piece = this.open.find((p) => p.keys?.includes(key))
+    if (!piece) return false
+    piece.text = to
+    return true
+  }
+
   private joins(line: CaptionLine): boolean {
     return line.deviceId === this.open[0]!.deviceId && line.startedAt - lastEnd(this.open) < this.joinGapMs
   }
@@ -277,13 +344,18 @@ export class TurnBuilder {
     // In the order they were said, which is not always the order Meet finalised them.
     const pieces = this.open.sort((a, b) => a.startedAt - b.startedAt)
     this.open = []
+    const keys = pieces.flatMap((p) => p.keys ?? [])
     return {
       deviceId: pieces[0]!.deviceId,
       speaker: pieces.find((p) => p.speaker)?.speaker ?? null,
-      text: pieces.map((p) => p.text).join(' '),
+      text: pieces
+        .map((p) => p.text)
+        .filter(Boolean)
+        .join(' '),
       startedAt: pieces[0]!.startedAt,
       endedAt: lastEnd(pieces),
       language: pieces.find((p) => p.language)?.language ?? null,
+      ...(keys.length > 0 ? { keys } : {}),
     }
   }
 }
@@ -392,12 +464,38 @@ export class MeetFeed {
   /** Turns that are finished: what gets stored. */
   take(now: number): CaptionLine[] {
     const kept = this.captions.take(now, (d) => this.roster.nameOf(d))
-    return [...this.turns.add(kept), ...this.turns.due(now, (d) => this.captions.openSince(d))]
+    return this.stored([...this.turns.add(kept), ...this.turns.due(now, (d) => this.captions.openSince(d))])
   }
 
   /** Everything, at the end of the call. */
   flush(): CaptionLine[] {
-    return [...this.turns.add(this.captions.flush((d) => this.roster.nameOf(d))), ...this.turns.flush()]
+    return this.stored([...this.turns.add(this.captions.flush((d) => this.roster.nameOf(d))), ...this.turns.flush()])
+  }
+
+  /**
+   * Corrections Meet made to captions after they were kept. One whose turn is
+   * still open is made there; one whose line is already stored comes back
+   * here, for the store to make. Counted and dropped, meeting 18 kept Meet's
+   * first guess "प्लस" for a line Meet then wrote as "ऑप्टिमाइज वाली लाइन हटा दो".
+   */
+  revisions(): CaptionRevision[] {
+    const out: CaptionRevision[] = []
+    for (const r of this.captions.takeRevisions()) {
+      if (this.turns.revise(r.key, r.to)) continue
+      const line = this.storedIn.get(r.key)
+      if (line) out.push({ ...line, from: r.from, to: r.to })
+    }
+    return out
+  }
+
+  /** Which stored line each kept caption went into, so a later correction can find it. */
+  private readonly storedIn = new Map<string, { startedAt: number; speaker: string | null }>()
+
+  private stored(lines: CaptionLine[]): CaptionLine[] {
+    for (const line of lines) {
+      for (const key of line.keys ?? []) this.storedIn.set(key, { startedAt: line.startedAt, speaker: line.speaker })
+    }
+    return lines
   }
 
   /** The caption updates that arrived since the last call. */
