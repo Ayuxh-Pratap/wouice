@@ -1,4 +1,5 @@
-import type { CheckedSummary, TaskRecord, TaskState } from '@wouice/store'
+import type { CheckedSummary, SummaryPoint, TaskRecord, TaskState } from '@wouice/store'
+import { useState } from 'react'
 import { Notes } from './Notes.js'
 import { formatStamp } from './Transcript.js'
 
@@ -37,10 +38,39 @@ export function Summary({
   onJump(segmentId: number): void
   readOnly?: boolean
 }): React.JSX.Element {
+  const [showMore, setShowMore] = useState(false)
   const gist =
     summary.points.length === 0
       ? 'Nothing in this meeting held up as a key point.'
       : summary.gist.map((s) => s.text).join(' ')
+  // Every other point that held up; a summary written before them has none.
+  const more = Array.isArray(summary.more) ? summary.more : []
+
+  const row = (point: SummaryPoint, i: number): React.JSX.Element => {
+    const at = point.segmentIds[0]
+    return (
+      <li key={i} className="flex items-start gap-3 px-3 py-2">
+        <p className="min-w-0 flex-1 text-[13px] leading-relaxed text-neutral-200">
+          {point.mark ? (
+            <span className={`mr-2 inline-block rounded px-1.5 py-px align-[1px] text-[10px] ring-1 ${MARK[point.mark]}`}>
+              {point.mark}
+            </span>
+          ) : null}
+          {point.text}
+        </p>
+        {point.atMs !== null && at !== undefined ? (
+          <button
+            onClick={() => onJump(at)}
+            title={`“${point.quote}” — show this line`}
+            className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[10.5px] text-neutral-500 tabular-nums transition hover:bg-white/5 hover:text-neutral-200"
+          >
+            {formatStamp(point.atMs)}
+          </button>
+        ) : null}
+      </li>
+    )
+  }
+  const LIST = 'divide-y divide-white/5 rounded-lg bg-black/20 ring-1 ring-white/[0.06]'
 
   return (
     <div className="space-y-4">
@@ -56,32 +86,19 @@ export function Summary({
       {summary.points.length > 0 && (
         <section>
           <h3 className={HEADING}>Key points</h3>
-          <ul className="divide-y divide-white/5 rounded-lg bg-black/20 ring-1 ring-white/[0.06]">
-            {summary.points.map((point, i) => {
-              const at = point.segmentIds[0]
-              return (
-                <li key={i} className="flex items-start gap-3 px-3 py-2">
-                  <p className="min-w-0 flex-1 text-[13px] leading-relaxed text-neutral-200">
-                    {point.mark ? (
-                      <span className={`mr-2 inline-block rounded px-1.5 py-px align-[1px] text-[10px] ring-1 ${MARK[point.mark]}`}>
-                        {point.mark}
-                      </span>
-                    ) : null}
-                    {point.text}
-                  </p>
-                  {point.atMs !== null && at !== undefined ? (
-                    <button
-                      onClick={() => onJump(at)}
-                      title={`“${point.quote}” — show this line`}
-                      className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[10.5px] text-neutral-500 tabular-nums transition hover:bg-white/5 hover:text-neutral-200"
-                    >
-                      {formatStamp(point.atMs)}
-                    </button>
-                  ) : null}
-                </li>
-              )
-            })}
-          </ul>
+          <ul className={LIST}>{summary.points.map(row)}</ul>
+          {more.length > 0 ? (
+            <>
+              <button
+                onClick={() => setShowMore((v) => !v)}
+                aria-expanded={showMore}
+                className="mt-1.5 rounded px-1.5 py-0.5 text-[11.5px] text-neutral-500 transition hover:bg-white/5 hover:text-neutral-200"
+              >
+                {showMore ? 'Fewer points' : `${more.length} more point${more.length === 1 ? '' : 's'}`}
+              </button>
+              {showMore ? <ul className={`${LIST} mt-1`}>{more.map(row)}</ul> : null}
+            </>
+          ) : null}
         </section>
       )}
 
