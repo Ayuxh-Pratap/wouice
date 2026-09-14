@@ -955,6 +955,30 @@ export function resolveOwner(
   return parts.some((part) => heard.has(part)) ? who : null
 }
 
+/**
+ * "I will" in English, and Hindi's first-person future: "भेज दूंगा", "कर
+ * दूंगी", "करूंगा". Not "we will", and not "he will" - that is nobody in
+ * particular, or somebody else's word for it.
+ */
+const COMMITMENT = [/\bI(?:'ll| will| am going to|'m going to)\b/i, /(?:ूंगा|ूँगा|ूंगी|ूँगी)(?![\p{L}\p{M}])/u]
+
+/**
+ * Who took the work on in so many words, when the model named nobody: the one
+ * speaker whose cited line says "I will...". Meeting 18's "I will also add
+ * search" was Himanshu's, and went to nobody. Nobody saying it, or two people
+ * both saying it, leaves it unassigned.
+ */
+export function committedOwner(
+  lines: readonly { channel: MeetingChannel; speaker?: string | null; text: string }[]
+): string | null {
+  const who = new Set<string>()
+  for (const line of lines) {
+    if (!COMMITMENT.some((re) => re.test(line.text))) continue
+    who.add(line.channel === 'me' ? 'You' : (line.speaker ?? 'Them'))
+  }
+  return who.size === 1 ? [...who][0]! : null
+}
+
 /* ----------------------------------------------------- the same task ---- */
 
 /** What two tasks are compared on. */
