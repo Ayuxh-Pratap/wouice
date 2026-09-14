@@ -57,6 +57,17 @@ describe('sound keys', () => {
     expect(soundsIn('Qwen', prepare('this quen model'))).toBe(true)
   })
 
+  it('keeps a consonant said twice, with a vowel between', () => {
+    // Meeting 20: "b-i-b-l" lost its vowels and then its second b - "bl", too
+    // short to trust - so "बाइबल" was never heard as Bible.
+    expect(soundKey('Bible')).toBe('bbl')
+    expect(soundKey('बाइबल')).toBe(soundKey('Bible'))
+    expect(soundKey('बाइबिल')).toBe(soundKey('Bible'))
+    expect(soundsIn('Bible', prepare('क्योंकि हमारी जो बाइबल है ना'))).toBe(true)
+    // A letter written twice is still one sound.
+    expect(soundKey('Jeremy')).toBe(soundKey('Jerremy'))
+  })
+
   it('keeps words that sound different apart', () => {
     expect(soundKey('Claude')).not.toBe(soundKey('Lord'))
     expect(soundKey('Bump')).not.toBe(soundKey('Bible'))
