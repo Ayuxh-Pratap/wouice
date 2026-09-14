@@ -471,6 +471,8 @@ async function writeNotes(
     )
 
     store.meetings.setVersionNotes(version.id, run.notesMd)
+    // The same summary as data: each key point with the lines it came from.
+    store.meetings.setVersionSummary(version.id, run.summary)
     // The entries this meeting used, counted once for it: how an entry shows
     // on the Vocabulary page that it still earns its place.
     try {
@@ -497,6 +499,7 @@ async function writeNotes(
       merged: run.merged,
       rejected: run.rejected,
       vocabulary: vocabulary.used().map((e) => e.term),
+      summary: run.summaryStats,
       // Why a part could not be read: "exceeds the context" and a timeout are different fixes.
       message: run.failure,
     })
