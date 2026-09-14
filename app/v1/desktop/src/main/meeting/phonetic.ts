@@ -130,8 +130,11 @@ export function soundKey(word: string): string {
   // the word. All but a leading one, kept as a single mark: without it
   // "iframe" was "from" and "राउंड" was "अराउंड" (around) in meeting 18. One
   // mark for any vowel, since "iframe" and "आईफ्रेम" start with different ones.
-  const f = folded(s)
-  return (/^[aeiou]/.test(f) ? '*' : '') + f.replace(/[aeiouy]/g, '').replace(/(.)\1+/g, '$1')
+  // A letter written twice is one sound, so doubles go first - after the
+  // vowels, "Bible" lost its second b and became "bl", too short to trust
+  // (meeting 20).
+  const f = folded(s).replace(/(.)\1+/g, '$1')
+  return (/^[aeiou]/.test(f) ? '*' : '') + f.replace(/[aeiouy]/g, '')
 }
 
 /**
