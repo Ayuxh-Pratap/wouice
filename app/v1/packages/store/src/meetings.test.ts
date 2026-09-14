@@ -32,6 +32,22 @@ const said = (
 
 const mainOf = (id: number): number => meetings.byId(id)!.mainVersionId!
 
+describe('a checked summary', () => {
+  it('is kept on its version, as data, and cleared with it', () => {
+    const id = meetings.start('/sessions/bot', 1_000)
+    const versionId = meetings.appendToVersion(id, 'meet-captions', [said('them', 5_000, 'costing about 21000')])
+    expect(meetings.version(versionId)?.summary).toBeNull()
+    const summary = {
+      gist: [{ text: 'A call on the assistant.', points: [0] }],
+      points: [{ text: 'Costing is about 21,000', mark: null, segmentIds: [1], quote: 'costing about 21000', atMs: 5_000 }],
+    }
+    meetings.setVersionSummary(versionId, summary)
+    expect(meetings.version(versionId)?.summary).toEqual(summary)
+    meetings.setVersionSummary(versionId, null)
+    expect(meetings.version(versionId)?.summary).toBeNull()
+  })
+})
+
 describe('a correction to a stored line', () => {
   it('changes the words in the line that began then, and nowhere else', () => {
     // Meeting 18: Meet's first guess "प्लस" was stored, and Meet rewrote it after.
