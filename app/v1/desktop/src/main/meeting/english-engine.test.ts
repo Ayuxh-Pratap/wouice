@@ -85,7 +85,7 @@ describe('the English pass', () => {
   })
 
   it('offers the glossary as a spelling reference, never as a line to render', async () => {
-    const { client, requests } = fakeLlm(() => '[1] something')
+    const { client, requests } = fakeLlm(() => '[1] Okay, so this meeting is only for this')
     await new MeetingEnglishEngine(client).render({ lines: lines.slice(0, 1), glossary: ['Claude (heard as: Lord, लॉर्ड)', 'Finch Bot'] })
     expect(requests[0]!.user).toContain(
       'Reference only - names and words these meetings use, spelled right, with what each is often misheard as:\n- Claude (heard as: Lord, लॉर्ड)\n- Finch Bot'
@@ -112,7 +112,9 @@ describe('the English pass', () => {
   })
 
   it('keeps a line the model could not render as it was, and counts it', async () => {
-    const { client } = fakeLlm((req) => (req.user.includes('वेरी वेरी फाइन') && !req.user.includes('सर्च') ? '[1]' : '[1] rendered'))
+    const { client } = fakeLlm((req) =>
+      req.user.includes('वेरी वेरी फाइन') && !req.user.includes('सर्च') ? '[1]' : '[1] the line as it was said, in English'
+    )
     const run = await new MeetingEnglishEngine(client).render({ lines })
     expect(run.rendered.map((r) => r.id)).toEqual([1836, 1838])
     expect(run.missed).toBe(1)
