@@ -45,6 +45,12 @@ export interface CaptionLine {
   language: string | null
   /** The Meet captions it was made from, as `device:caption`: how a correction Meet sends later finds it. */
   keys?: string[]
+  /**
+   * Words Meet showed and then replaced with something new under the same
+   * caption: in none of its later captions, nor in its own panel. A line of
+   * their own, marked, rather than lost. See `CaptionAssembler`.
+   */
+  dropped?: boolean
 }
 
 /** Meet rewrote a caption after its line was stored: `from` becomes `to` in the line that began at `startedAt`. */
@@ -70,6 +76,7 @@ export function captionSegment(line: CaptionLine, meetingStartedAt: number, myNa
     text: line.text,
     echo: false,
     speaker: line.speaker,
+    ...(line.dropped ? { dropped: true } : {}),
   }
 }
 
@@ -144,12 +151,23 @@ interface Pending {
   lastAt: number
   isFinal: boolean
   language: string | null
+  /** Words Meet replaced with something new under the same caption, held to be kept. See `replaced`. */
+  dropped?: boolean
+}
+
+/** A caption already kept: its words and version, and whose and when - for telling words Meet moved from words it dropped. */
+interface Kept {
+  text: string
+  version: number
+  deviceId: string
+  at: number
+  dropped: boolean
 }
 
 export class CaptionAssembler {
   private readonly pending = new Map<string, Pending>()
   /** Captions already kept, by `device:caption`: the text kept, and at which version. */
-  private readonly done = new Map<string, { text: string; version: number }>()
+  private readonly done = new Map<string, Kept>()
   /** Corrections to captions already kept, not yet handed on. See `MeetFeed.revisions`. */
   private revised: { key: string; from: string; to: string }[] = []
   /** A caption id Meet reused for new words: its later versions belong to the new caption. */
@@ -161,6 +179,15 @@ export class CaptionAssembler {
   /** How captions were kept: at Meet's final version, or without one. */
   keptFinal = 0
   keptQuiet = 0
+  /**
+   * Words Meet showed and then replaced with something new before they were
+   * kept: those kept as lines of their own, and those that turned up in a
+   * neighbouring caption - moved, not lost - and so were not kept twice.
+   */
+  droppedKept = 0
+  droppedMoved = 0
+  /** Versions older than one already held or kept, with other words in them: ignored. */
+  staleIgnored = 0
 
   constructor(private readonly quietMs = 10_000) {}
 
@@ -169,7 +196,10 @@ export class CaptionAssembler {
     let key = this.reused.get(id) ?? id
     const kept = this.done.get(key)
     if (kept) {
-      if (caption.version <= kept.version) return
+      if (caption.version <= kept.version) {
+        if (caption.text.trim() !== kept.text) this.staleIgnored++
+        return
+      }
       kept.version = caption.version
       const text = caption.text.trim()
       if (text === kept.text) return
@@ -187,15 +217,26 @@ export class CaptionAssembler {
       this.reused.set(id, key)
     }
     const current = this.pending.get(key)
-    if (current && caption.version < current.version) return
+    if (current && caption.version < current.version) {
+      if (caption.text !== current.text) this.staleIgnored++
+      return
+    }
+    // Something new under a caption that still showed these words: said under
+    // a reused id, and the old words in none of Meet's later captions. Meeting
+    // 20 lost "बस इस चीज के अलावा इसमें कुछ भी" to "बाकी" this way, and 131
+    // words more. Held, so they can turn up in a neighbour - moved, not lost -
+    // and then kept as a line of their own. See `replaced`.
+    const fresh = current !== undefined && replaced(current, caption.text, now)
+    if (fresh) this.pending.set(`${key}~${current.version}`, { ...current, dropped: true, isFinal: false, lastAt: now })
+    const before = fresh ? undefined : current
     this.pending.set(key, {
       deviceId: caption.deviceId,
       version: caption.version,
       text: caption.text,
-      firstAt: current?.firstAt ?? now,
-      lastAt: current && current.text === caption.text ? current.lastAt : now,
+      firstAt: before?.firstAt ?? now,
+      lastAt: before && before.text === caption.text ? before.lastAt : now,
       isFinal: caption.isFinal,
-      language: caption.language ?? current?.language ?? null,
+      language: caption.language ?? before?.language ?? null,
     })
   }
 
@@ -220,7 +261,7 @@ export class CaptionAssembler {
   openSince(deviceId: string): number | null {
     let since: number | null = null
     for (const p of this.pending.values()) {
-      if (p.deviceId === deviceId && (since === null || p.firstAt < since)) since = p.firstAt
+      if (!p.dropped && p.deviceId === deviceId && (since === null || p.firstAt < since)) since = p.firstAt
     }
     return since
   }
@@ -231,8 +272,14 @@ export class CaptionAssembler {
       if (!ready(p)) continue
       this.pending.delete(key)
       const text = p.text.trim()
-      this.done.set(key, { text, version: p.version })
-      if (p.isFinal) this.keptFinal++
+      this.done.set(key, { text, version: p.version, deviceId: p.deviceId, at: p.firstAt, dropped: p.dropped === true })
+      if (p.dropped) {
+        if (this.movedOn(p)) {
+          this.droppedMoved++
+          continue
+        }
+        this.droppedKept++
+      } else if (p.isFinal) this.keptFinal++
       else this.keptQuiet++
       if (!text) continue
       lines.push({
@@ -243,9 +290,28 @@ export class CaptionAssembler {
         endedAt: p.lastAt,
         language: p.language,
         keys: [key],
+        ...(p.dropped ? { dropped: true } : {}),
       })
     }
     return lines.sort((a, b) => a.startedAt - b.startedAt)
+  }
+
+  /**
+   * Did words Meet replaced turn up in the same speaker's captions around
+   * them? Meet also moves words between captions as it re-cuts a sentence -
+   * "यही वाली चीज आनी चाहिए" became "आनी चाहिए", its first words now in the
+   * caption before - and those are not lost, so not kept twice.
+   */
+  private movedOn(p: Pending): boolean {
+    const around = (at: number): boolean => at >= p.firstAt - NEAR_MS && at <= p.lastAt + NEAR_MS
+    const near: string[] = []
+    for (const q of this.pending.values()) {
+      if (!q.dropped && q.deviceId === p.deviceId && around(q.firstAt)) near.push(q.text)
+    }
+    for (const k of this.done.values()) {
+      if (!k.dropped && k.deviceId === p.deviceId && around(k.at)) near.push(k.text)
+    }
+    return sameCaption(p.text, near.join(' '))
   }
 }
 
@@ -269,6 +335,27 @@ function sameCaption(kept: string, next: string): boolean {
     }
   }
   return still * 2 >= before.length
+}
+
+/** Words on screen this long unchanged have been read by the people in the call. */
+const HELD_MS = 1_000
+/** How far around words Meet replaced they are looked for, moved. */
+const NEAR_MS = 15_000
+
+/**
+ * Words replaced before they were kept: something new said under the same
+ * caption id, not Meet correcting what it heard. Only words held on screen for
+ * a second, two of them at least; not replaced by a correction, which keeps
+ * half their words; and not by as many words or more - the same speech heard
+ * again comes back as long ("एक सेकंड" corrected to "चलो देखते हैं क्या होता
+ * है"), where a new thing said starts short: "बाकी", "यह", "तो", or nothing.
+ */
+function replaced(held: Pending, next: string, now: number): boolean {
+  const count = (s: string): number => s.split(/\s+/).filter(Boolean).length
+  const words = count(held.text)
+  if (words < 2 || now - held.lastAt < HELD_MS) return false
+  if (next.trim() && sameCaption(held.text, next)) return false
+  return count(next) * 2 <= words
 }
 
 /**
@@ -464,12 +551,17 @@ export class MeetFeed {
   /** Turns that are finished: what gets stored. */
   take(now: number): CaptionLine[] {
     const kept = this.captions.take(now, (d) => this.roster.nameOf(d))
-    return this.stored([...this.turns.add(kept), ...this.turns.due(now, (d) => this.captions.openSince(d))])
+    return this.stored([...this.joined(kept), ...this.turns.due(now, (d) => this.captions.openSince(d))])
   }
 
   /** Everything, at the end of the call. */
   flush(): CaptionLine[] {
-    return this.stored([...this.turns.add(this.captions.flush((d) => this.roster.nameOf(d))), ...this.turns.flush()])
+    return this.stored([...this.joined(this.captions.flush((d) => this.roster.nameOf(d))), ...this.turns.flush()])
+  }
+
+  /** Kept captions into turns - but words Meet dropped stay a line of their own, shown for what they are. */
+  private joined(kept: CaptionLine[]): CaptionLine[] {
+    return [...this.turns.add(kept.filter((l) => !l.dropped)), ...kept.filter((l) => l.dropped)]
   }
 
   /**
@@ -551,6 +643,56 @@ export class MeetFeed {
       this.samples.push({ label, at: now, ...raw, ...(problem ? { problem } : {}) })
     }
   }
+}
+
+/**
+ * A call's caption log replayed through the same rules: the lines it would
+ * have stored, with Meet's corrections made. How a meeting Wouice closed under
+ * mid-call finds what it had not saved yet. Nameless: who was who came from
+ * the participant list, which the log does not keep. See `unsavedTail`. The
+ * feed is left with the replay's counts in it.
+ */
+export function replayCaptions(log: readonly LoggedCaption[], feed = new MeetFeed()): CaptionLine[] {
+  const lines: CaptionLine[] = []
+  const correct = (): void => {
+    for (const r of feed.revisions()) {
+      const line = lines.find((l) => l.startedAt === r.startedAt && l.text.includes(r.from))
+      if (line) line.text = line.text.replace(r.from, r.to)
+    }
+  }
+  for (const { at, ...update } of log) {
+    // What was due by then goes first, as the bot looking every two seconds
+    // had kept it: a caption quiet for ten seconds is a line before Meet
+    // reuses its id, not words the reuse replaced.
+    lines.push(...feed.take(at))
+    feed.captions.update(update, at)
+    lines.push(...feed.take(at))
+    correct()
+  }
+  lines.push(...feed.flush())
+  correct()
+  return lines
+}
+
+/**
+ * Of a replayed call, the lines not stored yet: those that began after the
+ * last stored line. Names come from stored lines that began at the same
+ * moment, device by device - the log knows devices, the store knows names.
+ */
+export function unsavedTail(
+  replayed: readonly CaptionLine[],
+  stored: readonly { startMs: number; speaker?: string | null }[],
+  meetingStartedAt: number
+): CaptionLine[] {
+  const last = Math.max(-1, ...stored.map((s) => s.startMs))
+  const names = new Map<string, string>()
+  for (const line of replayed) {
+    const same = stored.find((s) => s.speaker && s.startMs === Math.max(0, line.startedAt - meetingStartedAt))
+    if (same?.speaker) names.set(line.deviceId, same.speaker)
+  }
+  return replayed
+    .filter((l) => Math.max(0, l.startedAt - meetingStartedAt) > last)
+    .map((l) => ({ ...l, speaker: l.speaker ?? names.get(l.deviceId) ?? null }))
 }
 
 /**
