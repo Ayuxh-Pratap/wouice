@@ -455,6 +455,8 @@ export interface MeetingSegment {
   /** The same line in English, or null when it has not been rendered. */
   textEn: string | null
   echo: boolean
+  /** Words Meet's captions showed and then replaced: kept, shown dimmed. See docs/design/12-nothing-lost.md. */
+  dropped?: boolean
   /** Who said it, by name, when the transcript knows - Meet's captions do. */
   speaker: string | null
 }
