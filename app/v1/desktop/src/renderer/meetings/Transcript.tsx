@@ -81,11 +81,19 @@ export function Transcript({
                   echo
                 </span>
               ) : null}
+              {segment.dropped ? (
+                <span
+                  className="rounded px-1 py-px text-[9.5px] text-neutral-500 ring-1 ring-white/10"
+                  title="Meet's captions showed this, then replaced it with other words. It is not in Meet's own captions."
+                >
+                  dropped by Meet
+                </span>
+              ) : null}
             </div>
             <p
               className={
                 'text-[13px] leading-relaxed ' +
-                (segment.echo ? 'text-neutral-600' : 'text-neutral-200')
+                (segment.echo ? 'text-neutral-600' : segment.dropped ? 'text-neutral-500' : 'text-neutral-200')
               }
               // The line as spoken, always reachable. The rendering is a
               // model's account of it, and if the two disagree that is the
