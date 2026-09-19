@@ -1,6 +1,15 @@
 import { gzipSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
-import { CaptionAssembler, MeetFeed, Roster, TurnBuilder, captionSegment, type CaptionLine } from './captions.js'
+import {
+  CaptionAssembler,
+  MeetFeed,
+  Roster,
+  TurnBuilder,
+  captionSegment,
+  replayCaptions,
+  unsavedTail,
+  type CaptionLine,
+} from './captions.js'
 import { base64, bytes, collectionEvent, int, pageMessage, u8, userEntry } from './meet-fixtures.js'
 import type { CaptionUpdate, MeetUser } from './meet-protocol.js'
 
@@ -102,6 +111,76 @@ describe('assembling captions', () => {
     a.update(cap({ version: 8, text: 'मतलब देखो अगर आप उसको बहुत बताओगे', isFinal: true }), 9_500)
     expect(a.takeRevisions()).toEqual([
       { key: 'd-rahul:1#7', from: 'मतलब देखो अगर आप उसको बहुत', to: 'मतलब देखो अगर आप उसको बहुत बताओगे' },
+    ])
+  })
+
+  it('keeps words Meet replaced with something new before they were kept, as a line of their own', () => {
+    // Meeting 20: on screen for seven seconds, then the caption was reused for "बाकी".
+    const a = new CaptionAssembler()
+    a.update(cap({ text: 'बस इस चीज के अलावा इसमें कुछ भी' }), 1_000)
+    a.update(cap({ version: 2, text: 'बाकी' }), 8_000)
+    expect(a.take(20_000, names).map((l) => [l.text, l.startedAt, l.endedAt, l.dropped])).toEqual([
+      ['बस इस चीज के अलावा इसमें कुछ भी', 1_000, 8_000, true],
+      ['बाकी', 8_000, 8_000, undefined],
+    ])
+    expect(a.droppedKept).toBe(1)
+  })
+
+  it('keeps words Meet wiped with an empty version', () => {
+    const a = new CaptionAssembler()
+    a.update(cap({ text: 'कमी नहीं लगी मुझे' }), 1_000)
+    a.update(cap({ version: 2, text: '' }), 5_000)
+    expect(a.take(20_000, names).map((l) => [l.text, l.dropped])).toEqual([['कमी नहीं लगी मुझे', true]])
+  })
+
+  it('does not keep twice words Meet only moved to the caption before', () => {
+    const a = new CaptionAssembler()
+    a.update(cap({ captionId: '2', text: 'यही वाली चीज आनी चाहिए' }), 1_000)
+    a.update(cap({ captionId: '1', version: 3, text: 'बनाना तो यही वाली चीज' }), 2_500)
+    a.update(cap({ captionId: '2', version: 2, text: 'आनी चाहिए' }), 2_600)
+    expect(a.take(20_000, names).map((l) => l.text)).toEqual(['बनाना तो यही वाली चीज', 'आनी चाहिए'])
+    expect(a.droppedMoved).toBe(1)
+    expect(a.droppedKept).toBe(0)
+  })
+
+  it("does not keep Meet's first guess when it hears the same thing again, nor a flicker", () => {
+    const a = new CaptionAssembler()
+    // Corrected to as many words or more: the same speech, heard again.
+    a.update(cap({ text: 'एक सेकंड' }), 1_000)
+    a.update(cap({ version: 2, text: 'चलो देखते हैं क्या होता है' }), 5_000)
+    // On screen for half a second.
+    a.update(cap({ captionId: '2', text: 'तो पहले वाला' }), 6_000)
+    a.update(cap({ captionId: '2', version: 2, text: 'तीसरा' }), 6_500)
+    expect(a.take(30_000, names).map((l) => l.text)).toEqual(['चलो देखते हैं क्या होता है', 'तीसरा'])
+    expect(a.droppedKept).toBe(0)
+  })
+
+  it('stores words Meet dropped as a line of their own, never inside a turn', () => {
+    const feed = new MeetFeed()
+    feed.captions.update(cap({ text: 'बस इस चीज के अलावा इसमें कुछ भी' }), 1_000)
+    feed.captions.update(cap({ version: 2, text: 'बाकी', isFinal: true }), 8_000)
+    feed.captions.update(cap({ captionId: '2', text: 'तो ठीक है', isFinal: true }), 9_000)
+    const lines = [...feed.take(20_000), ...feed.flush()]
+    expect(lines.map((l) => [l.text, l.dropped ?? false])).toEqual([
+      ['बस इस चीज के अलावा इसमें कुछ भी', true],
+      ['बाकी तो ठीक है', false],
+    ])
+  })
+
+  it('replays a caption log into the lines it would have stored, and finds those not stored yet', () => {
+    const log = [
+      { ...cap({ text: 'ship it' }), at: 1_000 },
+      { ...cap({ version: 2, text: 'ship it friday', isFinal: true }), at: 1_500 },
+      { ...cap({ captionId: '2', text: 'and the registry too', isFinal: true }), at: 30_000 },
+    ]
+    const lines = replayCaptions(log)
+    expect(lines.map((l) => [l.text, l.startedAt])).toEqual([
+      ['ship it friday', 1_000],
+      ['and the registry too', 30_000],
+    ])
+    // Wouice closed after storing the first: the rest, named from what was stored.
+    expect(unsavedTail(lines, [{ startMs: 0, speaker: 'Rahul Dhir' }], 1_000)).toMatchObject([
+      { text: 'and the registry too', speaker: 'Rahul Dhir' },
     ])
   })
 
