@@ -47,7 +47,7 @@ import { BotIdentity } from './bot/identity.js'
 import { findChrome } from './bot/chrome.js'
 import { launchBotBrowser } from './bot/browser.js'
 import { MeetingBot, type CaptureSink } from './bot/runner.js'
-import { captionSegment } from './bot/captions.js'
+import { MeetFeed, captionSegment, replayCaptions, unsavedTail, type LoggedCaption } from './bot/captions.js'
 import { carryOver } from './meeting/versions.js'
 import { finishedSessions } from './meeting/merge.js'
 import { discardRecording } from './meeting/remove.js'
@@ -71,7 +71,7 @@ import type { Channel as MeetingChannel } from './meeting/session.js'
 import { WhisperCppClient } from '@wouice/asr'
 import { OpenAiCompatClient, VOCABULARY_KINDS_SYSTEM } from '@wouice/llm'
 import { describeCalibration, formatDiagnostic, formatSession } from './metrics/diagnostic.js'
-import { writeFileSync, mkdirSync, copyFileSync } from 'node:fs'
+import { writeFileSync, mkdirSync, copyFileSync, existsSync, readdirSync, readFileSync } from 'node:fs'
 
 // MUST come before any app.getPath('userData') call, and those happen at module
 // scope below. Unpackaged, Electron otherwise names itself "Electron" and puts
@@ -111,6 +111,8 @@ const recordings = new RecordingStore(app.getPath('userData'))
 
 /** Meetings live beside the database, one directory per session. */
 const MEETING_ROOT = path.join(app.getPath('userData'), 'meetings')
+/** The meeting bot's run folders: what happened on each call, and its caption log. */
+const BOT_RUNS = path.join(app.getPath('userData'), 'bot', 'runs')
 const meetings = new MeetingController(MEETING_ROOT, {
   // Built per request, like dictation does, because the sidecar can restart on
   // a different model and a client captured once would keep talking to the old
@@ -234,7 +236,7 @@ const botCapture: CaptureSink = {
     if (changed) broadcast(IPC.meetingUpdated, meetingId)
     return changed
   },
-  close(meetingId, { endedAt, lines, people }) {
+  close(meetingId, { endedAt, lines, people, dropped, moved, unsaved, log }) {
     // The people on the call, spelled by Google: into your vocabulary on their
     // own - the one source trusted enough for that. Never over one you changed
     // or said is not a word.
@@ -247,6 +249,16 @@ const botCapture: CaptureSink = {
     }
     const meeting = store.meetings.byId(meetingId)
     if (!meeting) return
+    // Every caption update of the call, kept with it: the bot's run folders go
+    // after twenty calls, and this is the one full record of what Meet sent.
+    if (log) {
+      try {
+        copyFileSync(log, path.join(meeting.dir, 'captions.jsonl'))
+      } catch (err) {
+        console.warn('[bot] could not keep the caption log with the meeting:', err)
+      }
+    }
+    store.meetings.setDiagnostics(meetingId, { captions: { dropped: dropped ?? 0, moved: moved ?? 0, unsaved: unsaved ?? 0 } })
     store.meetings.finish(meetingId, { endedAt, audioPath: null, durationMs: endedAt - meeting.startedAt })
     // Its length and "finished" now, not when the English and the summary are
     // done minutes later: until then the list still said "never finished · 0s".
@@ -270,7 +282,7 @@ const meetingBot = new MeetingBot({
   sink: botCapture,
   // Follows "Spoken in" on the Meetings page, which the bot panel says beside it.
   captionLanguage: () => meetCaptionLanguage(settings.get().meetings.defaultKind).code,
-  runsDir: path.join(app.getPath('userData'), 'bot', 'runs'),
+  runsDir: BOT_RUNS,
   launch: () => {
     const chromePath = findChrome()
     if (!chromePath) return Promise.reject(new Error('Chrome is not installed'))
@@ -494,6 +506,7 @@ async function writeNotes(
       coveredLines: run.coveredLines,
       totalLines: run.totalLines,
       gapsAt: run.gapsAt,
+      tasksGapsAt: run.tasksGapsAt,
       candidates: run.candidates,
       filtered: run.filtered,
       merged: run.merged,
@@ -1217,6 +1230,66 @@ function reconcileMeetings(): void {
     }
   } catch (err) {
     console.warn('[meeting] could not reconcile recordings with the database:', err)
+  }
+}
+
+/**
+ * A bot meeting Wouice closed under mid-call: never finished, and its last
+ * captions never stored. They are in the run's caption log. Replayed through
+ * the same rules, the lines after the last one stored are added, and the
+ * meeting finishes as if the bot had left: English, summary and tasks.
+ */
+function finishOpenBotMeetings(): void {
+  try {
+    const open = store.meetings.list(200).filter((m) => m.endedAt === null && m.dir.endsWith('-bot'))
+    if (open.length === 0) return
+    const runs = existsSync(BOT_RUNS)
+      ? readdirSync(BOT_RUNS, { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => path.join(BOT_RUNS, e.name))
+      : []
+    const runOf = (meetingId: number): string | undefined =>
+      runs.find((dir) => {
+        try {
+          return (JSON.parse(readFileSync(path.join(dir, 'run.json'), 'utf8')) as { meetingId?: number }).meetingId === meetingId
+        } catch {
+          return false
+        }
+      })
+    for (const meeting of open) {
+      const run = runOf(meeting.id)
+      const logFile = run ? path.join(run, 'captions.jsonl') : null
+      const log: LoggedCaption[] =
+        logFile && existsSync(logFile)
+          ? readFileSync(logFile, 'utf8')
+              .split('\n')
+              .filter(Boolean)
+              .map((l) => JSON.parse(l) as LoggedCaption)
+          : []
+      const version = store.meetings.versions(meeting.id).find((v) => v.source === MEET_CAPTIONS_SOURCE)
+      const stored = version ? store.meetings.segments(meeting.id, version.id) : []
+      const feed = new MeetFeed()
+      const tail = unsavedTail(replayCaptions(log, feed), stored, meeting.startedAt)
+      if (tail.length > 0) {
+        const me = settings.get().meetings.me.name
+        store.meetings.appendToVersion(
+          meeting.id,
+          MEET_CAPTIONS_SOURCE,
+          tail.map((line) => captionSegment(line, meeting.startedAt, me))
+        )
+      }
+      if (logFile && existsSync(logFile)) copyFileSync(logFile, path.join(meeting.dir, 'captions.jsonl'))
+      store.meetings.setDiagnostics(meeting.id, {
+        captions: { dropped: feed.captions.droppedKept, moved: feed.captions.droppedMoved, unsaved: 0, recovered: tail.length },
+      })
+      const endedAt = Math.max(meeting.startedAt, ...log.map((u) => u.at), ...stored.map((s) => meeting.startedAt + s.endMs))
+      store.meetings.finish(meeting.id, { endedAt, audioPath: null, durationMs: endedAt - meeting.startedAt })
+      console.log(`[bot] finished meeting ${meeting.id}, left open when Wouice closed: ${tail.length} line(s) from its caption log`)
+      broadcast(IPC.meetingUpdated, meeting.id)
+      if (stored.length + tail.length > 0) void finishMeeting(meeting.id)
+    }
+  } catch (err) {
+    console.warn('[bot] could not finish the bot meetings left open:', err)
   }
 }
 
@@ -2048,7 +2121,10 @@ if (!app.requestSingleInstanceLock()) {
     // Anything a previous run left in checkpoints, before a new meeting can
     // start on top of it. The audio is already on disk; this is what turns it
     // into a file.
-    void meetings.recoverAbandoned().then(() => reconcileMeetings())
+    void meetings.recoverAbandoned().then(() => {
+      reconcileMeetings()
+      finishOpenBotMeetings()
+    })
     applyAutoDetect(settings.get().meetings.autoDetect)
 
     registerIpc()
@@ -2087,16 +2163,27 @@ if (!app.requestSingleInstanceLock()) {
   // Tray app: closing the window must not quit.
   app.on('window-all-closed', () => {})
 
-  app.on('before-quit', async () => {
-    // First, so nothing it would restore starts behind the stop below.
-    afterCall.shutdown()
-    hotkeys.unregisterAll()
-    destroyTray()
-    // Sidecars are children, but killing them explicitly avoids orphaned
-    // processes holding the GPU if Electron exits uncleanly.
-    await meetingBot.dispose()
-    botIdentity.dispose()
-    await supervisor.stopAll()
-    store.close()
+  // Held until everything is put away, then let go. Electron does not wait for
+  // an async handler: a bot still in a call was cut off before it saved what
+  // it last heard, and its meeting was never finished.
+  let quitting = false
+  app.on('before-quit', (event) => {
+    if (quitting) return
+    quitting = true
+    event.preventDefault()
+    void (async () => {
+      // First, so nothing it would restore starts behind the stop below.
+      afterCall.shutdown()
+      hotkeys.unregisterAll()
+      destroyTray()
+      await meetingBot.dispose()
+      botIdentity.dispose()
+      // Sidecars are children, but killing them explicitly avoids orphaned
+      // processes holding the GPU if Electron exits uncleanly.
+      await supervisor.stopAll()
+      store.close()
+    })()
+      .catch((err: unknown) => console.warn('[app] could not put everything away before quitting:', err))
+      .finally(() => app.quit())
   })
 }
