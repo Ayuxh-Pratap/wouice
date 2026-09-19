@@ -554,6 +554,16 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE meeting_versions ADD COLUMN summary TEXT;
     `,
   },
+  {
+    id: 15,
+    name: 'caption words Meet dropped, kept',
+    sql: `
+      -- 1 for a line of words Meet's captions showed and then replaced with
+      -- something new: in none of its later captions, kept rather than lost, and
+      -- shown dimmed. See docs/design/12-nothing-lost.md.
+      ALTER TABLE segments ADD COLUMN dropped INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ]
 
 /** The version a fully migrated database reports. */
