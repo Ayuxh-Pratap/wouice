@@ -420,6 +420,26 @@ describe('when a step fails', () => {
     expect(result.notesMd).toContain('In short')
   })
 
+  it('says which minutes gave no tasks when the tasks step fails on a part', async () => {
+    const long = Array.from({ length: 400 }, (_, i) =>
+      line(i + 1, 'a reasonably long line about the deployment pipeline and pricing')
+    )
+    let asked = 0
+    const { client } = fakeLlm((req) => {
+      if (stageOf(req) === 'items') {
+        asked++
+        if (asked === 1) throw new Error('model restarting')
+      }
+      return ''
+    })
+    const result = await new MeetingNotesEngine(client).generate({ lines: long, scratch: '', startedAt: Date.now() })
+    expect(result.chunks).toBeGreaterThan(1)
+    // The key points were read everywhere; the first part's tasks were not.
+    expect(result.failedChunks).toBe(0)
+    expect(result.tasksGapsAt).toHaveLength(1)
+    expect(result.tasksGapsAt[0]!.fromMs).toBe(5_000)
+  })
+
   it('refuses the run when nothing could be summarised, and says why', async () => {
     const { client } = fakeLlm((req) => {
       if (stageOf(req) === 'points') throw new Error('503 Loading model')
