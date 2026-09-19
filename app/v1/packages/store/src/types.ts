@@ -405,6 +405,11 @@ export interface SegmentInput {
   text: string
   echo: boolean
   /**
+   * Words Meet's captions showed and then replaced with something new: in none
+   * of its later captions, kept as a line rather than lost. Shown dimmed.
+   */
+  dropped?: boolean
+  /**
    * Who said it, by name, when the transcript knows. Meet's captions do; two
    * channels of local audio only know "you" and "them".
    */
@@ -573,6 +578,16 @@ export interface MeetingDiagnostics {
     ok?: boolean
     message?: string
   }
+  /** What the bot did with Meet's captions that could have lost words. See docs/design/12-nothing-lost.md. */
+  captions?: {
+    /** Lines of words Meet showed and then replaced, kept; and words it only moved, not kept twice. */
+    dropped: number
+    moved: number
+    /** Lines the store refused to the end; they are in the meeting's captions.jsonl. */
+    unsaved: number
+    /** Lines saved from the caption log after Wouice closed mid-call. */
+    recovered?: number
+  }
   /** The careful re-transcription, when it has been run. */
   repass?: { at: number; model: string; segments: number; ms: number }
   /** One entry per notes run, newest last. */
@@ -591,6 +606,8 @@ export interface MeetingDiagnostics {
     totalLines?: number
     /** The stretches that could not be read. */
     gapsAt?: { fromMs: number; toMs: number }[]
+    /** The stretches whose tasks could not be read, though their key points were. */
+    tasksGapsAt?: { fromMs: number; toMs: number }[]
     /**
      * Proposed, dropped by the word filter, merged as the same task said twice,
      * refused by the checker. Proposed is the sum of the other three and kept.
