@@ -130,14 +130,23 @@ function withoutName(text: string, name: string | null | undefined): string {
 export function parseEnglish(raw: string, batch: readonly Line[]): Rendered[] {
   const allowed = new Map(batch.map((line) => [line.id, line.text]))
   const speakers = new Map(batch.map((line) => [line.id, line.speaker]))
-  const out: Rendered[] = []
+  // Each answer, with any lines that ran on under its number.
+  const out: { id: number; textEn: string; more: string[] }[] = []
   const seen = new Set<number>()
   let numbered = false
+  let open: (typeof out)[number] | null = null
 
   for (const line of raw.split('\n')) {
     const match = /^\s*\[(\d{1,10})\]\s*(.*)$/.exec(line)
-    if (!match) continue
+    if (!match) {
+      // A blank line ends an answer: what follows is not the line's.
+      const more = line.trim()
+      if (!more) open = null
+      else if (open) open.more.push(more)
+      continue
+    }
     numbered = true
+    open = null
 
     const id = Number(match[1])
     if (!allowed.has(id) || seen.has(id)) continue
@@ -146,12 +155,10 @@ export function parseEnglish(raw: string, batch: readonly Line[]): Rendered[] {
     // An empty answer is the model saying it could not carry the meaning. The
     // raw line stays, which is better than an invented English sentence.
     if (!text) continue
-    // A rendering many times longer than the line is the model elaborating
-    // rather than translating.
-    if (text.length > Math.max(120, allowed.get(id)!.length * 4)) continue
 
     seen.add(id)
-    out.push({ id, textEn: text })
+    open = { id, textEn: text, more: [] }
+    out.push(open)
   }
 
   // One line asked for, answered without its number: a small model given a
@@ -160,12 +167,41 @@ export function parseEnglish(raw: string, batch: readonly Line[]): Rendered[] {
   // nothing after it is still the model saying it could not, and stands.
   const only = batch.length === 1 ? batch[0]! : null
   if (only && !numbered) {
-    const first = raw.split('\n').map((line) => line.trim()).find(Boolean)
+    const [first, ...more] = (raw.trim().split(/\n\s*\n/)[0] ?? '').split('\n').map((line) => line.trim()).filter(Boolean)
     const text = first ? withoutName(first.replace(/^(output|english)\s*:\s*/i, ''), only.speaker) : ''
-    if (text && text.length <= Math.max(120, only.text.length * 4)) out.push({ id: only.id, textEn: text })
+    if (text) out.push({ id: only.id, textEn: text, more })
   }
 
-  return out
+  return out.flatMap(({ id, textEn, more }) => {
+    const source = allowed.get(id)!
+    // The rest of an answer cut short, on the lines after it, is taken only
+    // then: taken always, a next line's English written without its number
+    // would run into this one.
+    for (const text of [textEn, [textEn, ...more].join(' ')]) {
+      if (fits(text, source)) return [{ id, textEn: text }]
+    }
+    // What cannot stand for its line leaves the line as it was said.
+    return []
+  })
+}
+
+/** Below this share of a long line's words, a rendering has lost most of it. */
+const SHORTEST = 0.35
+/** Only a line this long is judged by it: "अरे भाई साहब" is fairly "Hey brother". */
+const SHORT_FROM_WORDS = 8
+
+const wordCount = (s: string): number => s.split(/\s+/).filter(Boolean).length
+
+/**
+ * Whether a rendering can stand for its line: not many times longer - the
+ * model elaborating rather than translating - and not missing most of it, as a
+ * rendering cut off after its first sentence would. Across 486 lines of eight
+ * words or more in six meetings, no rendering fell under 0.46 of its line.
+ */
+function fits(text: string, source: string): boolean {
+  if (text.length > Math.max(120, source.length * 4)) return false
+  const words = wordCount(source)
+  return words < SHORT_FROM_WORDS || wordCount(text) >= words * SHORTEST
 }
 
 /** How much of a batch came back usable. Below this the batch is not trusted. */
