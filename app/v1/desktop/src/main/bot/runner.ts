@@ -111,7 +111,21 @@ export interface CaptureSink {
    * Meet's participant list, the bot and screen shares left out - spelled by
    * Google, which is why the vocabulary takes them on its own.
    */
-  close(meetingId: number, detail: { endedAt: number; lines: number; people: string[] }): void
+  close(
+    meetingId: number,
+    detail: {
+      endedAt: number
+      lines: number
+      people: string[]
+      /** Lines of words Meet showed and then replaced, kept; and words it only moved, not kept twice. */
+      dropped?: number
+      moved?: number
+      /** Lines the store refused to the end. Every caption is still in `log`. */
+      unsaved?: number
+      /** The call's caption log, every update as it came: to keep with the meeting. */
+      log?: string
+    }
+  ): void
   /**
    * Meet rewrote a caption after its line was stored: make the same change in
    * the stored line. True when a line was changed.
@@ -165,8 +179,10 @@ interface Run {
   meetingClosed: boolean
   lines: number
   warning: string | null
-  /** A failure to store captions. Sticky: the lines it failed on are gone. */
+  /** A failure to store captions, until they are stored. */
   saveProblem: string | null
+  /** Lines the store refused: tried again at every look, and at the end. */
+  unsaved: CaptionLine[]
   /** What was stored, for scoring against Meet's own panel at the end. */
   kept: { speaker: string | null; text: string }[]
   /** Corrections Meet made after a line was stored, made in the transcript too. */
@@ -263,6 +279,7 @@ export class MeetingBot extends EventEmitter {
       lines: 0,
       warning: null,
       saveProblem: null,
+      unsaved: [],
       kept: [],
       revised: 0,
     }
@@ -291,10 +308,17 @@ export class MeetingBot extends EventEmitter {
     return this.task ?? Promise.resolve()
   }
 
-  /** On quit: leave properly if it can, within a few seconds, and close Chrome regardless. */
+  /**
+   * On quit: leave properly if it can, within a few seconds, and close Chrome
+   * regardless - but first, whatever happens, keep what it heard.
+   */
   async dispose(): Promise<void> {
     this.leave()
     await Promise.race([this.settled(), new Promise((resolve) => setTimeout(resolve, 8_000))])
+    // Still on its way out: what it heard is saved now, before the store
+    // closes under it. Quitting mid-call lost the last captions, and left the
+    // meeting never finished - no English, no summary.
+    if (this.task && this.current) this.closeMeeting(this.current)
     if (this.browser) await this.closeBrowser(this.browser)
     this.removeAllListeners()
   }
@@ -608,15 +632,24 @@ export class MeetingBot extends EventEmitter {
   }
 
   private keep(run: Run, lines: CaptionLine[]): void {
-    if (lines.length === 0 || run.meetingId === null || !this.deps.sink) return
+    // Lines the store refused before go first, in the order they came.
+    const batch = [...run.unsaved, ...lines]
+    if (batch.length === 0 || run.meetingId === null || run.meetingClosed || !this.deps.sink) return
     try {
-      this.deps.sink.append(run.meetingId, lines, run.meetingStartedAt)
-      run.lines += lines.length
-      run.kept.push(...lines.map((l) => ({ speaker: l.speaker, text: l.text })))
+      this.deps.sink.append(run.meetingId, batch, run.meetingStartedAt)
+      if (run.unsaved.length > 0) this.note(run, `saved ${run.unsaved.length} line(s) the store had refused`)
+      run.unsaved = []
+      run.saveProblem = null
+      run.lines += batch.length
+      run.kept.push(...batch.map((l) => ({ speaker: l.speaker, text: l.text })))
       this.changed(run)
     } catch (err) {
-      run.saveProblem = `Some captions could not be saved: ${err instanceof Error ? err.message : String(err)}`
-      this.note(run, run.saveProblem)
+      // Kept, and tried again at the next look: dropped, a database locked for
+      // a second lost those lines for good.
+      const first = run.unsaved.length === 0
+      run.unsaved = batch
+      run.saveProblem = `Some captions could not be saved yet; trying again: ${err instanceof Error ? err.message : String(err)}`
+      if (first) this.note(run, run.saveProblem)
       // Now, not at the next look: a turn is often stored as the call ends,
       // when there is no next look.
       this.warn(run, run.saveProblem)
@@ -646,6 +679,8 @@ export class MeetingBot extends EventEmitter {
   private closeMeeting(run: Run): void {
     const feed = run.feed
     let people: string[] = []
+    let dropped = 0
+    let moved = 0
     if (feed) {
       people = feed.roster
         .people()
@@ -654,10 +689,13 @@ export class MeetingBot extends EventEmitter {
       this.keep(run, feed.flush())
       this.revise(run, feed.revisions())
       const c = feed.captions
+      dropped = c.droppedKept
+      moved = c.droppedMoved
       this.note(
         run,
-        `captions: ${feed.captionMessages} read; kept ${c.keptFinal} at Meet's final version and ${c.keptQuiet} without one; ${c.lateRevisions} changed after being kept (${run.revised} corrected in the transcript, ${c.newUnderOldId} new words under an old caption kept as lines); ${feed.summary()}`
+        `captions: ${feed.captionMessages} read; kept ${c.keptFinal} at Meet's final version and ${c.keptQuiet} without one; ${c.lateRevisions} changed after being kept (${run.revised} corrected in the transcript, ${c.newUnderOldId} new words under an old caption kept as lines); ${c.droppedKept} replaced by Meet before being kept, kept as lines of their own (${c.droppedMoved} more only moved to a neighbour); ${c.staleIgnored} older versions ignored; ${feed.summary()}`
       )
+      if (run.unsaved.length > 0) this.note(run, `${run.unsaved.length} line(s) could not be saved; every caption is in captions.jsonl`)
       this.logCaptions(run, feed)
       this.writeJson(run, 'people.json', feed.roster.people())
       this.writeSamples(run, feed)
@@ -666,7 +704,15 @@ export class MeetingBot extends EventEmitter {
     if (run.meetingId === null || run.meetingClosed || !this.deps.sink) return
     run.meetingClosed = true
     try {
-      this.deps.sink.close(run.meetingId, { endedAt: this.now(), lines: run.lines, people })
+      this.deps.sink.close(run.meetingId, {
+        endedAt: this.now(),
+        lines: run.lines,
+        people,
+        dropped,
+        moved,
+        unsaved: run.unsaved.length,
+        log: path.join(run.dir, 'captions.jsonl'),
+      })
     } catch (err) {
       this.note(run, `could not close meeting ${run.meetingId}: ${err instanceof Error ? err.message : String(err)}`)
     }
