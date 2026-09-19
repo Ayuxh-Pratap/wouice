@@ -79,6 +79,7 @@ interface SegmentRow {
   text: string
   text_en: string | null
   echo: number
+  dropped: number
   speaker: string | null
 }
 
@@ -162,6 +163,7 @@ function toSegment(r: SegmentRow): SegmentRecord {
     text: r.text,
     textEn: r.text_en,
     echo: r.echo === 1,
+    dropped: r.dropped === 1,
     speaker: r.speaker ?? null,
   }
 }
@@ -243,8 +245,8 @@ function toTask(r: TaskRow): TaskRecord {
   }
 }
 
-const INSERT_SEGMENT = `INSERT INTO segments (meeting_id, version_id, channel, start_ms, end_ms, text, echo, speaker_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+const INSERT_SEGMENT = `INSERT INTO segments (meeting_id, version_id, channel, start_ms, end_ms, text, echo, dropped, speaker_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 /** A segment row with its speaker's name joined in. */
 const SEGMENT_WITH_SPEAKER = `SELECT s.*, sp.name AS speaker FROM segments s
@@ -336,7 +338,7 @@ export class Meetings {
       const versionId = this.liveVersionId(meetingId)
       const insert = this.db.raw.prepare(INSERT_SEGMENT)
       for (const s of segments) {
-        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0, this.speakerId(s.speaker))
+        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0, s.dropped ? 1 : 0, this.speakerId(s.speaker))
       }
     })
   }
@@ -397,7 +399,7 @@ export class Meetings {
 
       const insert = this.db.raw.prepare(INSERT_SEGMENT)
       for (const s of segments) {
-        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0, this.speakerId(s.speaker))
+        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0, s.dropped ? 1 : 0, this.speakerId(s.speaker))
       }
       this.db.raw
         .prepare('UPDATE meetings SET main_version_id = ? WHERE id = ?')
@@ -488,7 +490,7 @@ export class Meetings {
         )
       const insert = this.db.raw.prepare(INSERT_SEGMENT)
       for (const s of segments) {
-        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0, this.speakerId(s.speaker))
+        insert.run(meetingId, versionId, s.channel, s.startMs, s.endMs, s.text, s.echo ? 1 : 0, s.dropped ? 1 : 0, this.speakerId(s.speaker))
       }
       return versionId
     })
