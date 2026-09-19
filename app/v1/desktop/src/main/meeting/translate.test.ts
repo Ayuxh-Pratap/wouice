@@ -101,6 +101,20 @@ describe('reading the rendering back', () => {
     expect(parseEnglish('Okay', batch)).toEqual([])
   })
 
+  it('takes the rest of an answer cut short onto the next line, and only then', () => {
+    const long = line(10, 'यह एक बहुत लंबी लाइन है जिसमें बहुत सारे शब्द हैं और कुछ और')
+    expect(parseEnglish('[10] This is a\nvery long line with a great many words and some more', [long])).toEqual([
+      { id: 10, textEn: 'This is a very long line with a great many words and some more' },
+    ])
+    // An answer that stands on its own takes nothing from the lines after it.
+    expect(parseEnglish('[10] Yes\nOkay', [line(10, 'हां'), line(11, 'ठीक है')])).toEqual([{ id: 10, textEn: 'Yes' }])
+  })
+
+  it('leaves a long line as it was said when its rendering lost most of it', () => {
+    const long = line(10, 'यह एक बहुत लंबी लाइन है जिसमें बहुत सारे शब्द हैं और कुछ और')
+    expect(parseEnglish('[10] Yes.', [long])).toEqual([])
+  })
+
   it('takes the first answer when a line is returned twice', () => {
     const raw = '[10] Yes, I will send it\n[10] Something else entirely'
     expect(parseEnglish(raw, batch)).toEqual([{ id: 10, textEn: 'Yes, I will send it' }])
