@@ -61,6 +61,18 @@ describe('a correction to a stored line', () => {
   })
 })
 
+describe('words Meet dropped', () => {
+  it('are kept as a line, and marked', () => {
+    const id = meetings.start('/sessions/bot', 1_000)
+    meetings.appendToVersion(id, 'meet-captions', [said('them', 8_000, 'बाकी'), { ...said('them', 1_000, 'बस इस चीज के अलावा'), dropped: true }])
+    const version = meetings.versions(id).find((v) => v.source === 'meet-captions')!
+    expect(meetings.segments(id, version.id).map((s) => [s.text, s.dropped])).toEqual([
+      ['बस इस चीज के अलावा', true],
+      ['बाकी', false],
+    ])
+  })
+})
+
 describe('the life of a meeting', () => {
   it('exists from the moment recording starts, not when it ends', () => {
     // An hour that never reached a clean stop is exactly the case worth being
