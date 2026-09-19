@@ -98,6 +98,12 @@ export interface NotesRun {
   /** The stretches that could not be read, so the gap can be named. */
   gapsAt: { fromMs: number; toMs: number }[]
   /**
+   * The stretches whose tasks could not be read: the tasks step failed there,
+   * though the key points were read. Silent before - no tasks from that part,
+   * and the run still said it had read the whole meeting.
+   */
+  tasksGapsAt: { fromMs: number; toMs: number }[]
+  /**
    * Work items found, dropped for not being traceable to a line or not saying
    * what, folded into another item as the same work, and dropped as turned
    * down or already done. Found is those three plus the tasks kept.
@@ -206,6 +212,7 @@ export class MeetingNotesEngine {
     const points: KeyPoint[] = []
     const tally = { found: 0, badQuote: 0, offTopic: 0 }
     let dropped = 0
+    const tasksMissed: { fromMs: number; toMs: number }[] = []
     const date = new Date(input.startedAt).toISOString().slice(0, 10)
 
     for (const [index, chunk] of chunks.entries()) {
@@ -239,6 +246,8 @@ export class MeetingNotesEngine {
         const parsed = parseWorkItems(raw, chunk.lines)
         found.push(...parsed.items)
         dropped += parsed.dropped
+      } else {
+        tasksMissed.push({ fromMs: chunk.startMs, toMs: chunk.endMs })
       }
     }
 
@@ -289,6 +298,7 @@ export class MeetingNotesEngine {
         .reduce((n, o) => n + o.chunk.lines.length, 0),
       totalLines: usable.length,
       gapsAt: failed.map((o) => ({ fromMs: o.chunk.startMs, toMs: o.chunk.endMs })),
+      tasksGapsAt: tasksMissed,
       failure: failed.length > 0 ? (this.lastFailure ?? undefined) : undefined,
       candidates: found.length + dropped,
       filtered: dropped,
