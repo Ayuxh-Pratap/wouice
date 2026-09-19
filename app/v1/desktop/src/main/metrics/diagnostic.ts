@@ -223,6 +223,19 @@ export function formatMeeting(
       ((d.chunksFailed ?? 0) > 0 ? '  <- lost audio, one slice each' : '')
   )
   lines.push(`  segments      ${meeting.segments}`)
+  // Words Meet showed and then replaced with something new: kept, not lost.
+  if (d.captions) {
+    lines.push(
+      `  dropped       ${d.captions.dropped} kept as lines of their own, dimmed ` +
+        `(${d.captions.moved} more only moved to a neighbour)  - words Meet showed, then replaced`
+    )
+    if (d.captions.unsaved > 0) {
+      lines.push(`  not saved     ${d.captions.unsaved} line(s)  <- every caption is in captions.jsonl in the meeting folder`)
+    }
+    if (d.captions.recovered) {
+      lines.push(`  recovered     ${d.captions.recovered} line(s) from the caption log: Wouice closed mid-call`)
+    }
+  }
   lines.push('')
 
   lines.push('notes')
@@ -327,6 +340,11 @@ function formatNotesRuns(runs: NonNullable<MeetingDiagnostics['notes']>, lines: 
     }
     for (const gap of run.gapsAt ?? []) {
       lines.push(`      not read  ${Math.round(gap.fromMs / 60_000)}-${Math.round(gap.toMs / 60_000)} min`)
+    }
+    for (const gap of run.tasksGapsAt ?? []) {
+      lines.push(
+        `      no tasks  ${Math.round(gap.fromMs / 60_000)}-${Math.round(gap.toMs / 60_000)} min  <- the tasks step could not read this part`
+      )
     }
     if (run.ok && run.message) lines.push(`      because   ${run.message}`)
     if (run.candidates !== undefined) {
