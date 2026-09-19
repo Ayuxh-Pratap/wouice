@@ -397,7 +397,17 @@ describe('keeping the captions', () => {
       ['Rahul Dhir', 'I will send it on Monday'],
       ['Rahul Dhir', 'and the invoice'],
     ])
-    expect(calls.closed).toEqual([{ endedAt: expect.any(Number), lines: 2, people: expect.any(Array) }])
+    expect(calls.closed).toEqual([
+      {
+        endedAt: expect.any(Number),
+        lines: 2,
+        people: expect.any(Array),
+        dropped: 0,
+        moved: 0,
+        unsaved: 0,
+        log: expect.stringContaining('captions.jsonl'),
+      },
+    ])
     expect(meetingBot.view()).toMatchObject({
       state: 'ended',
       reason: 'meeting-ended',
@@ -490,6 +500,29 @@ describe('keeping the captions', () => {
     await meetingBot.settled()
     expect(meetingBot.view()).toMatchObject({ reason: 'meeting-ended', lines: 0 })
     expect(meetingBot.view()?.warning).toMatch(/database is locked/)
+  })
+
+  it('saves the lines the store refused at its next try', async () => {
+    const { sink, calls } = recordingSink()
+    const append = sink.append.bind(sink)
+    let refusals = 1
+    sink.append = (id, lines, at) => {
+      if (refusals-- > 0) throw new Error('database is locked')
+      append(id, lines, at)
+    }
+    const { meetingBot } = bot({
+      sink,
+      script: (look, _clock, emit) => {
+        if (look === 0) return LOBBY
+        emit(pageMessage.heartbeat())
+        if (look === 2) emit(pageMessage.caption({ deviceId: 'd-rahul', captionId: 1, version: 1, text: 'ship it', isFinal: true }))
+        return look < 14 ? IN(2) : ENDED
+      },
+    })
+    meetingBot.send(LINK)
+    await meetingBot.settled()
+    expect(calls.lines.map((l) => l.text)).toEqual(['ship it'])
+    expect(meetingBot.view()).toMatchObject({ lines: 1, warning: null })
   })
 
   it("says so when Meet's messages cannot be read, and keeps them raw in the run folder", async () => {
