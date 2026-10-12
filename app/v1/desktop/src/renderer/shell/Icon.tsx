@@ -14,6 +14,7 @@ import type { IconName } from './routes.js'
 type ExtraIcon = 'chevronLeft' | 'chevronRight' | 'search' | 'mic' | 'speaker'
 
 const PATHS: Record<IconName | ExtraIcon, React.ReactNode> = {
+  folder: <path d="M3 6h7l2 2h9v12H3ZM3 6V4h7l2 2" />,
   // A speedometer: numbers about speed and load.
   gauge: (
     <>
