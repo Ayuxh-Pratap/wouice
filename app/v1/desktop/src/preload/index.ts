@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import { PROJECT_IPC } from '../shared/projects.js'
 import {
   IPC,
   type Diagnostics,
@@ -38,6 +39,12 @@ function subscribe<T>(channel: string, cb: (value: T) => void): () => void {
 }
 
 const api: WouiceApi = {
+  projects: {
+    request: (method, args, workspaceId) => ipcRenderer.invoke(PROJECT_IPC.request, method, args, workspaceId),
+    onChanged: cb => subscribe(PROJECT_IPC.changed, cb),
+    onFilesChanged: cb => subscribe(PROJECT_IPC.files, cb),
+    onShortcut: cb => subscribe(PROJECT_IPC.shortcut, cb),
+  },
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   setSettings: (patch: Partial<Settings>) => ipcRenderer.invoke(IPC.setSettings, patch),
   getSidecars: () => ipcRenderer.invoke(IPC.getSidecars),
