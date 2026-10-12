@@ -57,7 +57,7 @@ function distance(a: string, b: string): number {
  * the same sound keys the matching uses, because the model's judgement alone
  * was not enough: asked for mishearings, it offered "Jack" for Claude, "eyes"
  * for FAQ and "open it again" for OpenAI. At most one sound apart, and never
- * more than a third of the longer key: "coin" and Qwen, "AskThomp" and Ask
+ * more than a third of the longer key: "coin" and Qwen, "AskFinsh" and Ask
  * Bump. Between short keys only a sound added or dropped ("kn", "kvn"), never
  * one changed: "bum" and Bible ("bm", "bl") are half a word apart. "Lord" and
  * Claude are two apart - that kind is yours to add.

@@ -21,7 +21,7 @@ export function PasteList({ onDone }: { onDone(notice?: string): void }): React.
         onChange={(e) => setText(e.target.value)}
         rows={8}
         autoFocus
-        placeholder={"Ayush, Himanshu, Jeremy\nFinch Bot\nBible — the team's knowledge-base document"}
+        placeholder={"Priya, Rahul, Jeremy\nFinch Bot\nHandbook — the team's knowledge-base document"}
         className="w-full resize-y rounded-md bg-neutral-950 px-3 py-2 font-mono text-[12px] leading-relaxed text-neutral-200 ring-1 ring-white/10 outline-none placeholder:text-neutral-600 focus:ring-white/25"
       />
       <div className="mt-3 flex justify-end gap-2">

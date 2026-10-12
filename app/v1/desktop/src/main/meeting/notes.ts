@@ -659,7 +659,7 @@ export function mergeOverlapping(groups: readonly Group[], items: readonly WorkI
 /**
  * At most `cap` of a list, in order: the first few, then the latest.
  *
- * A decision that changes over a meeting ends where its last lines are - "Bump
+ * A decision that changes over a meeting ends where its last lines are - "Finch
  * Bot, done" came forty minutes after the name first came up - so a cap that
  * kept only the earliest lines cut exactly the one that settled it.
  */
@@ -1411,7 +1411,7 @@ const SAME_TITLE = 0.6
 
 /**
  * Two written-up tasks that are one job, found in parts far apart and grouped
- * apart: "Rename bot to Finch Bot" from minute four and "Rename chatbot to Bump
+ * apart: "Rename bot to Finch Bot" from minute four and "Rename chatbot to Finch
  * Bot" from minute seventeen. By then the write-up has named each one, so
  * nearly the same title is the same work, however far apart it came up.
  */

@@ -12,9 +12,9 @@ describe('Devanagari in Latin letters', () => {
   })
 
   it('sounds a nasal as the consonant after it, with the vowel before it', () => {
-    expect(transliterate('बंप')).toBe('bamp')
+    expect(transliterate('पंप')).toBe('pamp')
     expect(transliterate('संग')).toBe('sang')
-    expect(soundKey('बंप')).toBe(soundKey('Bump'))
+    expect(soundKey('पंप')).toBe(soundKey('Pump'))
   })
 })
 
@@ -25,7 +25,7 @@ describe('sound keys', () => {
       ['Claude', 'क्लॉड'],
       ['Qwen', 'क्वेन'],
       ['Phase', 'फेस'],
-      ['Bump', 'बम्प'],
+      ['Pump', 'पम्प'],
       ['Himanshu', 'हिमांशु'],
       ['Solana', 'सोलाना'],
       ['WebSocket', 'वेबसॉकेट'],
@@ -70,7 +70,7 @@ describe('sound keys', () => {
 
   it('keeps words that sound different apart', () => {
     expect(soundKey('Claude')).not.toBe(soundKey('Lord'))
-    expect(soundKey('Bump')).not.toBe(soundKey('Bible'))
+    expect(soundKey('Pump')).not.toBe(soundKey('Bible'))
     expect(soundKey('Qwen')).not.toBe(soundKey('coin'))
   })
 })

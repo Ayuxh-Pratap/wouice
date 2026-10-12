@@ -52,12 +52,12 @@ describe('what a meeting suggests', () => {
   it('takes a mishearing only when it sounds like its entry', () => {
     expect(soundsLike('coin', 'Qwen')).toBe(true)
     expect(soundsLike('ask finch', 'Ask Finch')).toBe(true)
-    expect(soundsLike('AskThomp', 'Ask Finch')).toBe(true)
+    expect(soundsLike('AskFinsh', 'Ask Finch')).toBe(true)
     // What the model offered when asked for mishearings - none of them sounds like its entry.
     expect(soundsLike('Jack', 'Claude')).toBe(false)
     expect(soundsLike('eyes', 'FAQ')).toBe(false)
     expect(soundsLike('open it again', 'OpenAI')).toBe(false)
-    expect(soundsLike('bunch', 'Bump')).toBe(false)
+    expect(soundsLike('brunch', 'Finch')).toBe(false)
     expect(soundsLike('Web3', 'Wouice')).toBe(false)
     expect(soundsLike('bum', 'Bible')).toBe(false)
     // Two sounds apart: a real mishearing, and still left for you to add.
@@ -68,9 +68,9 @@ describe('what a meeting suggests', () => {
   it('never takes a word with the entry inside it for a mishearing of it', () => {
     const named = [{ id: 9, text: 'we gotta change the name of Finchy', speaker: null }]
     const raw = '{"type":"heard","entry":"Finch Bot","as":"Finchy","line":1,"quote":"change the name of Finchy"}'
-    expect(parseMined(raw, named, [...known, entry(4, 'Bump', { kind: 'product' })])).toEqual([])
+    expect(parseMined(raw, named, [...known, entry(4, 'Finch', { kind: 'product' })])).toEqual([])
     const bump = '{"type":"heard","entry":"Bump","as":"Finchy","line":1,"quote":"change the name of Finchy"}'
-    expect(parseMined(bump, named, [...known, entry(4, 'Bump', { kind: 'product' })])).toEqual([])
+    expect(parseMined(bump, named, [...known, entry(4, 'Finch', { kind: 'product' })])).toEqual([])
   })
 
   it('keeps a new name only when the line writes it as one', () => {

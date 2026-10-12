@@ -234,7 +234,7 @@ describe('reading work items back', () => {
       line(41, 'Swap, can you hear me? Am I audible?'),
       line(42, 'my laptop is about to die'),
       line(43, 'okay okay okay'),
-      line(44, 'anyway, how does the showcase work'),
+      line(44, 'anyway, how does the dashboard work'),
       line(45, 'third, the carousel capitalization is driving me crazy'),
     ]
     const raw = item({ lines: [40, 41, 42, 43, 44, 45] })

@@ -32,7 +32,7 @@ const entry = (term: string, over: Partial<VocabularyEntry> = {}): VocabularyEnt
 })
 
 const claude = entry('Claude', { kind: 'tool', aliases: [{ text: 'Lord', rewrite: false }, { text: 'लॉर्ड', rewrite: false }], meaning: 'the AI we build with' })
-const bump = entry('Bump', { kind: 'product' })
+const bump = entry('Finch', { kind: 'product' })
 const bible = entry('Bible', { meaning: "the team's knowledge-base document", meetings: 5 })
 const himanshu = entry('Himanshu', { kind: 'person' })
 const ajay = entry('Ajay', { state: 'rejected' })
@@ -40,8 +40,8 @@ const pinned = entry('Wouice', { pinned: true })
 
 describe('finding an entry in the text', () => {
   it('matches whole words in Latin script, and runs of characters in Devanagari', () => {
-    expect(appears('Bump', 'the finch bot and Finchy')).toBe(true)
-    expect(appears('Bump', 'we called it Finchy')).toBe(false)
+    expect(appears('Finch', 'the finch bot and Finchy')).toBe(true)
+    expect(appears('Finch', 'we called it Finchy')).toBe(false)
     expect(appears('Phase 1', 'according to Phase 1, then')).toBe(true)
     expect(appears('लॉर्ड', 'कैप्शंस तू गिव तू मी लॉर्ड')).toBe(true)
   })
@@ -83,7 +83,7 @@ describe('what a request gets', () => {
   it('shows each entry with what it is heard as, and its meaning only for the notes', () => {
     expect(referenceLine(claude)).toBe('Claude (heard as: Lord, लॉर्ड)')
     expect(referenceLine(claude, true)).toBe('Claude (heard as: Lord, लॉर्ड; means: the AI we build with)')
-    expect(referenceLine(bump, true)).toBe('Bump')
+    expect(referenceLine(bump, true)).toBe('Finch')
     expect(glossaryFor([bible], { meanings: true })('the bible')).toEqual(["Bible (means: the team's knowledge-base document)"])
   })
 
@@ -101,7 +101,7 @@ describe('the record of a run', () => {
     const tracked = trackedGlossary([claude, bump, pinned])
     tracked.glossary('give it to Lord')
     tracked.glossary('the finch bot')
-    expect(tracked.used().map((e) => e.term).sort()).toEqual(['Bump', 'Claude', 'Wouice'])
+    expect(tracked.used().map((e) => e.term).sort()).toEqual(['Claude', 'Finch', 'Wouice'])
   })
 
   it('says where each entry was said and written, and which lines wrote it unheard', () => {
@@ -109,7 +109,7 @@ describe('the record of a run', () => {
     const lines = [
       { startMs: 0, text: 'कैप्शंस तू गिव तू मी लॉर्ड', textEn: 'captions to give to Claude' },
       { startMs: 60_000, text: 'ऑल्टो भी आ जाएगी', textEn: 'Atlas will also come' },
-      { startMs: 120_000, text: 'बम्प के लिए', textEn: 'for the bump' },
+      { startMs: 120_000, text: 'फिंच के लिए', textEn: 'for the Finch' },
     ]
     const use = vocabularyUse(lines, [claude, atlas, bump], [claude, atlas, bump, himanshu], 7)
     expect(use).toEqual({
@@ -117,9 +117,9 @@ describe('the record of a run', () => {
       sent: 3,
       entries: [
         { term: 'Atlas', said: 0, written: 1, as: [], unheard: 1, check: [{ atMs: 60_000, said: 'ऑल्टो भी आ जाएगी', written: 'Atlas will also come' }] },
-        { term: 'Bump', said: 1, written: 1, as: [], unheard: 0, check: [] },
         // "Lord" and "लॉर्ड" are one sound, so both were heard.
         { term: 'Claude', said: 1, written: 1, as: ['Lord', 'लॉर्ड'], unheard: 0, check: [] },
+        { term: 'Finch', said: 1, written: 1, as: [], unheard: 0, check: [] },
       ],
     })
   })
@@ -140,7 +140,7 @@ describe('a pasted list', () => {
         [
           'Ayush, Himanshu, Jeremy,',
           'Bible - the team\'s knowledge-base document',
-          '- Showcase: where a song goes live',
+          '- Showcase: where a release goes live',
           'Solana, devnet',
           'himanshu',
         ].join('\n')
@@ -150,7 +150,7 @@ describe('a pasted list', () => {
       { term: 'Himanshu', meaning: '' },
       { term: 'Jeremy', meaning: '' },
       { term: 'Bible', meaning: "the team's knowledge-base document" },
-      { term: 'Showcase', meaning: 'where a song goes live' },
+      { term: 'Showcase', meaning: 'where a release goes live' },
       { term: 'Solana', meaning: '' },
       { term: 'devnet', meaning: '' },
     ])
