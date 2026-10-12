@@ -7,6 +7,7 @@ import { AFTER_CALL_CANDIDATES, SIDECARS } from '../shared/models.js'
 import { AfterCall, describeNotesStep, type Plan, type Session } from './sidecars/after-call.js'
 import { readGpu } from './sidecars/gpu.js'
 import { SettingsStore } from './settings-store.js'
+import { Projects } from './projects/index.js'
 import { HotkeyManager } from './hotkeys.js'
 import { createTray, destroyTray, refreshTray } from './tray.js'
 import {
@@ -2054,6 +2055,7 @@ function registerIpc(): void {
   })
 }
 
+let projects: Projects | undefined
 // A second instance would fight over the hotkey and the sidecar ports.
 if (!app.requestSingleInstanceLock()) {
   app.quit()
@@ -2061,6 +2063,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => createMainWindow(settings.get().appearance.zoom))
 
   app.whenReady().then(async () => {
+    projects = new Projects(getMainWindow)
     // On a 6 GB card whose hot set needs ~5.4 GB, one stray sidecar left by a
     // manual benchmark or debug launch is the difference between starting and a
     // CUDA out-of-memory. Guarantee a deterministic starting state.
@@ -2169,6 +2172,8 @@ if (!app.requestSingleInstanceLock()) {
   let quitting = false
   app.on('before-quit', (event) => {
     if (quitting) return
+    if (projects && !projects.prepareClose()) { event.preventDefault(); return }
+    projects?.dispose()
     quitting = true
     event.preventDefault()
     void (async () => {
