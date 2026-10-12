@@ -32,3 +32,6 @@ app/v1/scripts/build/
 
 # design mockups and their preview server's state, local only
 .superpowers/
+
+# Development notes, kept out of the public repo.
+docs/private/
