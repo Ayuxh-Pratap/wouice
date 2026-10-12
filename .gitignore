@@ -35,3 +35,7 @@ app/v1/scripts/build/
 
 # Development notes, kept out of the public repo.
 docs/private/
+
+# Local output from the Projects probes.
+app/v1/.projects-probe/
+app/v1/projects-pty-result.json
