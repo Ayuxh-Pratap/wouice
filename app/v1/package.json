@@ -15,7 +15,6 @@
     "fetch:sidecars": "node scripts/fetch-sidecars.mjs",
     "fetch:models": "node scripts/fetch-models.mjs",
     "fetch:all": "node scripts/fetch-sidecars.mjs && node scripts/fetch-models.mjs",
-    "doctor": "node scripts/doctor.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -b --pretty",
