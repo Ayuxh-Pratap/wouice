@@ -13,6 +13,7 @@
 export type RouteId =
   | 'dashboard'
   | 'dictations'
+  | 'projects'
   | 'meetings'
   | 'companion'
   | 'vocabulary'
@@ -20,6 +21,7 @@ export type RouteId =
   | 'settings'
 
 export type IconName =
+  | 'folder'
   | 'gauge'
   | 'transcript'
   | 'meeting'
@@ -67,6 +69,15 @@ export const ROUTES: RouteDef[] = [
     group: 'Overview',
     icon: 'transcript',
     blurb: 'Everything you have dictated, searchable.',
+  },
+  {
+    id: 'projects',
+    path: '/projects',
+    label: 'Projects',
+    group: 'Projects',
+    icon: 'folder',
+    blurb: 'Your folders, terminals, code and previews.',
+    fill: true,
   },
   {
     id: 'meetings',
