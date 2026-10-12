@@ -552,6 +552,7 @@ export interface BotRunView {
 }
 
 export interface WouiceApi {
+  projects: import('./projects.js').ProjectsApi
   getSettings(): Promise<Settings>
   setSettings(patch: Partial<Settings>): Promise<Settings>
   getSidecars(): Promise<SidecarView[]>
