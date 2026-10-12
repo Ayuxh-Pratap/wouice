@@ -3,6 +3,7 @@ import { MARK_BARS, MARK_STROKE, MARK_VIEWBOX } from '../../shared/mark.js'
 import { zoomLabel } from '../../shared/settings.js'
 import { jobColour, useMeetingJobs } from '../meetings/jobs.js'
 import { EngineCard } from './EngineCard.js'
+import { ProjectNav } from '../projects/ProjectNav.js'
 import { Icon } from './Icon.js'
 import { groupedRoutes, hashFor, type RouteDef, type RouteId } from './routes.js'
 
@@ -145,6 +146,7 @@ function Search({ collapsed }: { collapsed: boolean }): React.JSX.Element {
   // has put it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
+      if ((e.target as HTMLElement | null)?.closest('[data-project-tool]')) return
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
         input.current?.focus()
@@ -266,7 +268,7 @@ export function Sidebar({
       </div>
 
       <div className="flex-1 space-y-5 overflow-y-auto px-2.5 pb-4">
-        {groupedRoutes().map(({ group, routes }) => (
+        {groupedRoutes().map(({ group, routes }) => group === 'Projects' ? <ProjectNav key={group} collapsed={collapsed} active={active === 'projects'} /> : (
           <div key={group}>
             {collapsed ? (
               <div className="mx-auto mb-2 h-px w-6 bg-white/[0.06]" />
