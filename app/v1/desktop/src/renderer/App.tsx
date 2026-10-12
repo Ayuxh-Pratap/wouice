@@ -10,6 +10,7 @@ import { MeetingsPage } from './pages/MeetingsPage.js'
 import { QualityPage } from './pages/QualityPage.js'
 import { SettingsPage } from './pages/SettingsPage.js'
 import { VocabularyPage } from './pages/VocabularyPage.js'
+import { ProjectsPage } from './projects/ProjectsPage.js'
 import { Sidebar } from './shell/Sidebar.js'
 import { parseHash, routeById, type ParsedRoute } from './shell/routes.js'
 import { clampZoom, stepZoom } from '../shared/settings.js'
@@ -179,7 +180,10 @@ export function App(): React.JSX.Element {
           ref={scroller}
           className="lift-panel min-h-0 flex-1 overflow-y-auto rounded-2xl bg-neutral-900 ring-1 ring-white/[0.08]"
         >
-          <div className={fill ? 'flex h-full min-h-[34rem] flex-col px-7 py-6' : 'px-7 py-6'}>
+          <div className={route === 'projects' ? 'h-full' : 'hidden'}>
+            <ProjectsPage visible={route === 'projects'} projectId={route === 'projects' ? query : ''} />
+          </div>
+          <div className={route === 'projects' ? 'hidden' : fill ? 'flex h-full min-h-[34rem] flex-col px-7 py-6' : 'px-7 py-6'}>
             {meetingId === null && (
               <header className="mb-5">
                 <h1 className="text-[19px] font-semibold tracking-tight text-neutral-50">
