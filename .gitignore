@@ -32,3 +32,7 @@ app/v1/scripts/build/
 
 # design mockups and their preview server's state, local only
 .superpowers/
+
+# Isolated Projects native/UI smoke-test data.
+app/v1/.projects-probe/
+app/v1/projects-pty-result.json
