@@ -123,7 +123,7 @@ describe('the hud window', () => {
 describe('sidebar grouping', () => {
   it('keeps each group together and in first-seen order', () => {
     const groups = groupedRoutes()
-    expect(groups.map((g) => g.group)).toEqual(['Overview', 'Surfaces', 'System'])
+    expect(groups.map((g) => g.group)).toEqual(['Overview', 'Projects', 'Surfaces', 'System'])
     expect(groups[0]!.routes.map((r) => r.id)).toEqual(['dashboard', 'dictations'])
   })
 
