@@ -174,6 +174,17 @@ npm run typecheck   # the packages
 cd desktop && npm run typecheck && npm run build
 ```
 
+Want to see the interface before committing to 6 GB of model downloads?
+
+```bash
+npm run demo
+```
+
+That seeds a throwaway profile - an invented team, a meeting with a checked
+summary, tasks and a fortnight of dictations - and launches the app against it,
+leaving your own data alone. Without models the two servers report themselves as
+down, and everything else is browsable.
+
 Tests run without models or sidecars: the model is faked, and the rules are tested
 on their own.
 
