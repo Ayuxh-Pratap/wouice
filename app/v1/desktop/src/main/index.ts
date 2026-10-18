@@ -48,6 +48,7 @@ import { findChrome } from './bot/chrome.js'
 import { launchBotBrowser } from './bot/browser.js'
 import { MeetingBot, type CaptureSink } from './bot/runner.js'
 import { MeetFeed, captionSegment, replayCaptions, unsavedTail, type LoggedCaption } from './bot/captions.js'
+import { startDemoBot } from './demo.js'
 import { carryOver } from './meeting/versions.js'
 import { finishedSessions } from './meeting/merge.js'
 import { discardRecording } from './meeting/remove.js'
@@ -2128,6 +2129,9 @@ if (!app.requestSingleInstanceLock()) {
     applyAutoDetect(settings.get().meetings.autoDetect)
 
     registerIpc()
+    // A bot "in a call", for screenshots of the live side. Only with
+    // WOUICE_DEMO=1, which npm run demo sets; see demo.ts.
+    if (process.env.WOUICE_DEMO === '1') startDemoBot(store)
     createHud()
     applyPetSettings(settings.get().pet)
     createTray(trayDeps)
