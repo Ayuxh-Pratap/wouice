@@ -30,5 +30,10 @@ if (!existsSync(dir)) {
 }
 
 console.log(`Wouice on the demo profile: ${dir}`)
-const app = spawn(electron, [entry, `--user-data-dir=${dir}`], { stdio: 'inherit', cwd: path.join(V1, 'desktop') })
+const app = spawn(electron, [entry, `--user-data-dir=${dir}`], {
+  stdio: 'inherit',
+  cwd: path.join(V1, 'desktop'),
+  // Stands up a bot that is "in a call", so the live side can be photographed.
+  env: { ...process.env, WOUICE_DEMO: '1' },
+})
 app.on('exit', (code) => process.exit(code ?? 0))
