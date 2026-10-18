@@ -12,7 +12,7 @@
 // real one does - Meet's own captions, lines it later dropped, English rendered
 // line by line, a summary checked against the lines it came from.
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { openStore, MEET_CAPTIONS_SOURCE, type CheckedSummary } from '@wouice/store'
@@ -80,13 +80,48 @@ const CALL: Said[] = [
   { at: 664_000, who: ME, text: 'ठीक है, कल फिर बात करते हैं', en: 'Okay, we will talk again tomorrow' },
 ]
 
+/** The call that is still running when the app opens: the bot is in this one. */
+const STANDUP: Said[] = [
+  { at: 8_000, who: ME, text: 'ठीक है, standup शुरू करते हैं', en: 'Okay, let us start the standup' },
+  { at: 24_000, who: PRIYA, text: 'मैंने pricing page का copy कल रात भेज दिया था', en: 'I sent the pricing page copy last night' },
+  { at: 46_000, who: ME, text: 'हां देख लिया, दो जगह छोटा करना है बस', en: 'Yes, I saw it - just two places to shorten' },
+  { at: 71_000, who: DEVANSH, text: 'webhook वाला retry आज खत्म हो जाएगा', en: 'The retry on the webhook will be finished today' },
+  { at: 96_000, who: ME, text: 'alert कहां जा रहा है, email पर', en: 'Where is the alert going - to email?' },
+  { at: 118_000, who: DEVANSH, text: 'हां email पर, और dashboard में भी दिखेगा', en: 'Yes, to email, and it will show on the dashboard too' },
+  { at: 152_000, who: PRIYA, text: 'onboarding का data निकाल लिया है मैंने', en: 'I have pulled the onboarding data' },
+  { at: 178_000, who: PRIYA, text: 'तीन में से एक अभी भी PayKit पर छोड़ रहा है', en: 'One in three still leaves at PayKit' },
+  { at: 214_000, who: ME, text: 'तो वही पहले ठीक करते हैं', en: 'Then let us fix that first' },
+  { at: 243_000, who: DEVANSH, text: 'मैं आज देख लेता हूं कितना काम है', en: 'I will look today at how much work it is' },
+]
+
 /** What you typed while the call ran. */
 const SCRATCH = `pricing: 499/mo, 10 free deliveries a day
 webhook retries - ask Devansh for the number
 launch 28th if the webhook fix lands`
 
+/**
+ * Clear the profile, patiently. Windows holds a folder for a moment after the
+ * last handle closes, and holds it for good while the app is open - which is
+ * worth saying in words rather than as an error code.
+ */
+function wipe(dir: string): void {
+  if (!existsSync(dir)) return
+  for (let attempt = 1; ; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+      return
+    } catch (err) {
+      if (existsSync(path.join(dir, 'lockfile'))) {
+        throw new Error(`Wouice is still open on the demo profile (${dir}). Close it, then run this again.`)
+      }
+      if (attempt === 5) throw err
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300)
+    }
+  }
+}
+
 function seed(): void {
-  rmSync(DEMO_DIR, { recursive: true, force: true })
+  wipe(DEMO_DIR)
   mkdirSync(DEMO_DIR, { recursive: true })
 
   // Settings, whole rather than partial: the app merges a partial file over its
@@ -257,6 +292,33 @@ function seed(): void {
     summary: { found: 9, kept: 8, badQuote: 1, offTopic: 0, shown: 6, gistKept: 2, gistWritten: 3 },
   })
   store.meetings.finish(meetingId, { endedAt: MEETING_AT + 11 * minute + 20_000, audioPath: null, durationMs: 11 * minute + 20_000 })
+
+  // A second meeting, still running: the bot is in this one. Started minutes
+  // ago so the live counter reads as a call in progress, and left unfinished -
+  // the English, summary and tasks are written when the bot leaves. demo.ts
+  // adds a line to it every few seconds while the app is open.
+  const liveAt = Date.now() - 9 * minute - 12_000
+  const liveDir = path.join(DEMO_DIR, 'meetings', `${new Date(liveAt).toISOString().replace(/[:.]/g, '-')}-bot`)
+  mkdirSync(liveDir, { recursive: true })
+  const liveId = store.meetings.start(liveDir, liveAt, 'mixed')
+  store.meetings.setTitle(liveId, 'Lumen - Tuesday standup')
+  const liveVersion = store.meetings.appendToVersion(
+    liveId,
+    MEET_CAPTIONS_SOURCE,
+    STANDUP.map((line) => ({
+      channel: line.who === ME ? ('me' as const) : ('them' as const),
+      startMs: line.at,
+      endMs: line.at + 3_500,
+      text: line.text,
+      echo: false,
+      speaker: line.who,
+    })),
+    liveAt
+  )
+  store.meetings.setMain(liveId, liveVersion)
+  const liveStored = store.meetings.segments(liveId, liveVersion)
+  store.meetings.setEnglish(liveStored.map((s, i) => ({ id: s.id, textEn: STANDUP[i]!.en })))
+  store.meetings.setDiagnostics(liveId, { language: 'hi-IN', segments: STANDUP.length })
 
   for (const entry of VOCABULARY) store.vocabulary.add(entry)
   store.dictations.insertMany(dictations())
