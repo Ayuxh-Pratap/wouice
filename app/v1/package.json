@@ -21,7 +21,9 @@
     "verify": "node scripts/verify-artifacts.mjs",
     "bench:asr": "tsx scripts/bench-asr.mjs",
     "record": "tsx scripts/record-sample.mjs",
-    "probe:hotkeys": "electron scripts/probe-hotkeys.mjs"
+    "probe:hotkeys": "electron scripts/probe-hotkeys.mjs",
+    "demo:seed": "tsx scripts/demo-seed.ts",
+    "demo": "npm run demo:seed && npm --prefix desktop run build && node scripts/demo-run.mjs"
   },
   "devDependencies": {
     "tsx": "^4.23.13",
