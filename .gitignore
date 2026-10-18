@@ -39,3 +39,6 @@ docs/private/
 # Local output from the Projects probes.
 app/v1/.projects-probe/
 app/v1/projects-pty-result.json
+
+# The demo profile: a throwaway Wouice data folder, seeded for screenshots.
+/.demo/
